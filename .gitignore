@@ -1,0 +1,34 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Data & logs (generated, not source)
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# OS / editor cruft
+.DS_Store
+.vscode/
+*.swp
+
+# Streamlit
+.streamlit/

@@ -1,0 +1,13 @@
+[project]
+name = "ai-trading-platform"
+version = "0.1.0"
+description = "A capability-organized trading platform: data, indicators, strategies, broker, execution, risk, analytics, ai, dashboard."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -13,7 +13,42 @@ warning sign that the architecture's been violated.
 
 ## Sprint 3 (in progress) -- 2026-07-28
 
-### Added
+### Added (Module 2 -- Strategy SDK)
+
+- `src/strategies/sdk.py` -- `BaseStrategy` (`DECISIONS.md`, ADR-0018):
+  an optional `ABC` handling setup boilerplate only. Provides `name`/
+  `self.log` (bound logger), `self.indicator(data, name, **params)`
+  (stateless `IndicatorEngine` wrapper), `self.require_columns(data,
+  *columns)` (defaults to OHLCV, raises a clear strategy-attributed
+  error), `self.emit_signal(timestamp, direction, confidence,
+  **metadata)` (constructs + logs a `Signal`, merges in `{"strategy":
+  self.name}`). `prepare()`/`generate_signals()` remain abstract -- the
+  author writes both in full, including when/how often to emit.
+  Extension Cost: 0 existing files to add a new SDK-based strategy.
+- `tests/test_strategy_sdk.py` -- 11 tests: abstractness enforcement,
+  each helper in isolation, and `EMACrossStrategy(BaseStrategy)` run
+  end-to-end through the real `Backtester`, including reuse of one
+  strategy instance across two different candle sets (proving
+  `self.indicator()` holds no stale state).
+
+### Decided (Module 2)
+
+- Rejected an opinionated design where the SDK's base class would own
+  the `generate_signals` loop and ask the author for a single
+  vectorized per-bar decision function -- a strategy author should
+  never be reduced to one method, and the SDK should never decide when
+  a signal fires. See `DECISIONS.md`, ADR-0018.
+- `Strategy` (the Protocol, ADR-0011/0015) is unchanged; `BaseStrategy`
+  is one optional way to satisfy it, not a requirement.
+
+### Verified (Module 2)
+
+- Full suite confirmed on the real dev machine: `pytest` -> **123
+  passed** in 0.43s (11 backtesting + 6 cache + 26 cli/doctor + 7
+  config + 16 experiments + 11 indicators + 15 market data + 10 regime
+  + 10 signals + 11 strategy_sdk). Strategy SDK module complete.
+
+### Added (Module 1 -- Signal Framework)
 
 - `src/signals/` -- the Signal Framework, Sprint 3 Module 1 and one of
   the platform's foundational contracts (see `DECISIONS.md`, ADR-0015,
@@ -56,7 +91,7 @@ warning sign that the architecture's been violated.
   direct lookup by id, persistence across reconnects); all 10 original
   tests unchanged.
 
-### Decided
+### Decided (Module 1)
 
 - Standardized `Signal` as `timestamp`/`direction`/`confidence`/
   `metadata`/`id`, with `SignalDirection` = `LONG`/`SHORT`/`FLAT` (not
@@ -78,7 +113,7 @@ warning sign that the architecture's been violated.
   evidence -> a record -> a recommendation). See `DECISIONS.md`,
   ADR-0017.
 
-### Verified
+### Verified (Module 1)
 
 - Full suite confirmed on the real dev machine: `pytest` -> **112
   passed** in 0.72s (11 backtesting + 6 cache + 26 cli/doctor + 7

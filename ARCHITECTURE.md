@@ -246,13 +246,22 @@ for profitability) -- only the interface is defined here.
 - **Key files:**
   - `base.py` -- `Strategy` (a `typing.Protocol`: `name`, `prepare()`,
     `generate_signals() -> list[Signal]`).
+  - `sdk.py` -- `BaseStrategy` (ADR-0018), an optional `ABC` strategies
+    may subclass for `self.indicator(...)`, `self.log`,
+    `self.require_columns(...)`, and `self.emit_signal(...)`.
+    `prepare()`/`generate_signals()` stay abstract -- the SDK never
+    decides when or how often to emit a signal, only removes setup
+    boilerplate. A strategy can still implement `Strategy` directly,
+    with no base class, exactly as before.
 - **Does not:** contain any concrete strategy yet. Does not compute
   indicators or regimes itself -- a conforming strategy's `prepare()`
   is expected to call `IndicatorEngine`/`MarketRegimeEngine`. Does not
   emit one `Signal` per candle -- only at genuine decision points.
-- **Depends on:** `src/signals` (for the `Signal` return type).
-  Concrete strategies (Sprint 3) will also depend on `src/indicators`
-  and `src/regime`.
+  `BaseStrategy` does not own the signal-emission loop or pick a
+  direction/confidence on a strategy's behalf.
+- **Depends on:** `src/signals` (for the `Signal` return type);
+  `sdk.py` also depends on `src/indicators` (for `IndicatorEngine`) and
+  `src/data` (for `REQUIRED_COLUMNS`).
 
 ### `src/backtesting`
 

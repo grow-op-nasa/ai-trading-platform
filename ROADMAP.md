@@ -115,14 +115,20 @@ component produces knowledge for the next).
   them, superseding Sprint 2's dense `SIGNAL_COLUMN` contract. `Trade`
   references its signals by id; the Experiment Registry stores the
   actual `Signal` objects. See `DECISIONS.md`, ADR-0015, ADR-0016.
-- ⬜ **Module 2 -- Strategy SDK** (planned): a base class that handles
-  everything except the trading logic -- validation, indicator access,
-  logging, metadata, `Signal` construction -- so a strategy author only
-  writes the edge. Sprint 3's own first strategy (deliberately simple:
-  an EMA-cross or opening-range-breakout, chosen for how easy it is to
-  reason about, not for profitability -- complexity comes after
-  confidence in the platform, not before it) will be the first thing
-  built on top of this SDK.
+- ✅ **Module 2 -- Strategy SDK** (`src/strategies/sdk.py`):
+  `BaseStrategy` handles setup boilerplate -- indicator access
+  (`self.indicator`), logging (`self.log`), column validation
+  (`self.require_columns`), signal construction (`self.emit_signal`) --
+  but deliberately never the trading logic itself: the author still
+  writes `prepare()`/`generate_signals()` in full, including when and
+  how often to emit. An opinionated "single vectorized method" design
+  was considered and explicitly rejected. See `DECISIONS.md`, ADR-0018.
+  Sprint 3's own first strategy (deliberately simple: an EMA-cross or
+  opening-range-breakout, chosen for how easy it is to reason about,
+  not for profitability -- complexity comes after confidence in the
+  platform, not before it) is still to be built as a permanent
+  `src/strategies/` file -- `EMACrossStrategy` so far only exists as a
+  demonstration in `tests/test_strategy_sdk.py`.
 - ⬜ **Module 3 -- Performance Attribution** (planned): backtests
   explain results, not just report them -- trade count, win rate,
   average hold time, performance broken down by regime (e.g. best:
@@ -144,7 +150,7 @@ metrics, not just P&L (Module 3); every completed experiment is stored
 in SQLite with reproducible metadata (✅ since Sprint 2, extended by
 Module 1's signal storage); an AI-generated research report can be
 produced from an experiment's results (Module 4); the full test suite
-continues to pass (✅, 112 tests as of Module 1).
+continues to pass (✅, 123 tests as of Module 2).
 
 ## Sprint 4 -- Risk & Execution (planned)
 

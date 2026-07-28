@@ -1,10 +1,10 @@
 # Project State
 
-_Last updated: 2026-07-28 -- Sprint 3 Module 1 (Signal Framework)
-confirmed on the real dev machine: `pytest` -> 112 passed.
-`Signal`/`SignalDirection`, `Strategy`/`Backtester` updated to the new
-sparse-signal contract, `Signal` storage added to the Experiment
-Registry._
+_Last updated: 2026-07-28 -- Sprint 3 Module 2 (Strategy SDK) confirmed
+on the real dev machine: `pytest` -> 123 passed. `BaseStrategy`
+(`src/strategies/sdk.py`) provides indicator access, logging, column
+validation, and signal construction, but a strategy author still
+writes `prepare()`/`generate_signals()` in full._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -85,13 +85,23 @@ For why things were built the way they were, see `DECISIONS.md`.
   (`save_signals`/`get_signals`/`get_signal`), not in a separate
   repository -- `log_experiment()`'s signature is untouched. See
   `DECISIONS.md`, ADR-0016.
+- ✅ `DECISIONS.md`, ADR-0017 -- second standing engineering principle:
+  every component produces knowledge for the next component, not a
+  finished decision on its behalf.
+- ✅ Strategy SDK (`src/strategies/sdk.py`) -- Sprint 3 Module 2.
+  `BaseStrategy`: `self.indicator(...)`, `self.log`,
+  `self.require_columns(...)`, `self.emit_signal(...)`. Deliberately
+  does not own the signal-emission loop or pick a direction/confidence
+  -- the strategy author still writes `prepare()`/`generate_signals()`
+  in full. `Strategy` (the Protocol) is unchanged. See `DECISIONS.md`,
+  ADR-0018.
 
 ## Current Module
 
-**Sprint 3, Module 1 (Signal Framework) complete and confirmed.**
-`atp doctor` and all of Sprint 2 are closed. Modules 2-4 of Sprint 3
-(Strategy SDK, Performance Attribution, AI Research Reporter) are not
-started -- see "Next Task."
+**Sprint 3, Module 2 (Strategy SDK) complete and confirmed.** Module 1
+(Signal Framework), `atp doctor`, and all of Sprint 2 are closed.
+Modules 3-4 of Sprint 3 (Performance Attribution, AI Research Reporter)
+are not started -- see "Next Task."
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2 or 3): no data validation beyond required-column
@@ -101,13 +111,11 @@ live yfinance API.
 
 ## Next Task
 
-Commit and push the Signal Framework. After that, Sprint 3 Module 2:
-**Strategy SDK** -- a base class that handles validation, indicator
-access, logging, and `Signal` construction, so a strategy author only
-writes the trading logic. Sprint 3's own first deliverable after that
-is deliberately simple: an EMA-cross or opening-range-breakout
-strategy, chosen for how easy it is to reason about, not for
-profitability. See `ROADMAP.md`.
+Commit and push the Strategy SDK. After that, Sprint 3 Module 3:
+**Performance Attribution** -- explain backtest results (best/worst
+regime, session-by-session breakdown, average hold time), not just
+report win rate and P&L. Builds on `BacktestResult.signals` and
+`Trade.entry_signal_id` from Module 1. See `ROADMAP.md`.
 
 ## Known Issues
 
@@ -145,9 +153,9 @@ profitability. See `ROADMAP.md`.
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 112 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 123 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
-                          # + 26 cli/doctor + 10 signals)
+                          # + 26 cli/doctor + 10 signals + 11 strategy_sdk)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
 ```

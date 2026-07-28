@@ -722,3 +722,54 @@ on its own (a `Signal` with no price can't be handed straight to a
 broker) in exchange for staying honest about which layer actually owns
 that decision. Alongside ADR-0000 (extensibility), this is now the
 second standing test applied when a design decision is unclear.
+
+---
+
+## ADR-0018: Strategy SDK -- helpers only, never decision-making
+
+**Status:** Accepted -- Sprint 3
+
+**Context:** Sprint 3 Module 2 asked for a Strategy SDK so writing a
+strategy stops meaning re-deriving the same boilerplate every time
+(wiring up an `IndicatorEngine`, validating input columns, tagging log
+lines, remembering `Signal`'s exact fields) -- visible already in how
+`SmaCrossStrategy` (`tests/test_backtesting.py`) had to do all of this
+by hand. Two designs were considered: an opinionated base class that
+owns the `generate_signals` loop and asks the author for a single
+vectorized per-bar decision function, or a lighter base class that
+still requires the author to implement `prepare()`/`generate_signals()`
+themselves, with ready-made helpers for the mechanical parts. The
+opinionated option was explicitly rejected: a strategy author should
+never be reduced to writing a single method, and the SDK should never
+hide the actual decision-making, including the decision of when (and
+how often) to emit a signal at all.
+
+**Decision:** Add `BaseStrategy` (`src/strategies/sdk.py`, a plain
+`ABC`) as an optional convenience strategies may subclass.
+`Strategy` (`src/strategies/base.py`) is unchanged -- still a
+`Protocol`, satisfied structurally (ADR-0011); `BaseStrategy` is one
+way to satisfy it, not a requirement. `BaseStrategy` provides: `name`
+(set once via `__init__`) and `self.log` (a `loguru` logger bound with
+the strategy's name); `self.indicator(data, name, **params)` (a thin,
+stateless wrapper over `IndicatorEngine`, safe to call across multiple
+backtest runs on the same instance since it holds no state between
+calls); `self.require_columns(data, *columns)` (validates expected
+columns are present -- defaults to the standard OHLCV set -- raising a
+clear, strategy-attributed `ValueError`); and `self.emit_signal(timestamp,
+direction, confidence, **metadata)` (constructs and logs a `Signal`,
+merging in `{"strategy": self.name}` -- author-supplied keys win on
+collision). `prepare()` and `generate_signals()` remain abstract: the
+author writes both, in full, including when and how often to call
+`emit_signal()`.
+
+**Consequences:** A strategy built on `BaseStrategy` (e.g.
+`EMACrossStrategy`) still owns 100% of the trading logic and its
+expression -- loop, vectorized, whatever the author chooses -- the SDK
+only removes setup/plumbing boilerplate, never a judgment call.
+Extension Cost (ADR-0014) of a new SDK-based strategy: 0 existing
+files (a new file subclassing `BaseStrategy`; `src/strategies/base.py`
+and the Backtester are untouched). If a more opinionated, lower-
+boilerplate path is ever wanted (e.g. a purely vectorized strategy
+style), that would be a separate, distinct class -- not a retrofit of
+`BaseStrategy` -- since this ADR deliberately chose not to build that
+here.

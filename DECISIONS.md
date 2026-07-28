@@ -5,6 +5,45 @@ costs/buys us. New decisions are appended, never rewritten -- if a
 decision is later reversed, add a new ADR that supersedes it rather than
 editing the old one.
 
+**Architectural north star (ADR-0000):** every new market, indicator,
+strategy, broker, or AI model should be added as an extension -- not
+require a rewrite of existing code. When a design decision is unclear,
+the test is "does this make future extensions easier or harder?" If
+harder, redesign.
+
+---
+
+## ADR-0000: Extensibility is the architectural north star
+
+**Status:** Accepted -- Sprint 2
+
+**Context:** Sprint 0-2's biggest decisions -- capability-based `src/`
+organization (ADR-0001), the `DataProvider` abstraction (ADR-0002), the
+`CacheManager` split (ADR-0008), and building a research engine before
+any strategy (ADR-0009) -- were each justified independently at the
+time, but all share the same underlying instinct: don't make a future
+addition require touching existing code. That instinct is worth stating
+once, explicitly, as a standing principle, rather than re-deriving it
+informally on every decision.
+
+**Decision:** Adopt as the project's guiding principle: "Every new
+market, indicator, strategy, broker, or AI model should be added as an
+extension -- not require a rewrite of existing code." Whenever a design
+decision is unclear, the test is "does this make future extensions
+easier or harder?" If harder, redesign. This is numbered ADR-0000
+rather than becoming the new ADR-0001, since ADRs are append-only and
+never renumbered or edited retroactively (see this file's header) --
+0000 sits before 0001 to mark it as the premise the others were already
+following, not a rule invented after the fact.
+
+**Consequences:** Every ADR from 0001 onward can be read as an
+application of this principle, even though most of them predate its
+number. Going forward, any proposed design that fails the "easier or
+harder" test should be flagged and reworked before being accepted --
+the same way ADR-0003 (rejecting a duplicate `MarketDataService`) and
+ADR-0008 (the CacheManager split done immediately rather than deferred)
+already were, before this principle had a name.
+
 ---
 
 ## ADR-0001: Organize `src/` by capability, not by strategy
@@ -433,3 +472,52 @@ a `git diff` the way a JSON file would be, and inspecting an experiment
 outside Python means opening it with a SQLite client rather than just
 reading a file. `Experiment.summary()` exists specifically to give a
 human-readable view without needing that.
+
+---
+
+## ADR-0013: `atp doctor` -- a registry-based system health check
+
+**Status:** Accepted -- pre-Sprint 3
+
+**Context:** Before starting Sprint 3, the project wanted a single
+command that answers "is everything actually working?" without having
+to guess which subsystem broke -- Python version, config, the live data
+provider, the on-disk cache, the experiments database, and (eventually)
+broker connectivity and API keys. Two of those last two don't exist
+yet: `src/broker/` is Sprint 5 scope, and the only data provider today
+(`yfinance`) needs no API key. A generic "Database" check was also
+proposed alongside "Experiments DB," but the project has exactly one
+database -- there's nothing separate to check.
+
+**Decision:** Build `src/cli/`, following the same registry pattern as
+`src/indicators/registry.py` (ADR-0000's extensibility test applied
+directly): each health check is a plain no-argument function returning
+a `CheckResult` (`src/cli/registry.py`), registered with
+`@register_check("Display Name")` in `src/cli/checks.py`. `atp doctor`
+(`src/cli/doctor.py`) runs every registered check and prints one line
+per check. Checks for capabilities that don't exist yet (Broker
+Connection, API Keys) report a third status, `NOT_IMPLEMENTED`, rather
+than being silently omitted or faked as passing -- the output is
+supposed to be an honest, complete list of everything the system will
+eventually need to be healthy. The proposed "Database" check was folded
+into "Experiments DB" since they'd check the identical thing.
+Implemented checks (Python Version, Configuration, Market Data, Cache,
+Experiments DB) hit the real filesystem/provider/database, not mocks --
+`Market Data` deliberately bypasses the cache (`use_cache=False`) so a
+cache hit can't mask a provider outage. Invoked today as `python -m
+src.cli doctor`, not a bare `atp` command; wiring a real global `atp`
+requires the console-script packaging tracked in ADR-0004, which is
+deliberately still deferred to pre-1.0.
+
+**Consequences:** Adding a check for Broker Connection or API Keys once
+those capabilities exist in Sprint 5 means writing one function and
+decorating it -- `doctor.py` doesn't change. A failing check reports
+which subsystem broke and why (e.g. "Market Data ✗ (vendor
+unreachable)") instead of a stack trace three layers deep in whatever
+was using it. `atp doctor` exits 1 if anything failed and 0 otherwise
+(NOT_IMPLEMENTED checks don't block a healthy exit code), so it's
+scriptable in CI once ADR's "no CI yet" gap (tracked in `ROADMAP.md`)
+is closed. Cost: this is one more thing to keep in sync -- a new
+capability that should be health-checkable (e.g. a second data
+provider) needs its own check written deliberately, it doesn't happen
+automatically.

@@ -27,6 +27,7 @@ graph TD
     analytics[analytics: not yet built]
     ai[ai: not yet built]
     dashboard[dashboard: not yet built]
+    cli[cli: atp doctor]
 
     config --> data
     utils --> data
@@ -42,7 +43,15 @@ graph TD
     strategies --> analytics
     data --> dashboard
     ai --> strategies
+    config --> cli
+    data --> cli
+    utils --> cli
+    experiments --> cli
 ```
+
+`cli` is drawn separately from the main pipeline on purpose: it's a
+diagnostic tool that reaches into several capabilities to check their
+health, not a capability anything else depends on.
 
 `utils` sits alongside `config` as foundational: `CacheManager` is
 generic key/DataFrame persistence with no idea what a "candle" or
@@ -265,6 +274,40 @@ ADR-0009, ADR-0012).
   `metrics_before`/`metrics_after`. Does not run backtests itself.
 - **Depends on:** nothing else in `src/` -- like `src/utils`, it's
   reusable infrastructure, not owned by backtesting specifically.
+
+### `src/cli`
+
+**Purpose:** `atp doctor` -- a full system health check, so a failure
+six months from now names which subsystem broke instead of requiring a
+guess. See `DECISIONS.md`, ADR-0013.
+
+- **Inputs:** none from the caller -- run as `python -m src.cli doctor`.
+- **Outputs:** one printed line per registered check (`✓`/`✗`/`—`) plus
+  a summary line, and a process exit code (`0` healthy, `1` if anything
+  failed).
+- **Key files:**
+  - `registry.py` -- `@register_check("Name")` decorator and
+    `registered_checks()` lookup, the same pattern as
+    `src/indicators/registry.py`. `CheckResult` carries a `CheckStatus`
+    of `OK`, `FAIL`, or `NOT_IMPLEMENTED`.
+  - `checks.py` -- the individual checks: Python Version, Configuration,
+    Market Data (a real, cache-bypassing fetch -- a cache hit shouldn't
+    be able to hide a dead provider), Cache (round-trips a throwaway
+    key through the real cache directory), Experiments DB (opens the
+    real SQLite file and queries it). Broker Connection and API Keys
+    report `NOT_IMPLEMENTED` -- `src/broker` doesn't exist yet
+    (Sprint 5) and the current provider needs no key -- rather than
+    being omitted or faked as passing.
+  - `doctor.py` -- runs every registered check, formats the report,
+    computes the exit code. A check that raises is treated as that
+    check failing, not as `atp doctor` crashing.
+  - `__main__.py` -- command dispatch (`python -m src.cli <command>`).
+- **Does not:** wire up a real global `atp` shell command yet -- that
+  needs the packaging work tracked in `DECISIONS.md` ADR-0004, still
+  deferred to pre-1.0. Does not attempt to fix anything it finds broken.
+- **Depends on:** `src/config`, `src/data`, `src/utils`, `src/experiments`
+  -- it reaches into each capability's public API to check it, the same
+  way any other consumer would.
 
 ### `src/broker`, `src/execution`, `src/risk`, `src/analytics`, `src/ai`, `src/dashboard`
 

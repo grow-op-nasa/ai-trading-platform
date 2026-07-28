@@ -3,7 +3,43 @@
 All notable changes to this project are documented here, grouped by
 sprint. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## Sprint 2 (in progress) -- 2026-07-21
+## Pre-Sprint 3 -- 2026-07-28
+
+### Added
+
+- `src/cli/` -- `atp doctor`, a full system health check (see
+  `DECISIONS.md`, ADR-0013):
+  - `registry.py` -- `@register_check` decorator + lookup, the same
+    pattern as `src/indicators/registry.py`.
+  - `checks.py` -- Python Version, Configuration, Market Data (a real,
+    cache-bypassing fetch), Cache (round-trips a throwaway key through
+    the real cache dir), Experiments DB (queries the real SQLite file).
+    Broker Connection and API Keys report `NOT_IMPLEMENTED` rather than
+    being omitted or faked as passing, since `src/broker` doesn't exist
+    yet and the current provider needs no key.
+  - `doctor.py` -- runs every registered check, prints the report,
+    computes the exit code (`0` healthy, `1` on any failure).
+  - `__main__.py` -- `python -m src.cli doctor`.
+- `tests/test_cli_doctor.py` -- 26 tests: registry behavior, every
+  check in isolation (network/cache/DB faked out so the suite stays
+  network-free), doctor report formatting for all-pass/some-failed/
+  some-not-implemented, and command dispatch.
+- `DECISIONS.md`, ADR-0000 -- the project's architectural north star,
+  stated explicitly for the first time: "every new market, indicator,
+  strategy, broker, or AI model should be added as an extension -- not
+  require a rewrite of existing code." Numbered 0000, not 0001, since
+  ADRs are append-only and 0001 (capability-based `src/`) already
+  existed; 0000 marks it as the premise the others were already
+  following.
+
+### Verified
+
+- Full suite confirmed on the real dev machine: `pytest` -> **93
+  passed** (67 prior + 26 for `atp doctor`). `python -m src.cli doctor`
+  run for real: all five implemented checks pass, Broker Connection and
+  API Keys correctly report not-yet-implemented, exit code 0.
+
+## Sprint 2 (closed 2026-07-28) -- 2026-07-21
 
 ### Added
 

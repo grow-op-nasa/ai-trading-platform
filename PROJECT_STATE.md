@@ -1,8 +1,8 @@
 # Project State
 
-_Last updated: 2026-07-28 -- Sprint 2 (Indicator Engine, Market Regime
-Detection, Backtesting Framework, Experiment Registry) confirmed on the
-real dev machine: `pytest` -> 67 passed. Sprint 2 closed._
+_Last updated: 2026-07-28 -- `atp doctor` (system health check) added
+ahead of Sprint 3, confirmed on the real dev machine: `pytest` -> 93
+passed, `python -m src.cli doctor` -> Everything Healthy._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -52,13 +52,25 @@ For why things were built the way they were, see `DECISIONS.md`.
 - ✅ Sprint 2 (Research Engine) -- all four modules complete: Indicator
   Engine, Market Regime Detection, Backtesting Framework, Experiment
   Registry.
+- ✅ `DECISIONS.md`, ADR-0000 -- the project's architectural north star
+  made explicit: every new market, indicator, strategy, broker, or AI
+  model should be an extension, not a rewrite. "Does this make future
+  extensions easier or harder?" is now the standing test for any
+  unclear design decision.
+- ✅ `atp doctor` (`src/cli/`) -- a full system health check: Python
+  Version, Configuration, Market Data, Cache, and Experiments DB are
+  real, live checks; Broker Connection and API Keys report
+  `NOT_IMPLEMENTED` honestly rather than a faked pass. Run via `python
+  -m src.cli doctor`. See `DECISIONS.md`, ADR-0013.
 
 ## Current Module
 
-**Sprint 2 closed.** Indicator Engine, Market Regime Detection,
-Backtesting Framework, and Experiment Registry are all code-complete,
-tested, documented, and confirmed via real `pytest` on the dev machine
-(67 passed). No module currently in progress -- see "Next Task."
+**Sprint 2 closed; `atp doctor` built and confirmed ahead of Sprint 3.**
+Indicator Engine, Market Regime Detection, Backtesting Framework,
+Experiment Registry, and the health-check CLI are all code-complete,
+tested, documented, and confirmed on the real dev machine (93 tests
+passed; `atp doctor` reports Everything Healthy). No module currently
+in progress -- see "Next Task."
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2 or 3): no data validation beyond required-column
@@ -68,10 +80,11 @@ live yfinance API.
 
 ## Next Task
 
-Sprint 3: **Strategies** -- a first real strategy (e.g. moving average
-crossover) implementing the `Strategy` protocol from
-`src/strategies/base.py`, exercised through the Sprint 2 Backtester and
-logged via the Experiment Registry. See `ROADMAP.md`.
+Commit and push `atp doctor`. After that, Sprint 3: **Strategies** -- a
+first real strategy (e.g. moving average crossover) implementing the
+`Strategy` protocol from `src/strategies/base.py`, exercised through
+the Sprint 2 Backtester and logged via the Experiment Registry. See
+`ROADMAP.md`.
 
 ## Known Issues
 
@@ -94,8 +107,13 @@ logged via the Experiment Registry. See `ROADMAP.md`.
   data. Now that `src/indicators/` exists, worth measuring once Module 3
   (backtesting) is pulling years of data through it.
 - `loguru`'s default console format (timestamp + level + file:line) is
-  noisier than a human-facing CLI probably wants long-term; not worth
-  tuning yet since nothing consumes the console output programmatically.
+  noisier than a human-facing CLI probably wants long-term. This is no
+  longer purely hypothetical: `atp doctor`'s Market Data and Cache
+  checks now interleave DEBUG log lines with the health report itself
+  (visible in a real run). Not fixed yet -- candidates are quieting the
+  console sink during `atp doctor` specifically, or raising its default
+  level -- but it's now a real, user-visible rough edge, not just a
+  someday concern.
 - No CI (GitHub Actions or similar) running the test suite on push yet.
 - Package layout (`src/` vs. `src/ai_trading_platform/`) and flat
   config constants vs. a typed `Settings` object -- both deferred to
@@ -104,7 +122,9 @@ logged via the Experiment Registry. See `ROADMAP.md`.
 ## How to verify this file is accurate
 
 ```bash
-pytest                 # should show 67 passed (7 config + 15 market data + 6 cache
-                       # + 11 indicators + 10 regime + 8 backtesting + 10 experiments)
-python src/main.py     # should log startup + watchlist
+pytest                    # should show 93 passed (7 config + 15 market data + 6 cache
+                          # + 11 indicators + 10 regime + 8 backtesting + 10 experiments
+                          # + 26 cli/doctor)
+python src/main.py        # should log startup + watchlist
+python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
 ```

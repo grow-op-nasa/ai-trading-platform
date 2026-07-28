@@ -79,6 +79,15 @@ what was learned -- so that infrastructure comes first. See
 All four modules confirmed via real `pytest` on the dev machine (67
 passed). Sprint 2 is closed.
 
+## Pre-Sprint 3 -- System health check ✅ Complete
+
+`atp doctor` (`src/cli/`, `DECISIONS.md` ADR-0013): Python Version,
+Configuration, Market Data, Cache, Experiments DB are real checks;
+Broker Connection and API Keys report `NOT_IMPLEMENTED` until Sprint 5
+and a keyed provider exist, respectively. Run today as `python -m
+src.cli doctor`; a bare `atp` command depends on the packaging work in
+ADR-0004.
+
 ## Sprint 3 -- Strategies (planned)
 
 - The `Strategy` protocol (`src/strategies/base.py`) already exists,
@@ -122,6 +131,7 @@ passed). Sprint 2 is closed.
 
 ## Ongoing, not sprint-scoped
 
-- CI running `pytest` on every push (not set up yet).
+- CI running `pytest` (and `python -m src.cli doctor`, now that it
+  exists and returns a real exit code) on every push -- not set up yet.
 - Documentation set (`PROJECT_STATE.md`, `ARCHITECTURE.md`,
   `CHANGELOG.md`, `DECISIONS.md`, `ROADMAP.md`) updated every sprint.

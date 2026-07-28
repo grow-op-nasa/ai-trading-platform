@@ -15,28 +15,79 @@ Market Data Service v1.
 - ✅ Config layer (`src/config`)
 - ✅ Application entrypoint (`src/main.py`)
 - ✅ Period-based fetching (`MarketDataService.get_history`)
-- ⬜ Incremental/append-based caching (currently whole-range CSV cache)
+- ⬜ Data validation layer -- timezone consistency, duplicate/missing
+  timestamps, negative prices, zero volume, sorted index (`DECISIONS.md`,
+  ADR-0006)
+- ⬜ Incremental cache fetch -- fetch only missing candles, merge,
+  validate, save, instead of whole-range refetch on any cache-key miss
+  (`DECISIONS.md`, ADR-0007; supersedes the caching mechanics in ADR-0002)
 - ⬜ Integration test suite against the live yfinance API (separate
   from the network-free unit suite)
 
-## Sprint 2 -- Indicators (planned)
+## Before v1.0 -- Packaging & Configuration hardening (planned)
 
-- `src/indicators/`: moving averages (SMA/EMA), RSI, MACD, Bollinger
-  Bands -- each a pure function of a candles DataFrame in, a Series/
-  DataFrame of indicator values out. No side effects, no I/O.
-- Indicators should compose: an indicator built from indicators (e.g.
-  MACD from two EMAs) should be able to call the other indicator
-  functions directly.
+Two structural improvements, deliberately deferred rather than done
+mid-sprint, since both touch nearly every import statement in the
+codebase and are cheaper to do as one dedicated pass than interleaved
+with feature work. Full rationale in `DECISIONS.md`.
+
+- **Standard package layout** (ADR-0004): rename `src/` to
+  `src/ai_trading_platform/`, add real packaging metadata to
+  `pyproject.toml`, install editable (`pip install -e .`). Resolves the
+  existing dual import-convention wart (`config.x` in `main.py` vs.
+  `src.config.x` everywhere else).
+- **Typed `Settings` object** (ADR-0005): replace the flat constants in
+  `src/config/settings.py` with a validated settings object
+  (`settings.watchlist` instead of importing `WATCHLIST` by name),
+  enabling environment-specific config (development / paper trading /
+  live trading) and fail-fast validation.
+
+Best sequenced together, since both land in the same files.
+
+## Sprint 2 -- Research Engine ✅ Complete
+
+Pivoted from a narrow "build indicators" sprint into a broader
+quantitative research framework, on the reasoning that strategies are
+cheap to write once there's infrastructure to compute indicators
+uniformly, classify the market regime, backtest objectively, and record
+what was learned -- so that infrastructure comes first. See
+`DECISIONS.md`, ADR-0009.
+
+- ✅ **Module 1 -- Indicator Engine** (`src/indicators/`): the only place
+  indicators are calculated. `IndicatorEngine(candles).calculate("RSI",
+  period=14)`. New indicators register themselves; no strategy computes
+  an indicator itself. SMA, EMA, RSI, ATR, MACD, VWAP registered.
+- ✅ **Module 2 -- Market Regime Detection** (`src/regime/`): continuous
+  `[0, 1]` scoring across all six regimes (Trending / Ranging /
+  Volatile / Low Volatility / Risk-On / Risk-Off), built on top of the
+  Indicator Engine -- not AI. Trend and volatility scoring implemented;
+  risk_on/risk_off return `NaN` until a VIX/macro data source exists
+  (`DECISIONS.md`, ADR-0010).
+- ✅ **Module 3 -- Backtesting Framework** (`src/backtesting/`,
+  `src/strategies/`): `Backtester.run()` against any strategy
+  conforming to the `Strategy` protocol (`src/strategies/base.py`) --
+  collects trades, computes an equity curve, calculates metrics
+  (Sharpe, max drawdown, win rate), generates a report. Deliberately
+  simplified execution model; realistic execution deferred to Sprint 4
+  (`DECISIONS.md`, ADR-0011).
+- ✅ **Module 4 -- Experiment Registry** (`src/experiments/`): every
+  backtest run (what changed, what result, what decision) becomes a
+  permanent, queryable record -- e.g. "changed RSI period 14 -> 10,
+  Sharpe 1.31 -> 1.42, win rate 56% -> 59%, decision: KEEP." SQLite-
+  backed (`DECISIONS.md`, ADR-0012).
+
+All four modules confirmed via real `pytest` on the dev machine (67
+passed). Sprint 2 is closed.
 
 ## Sprint 3 -- Strategies (planned)
 
-- `src/strategies/`: a strategy interface that takes candles +
-  indicator values and produces a signal (buy/sell/hold, or a target
-  position). First strategy is intentionally simple (e.g. moving
-  average crossover) to validate the interface before anything
-  sophisticated is built on top of it.
-- Backtesting harness (likely via `vectorbt`, already installed)
-  wired to `MarketDataService` and `src/strategies`.
+- The `Strategy` protocol (`src/strategies/base.py`) already exists,
+  built in Sprint 2 alongside the Backtester. Sprint 3 is the first
+  real implementation of it: a concrete strategy (e.g. moving average
+  crossover) that takes candles + indicator values (via the Indicator
+  Engine, not computed inline) and produces a signal. Run through the
+  Sprint 2 Backtester, logged via the Experiment Registry -- the first
+  end-to-end use of the whole research engine.
 
 ## Sprint 4 -- Risk & Execution (planned)
 

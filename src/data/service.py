@@ -22,11 +22,11 @@ from pathlib import Path
 
 import pandas as pd
 from dateutil.relativedelta import relativedelta
-from loguru import logger
 
 from src.config.settings import DEFAULT_INTERVAL, DEFAULT_PERIOD
 from src.data.base import DataProvider, Interval
 from src.data.yfinance_provider import YFinanceProvider
+from src.utils.cache import CacheManager
 
 DEFAULT_LOOKBACK_DAYS = 365
 DEFAULT_CACHE_DIR = Path("data/cache")
@@ -65,11 +65,21 @@ def period_to_start(period: str, end: date) -> date:
 class MarketDataService:
     """The single entry point for historical candle data.
 
+    Fetching and caching are deliberately separate responsibilities:
+    this class decides *when* to use the cache and *what* to fetch when
+    it doesn't have data; `CacheManager` (`src/utils/cache.py`) only
+    knows how to read/write a DataFrame under a string key and has no
+    idea what a "symbol" or "interval" is. See `DECISIONS.md`, ADR-0008.
+
     Args:
         provider: the DataProvider to use. Defaults to Yahoo Finance.
         cache_dir: directory for on-disk caching. Defaults to data/cache.
-        use_cache: whether to read/write the on-disk cache by default.
-            Can be overridden per-call via `get_candles(..., use_cache=...)`.
+            Ignored if `cache` is provided.
+        use_cache: whether to read/write the cache by default. Can be
+            overridden per-call via `get_candles(..., use_cache=...)`.
+        cache: an explicit CacheManager to use instead of constructing
+            one from `cache_dir`. Mainly useful for tests or for sharing
+            one CacheManager instance across services.
     """
 
     def __init__(
@@ -77,9 +87,10 @@ class MarketDataService:
         provider: DataProvider | None = None,
         cache_dir: Path | str | None = None,
         use_cache: bool = True,
+        cache: CacheManager | None = None,
     ) -> None:
         self._provider = provider or YFinanceProvider()
-        self._cache_dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
+        self._cache = cache or CacheManager(cache_dir or DEFAULT_CACHE_DIR)
         self._use_cache = use_cache
 
     def get_candles(
@@ -117,16 +128,17 @@ class MarketDataService:
             raise ValueError(f"start ({start}) must not be after end ({end})")
 
         should_use_cache = self._use_cache if use_cache is None else use_cache
-        cache_path = self._cache_path(symbol, start, end, interval)
+        cache_key = self._cache_key(symbol, start, end, interval)
 
-        if should_use_cache and cache_path.exists():
-            logger.debug("Cache hit: {}", cache_path)
-            return pd.read_csv(cache_path, index_col="timestamp", parse_dates=True)
+        if should_use_cache:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         candles = self._provider.fetch_candles(symbol, start, end, interval)
 
         if should_use_cache:
-            self._write_cache(candles, cache_path)
+            self._cache.set(cache_key, candles)
 
         return candles
 
@@ -175,15 +187,5 @@ class MarketDataService:
             raise ValueError("symbol must be a non-empty string")
         return symbol
 
-    def _cache_path(self, symbol: str, start: date, end: date, interval: Interval) -> Path:
-        filename = f"{symbol}_{interval.value}_{start.isoformat()}_{end.isoformat()}.csv"
-        return self._cache_dir / filename
-
-    def _write_cache(self, candles: pd.DataFrame, cache_path: Path) -> None:
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            candles.to_csv(cache_path)
-        except OSError as exc:
-            # Caching is a convenience, not a correctness requirement.
-            # A failure to write the cache should never fail the request.
-            logger.warning("Could not write cache file {}: {}", cache_path, exc)
+    def _cache_key(self, symbol: str, start: date, end: date, interval: Interval) -> str:
+        return f"{symbol}_{interval.value}_{start.isoformat()}_{end.isoformat()}"

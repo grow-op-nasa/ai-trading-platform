@@ -32,8 +32,12 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID
+
+import pandas as pd
 
 from src.experiments.models import Experiment
+from src.signals.models import Signal, SignalDirection
 
 DEFAULT_DB_PATH = Path("data/experiments.db")
 
@@ -52,6 +56,21 @@ CREATE TABLE IF NOT EXISTS experiments (
 )
 """
 
+# Signals are stored as first-class rows here, not in a separate
+# repository (DECISIONS.md, ADR-0016) -- one experiment's signals are
+# looked up by `experiment_id`, one signal by its own `id` (a UUID,
+# assigned client-side by `Signal` itself, not by this table).
+_SIGNALS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS signals (
+    id TEXT PRIMARY KEY,
+    experiment_id INTEGER NOT NULL,
+    timestamp TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}'
+)
+"""
+
 
 class ExperimentRegistry:
     """SQLite-backed store of experiment records.
@@ -66,6 +85,7 @@ class ExperimentRegistry:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute(_SCHEMA)
+            conn.execute(_SIGNALS_SCHEMA)
 
     def log_experiment(
         self,
@@ -140,10 +160,63 @@ class ExperimentRegistry:
             row = conn.execute("SELECT COUNT(*) AS n FROM experiments").fetchone()
         return int(row["n"])
 
+    def save_signals(self, experiment_id: int, signals: list[Signal]) -> None:
+        """Persist `signals` as belonging to `experiment_id`.
+
+        Deliberately separate from `log_experiment()` rather than a new
+        parameter on it -- keeps `log_experiment()`'s existing signature
+        (and every test against it) untouched. Call this after
+        `log_experiment()` returns the id it should attach to.
+        """
+        with self._connect() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO signals "
+                "(id, experiment_id, timestamp, direction, confidence, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        str(signal.id),
+                        experiment_id,
+                        signal.timestamp.isoformat(),
+                        signal.direction.value,
+                        signal.confidence,
+                        json.dumps(signal.metadata),
+                    )
+                    for signal in signals
+                ],
+            )
+
+    def get_signals(self, experiment_id: int) -> list[Signal]:
+        """All signals saved under `experiment_id`, ordered by timestamp."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM signals WHERE experiment_id = ? ORDER BY timestamp",
+                (experiment_id,),
+            ).fetchall()
+        return [_row_to_signal(r) for r in rows]
+
+    def get_signal(self, signal_id: UUID) -> Signal | None:
+        """Fetch one signal by id, or None if it doesn't exist."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM signals WHERE id = ?", (str(signal_id),)
+            ).fetchone()
+        return _row_to_signal(row) if row is not None else None
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+
+def _row_to_signal(row: sqlite3.Row) -> Signal:
+    return Signal(
+        id=UUID(row["id"]),
+        timestamp=pd.Timestamp(row["timestamp"]),
+        direction=SignalDirection(row["direction"]),
+        confidence=row["confidence"],
+        metadata=json.loads(row["metadata"]),
+    )
 
 
 def _row_to_experiment(row: sqlite3.Row) -> Experiment:

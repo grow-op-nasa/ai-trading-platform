@@ -1,10 +1,12 @@
 """Trading strategies.
 
-No concrete strategy exists yet (that's Sprint 3) -- but the interface
-every strategy must satisfy is defined now, in `base.py`, since the
-Sprint 2 Backtesting Framework needs something real to run against.
+No concrete strategy exists yet (Sprint 3's first strategy is
+deliberately simple -- see `ROADMAP.md`) -- but the interface every
+strategy must satisfy is defined now, in `base.py`. As of ADR-0015,
+strategies speak in `Signal` objects (`src/signals/`), not raw
+DataFrame columns.
 """
 
-from src.strategies.base import SIGNAL_COLUMN, Strategy
+from src.strategies.base import Strategy
 
-__all__ = ["Strategy", "SIGNAL_COLUMN"]
+__all__ = ["Strategy"]

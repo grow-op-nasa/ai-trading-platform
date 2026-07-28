@@ -11,6 +11,15 @@ require a rewrite of existing code. When a design decision is unclear,
 the test is "does this make future extensions easier or harder?" If
 harder, redesign.
 
+**Second standing principle (ADR-0017):** every component produces
+knowledge for the next component, not a finished decision on its
+behalf -- data produces data, indicators produce features, strategies
+produce signals, backtesting produces evidence, experiments produce a
+record, AI produces a recommendation. When a design decision is
+unclear, also ask: does this component's output stay knowledge the
+next layer can use on its own terms, or does it sneak in a decision
+that belongs downstream?
+
 ---
 
 ## ADR-0000: Extensibility is the architectural north star
@@ -521,3 +530,195 @@ is closed. Cost: this is one more thing to keep in sync -- a new
 capability that should be health-checkable (e.g. a second data
 provider) needs its own check written deliberately, it doesn't happen
 automatically.
+
+---
+
+## ADR-0014: Extension Cost as a standing awareness metric
+
+**Status:** Accepted -- pre-Sprint 3
+
+**Context:** ADR-0000 states extensibility as the project's north star
+-- "does this make future extensions easier or harder?" -- but that
+test is a judgment call with nothing concrete behind it. Without some
+habit of measurement, "the architecture stays extensible" is easy to
+believe and hard to verify, especially six months from now when it's
+tempting to just make the next addition work however is fastest.
+
+**Decision:** Adopt **Extension Cost** -- the count of *existing* files
+modified (not created) to add one new indicator, strategy, broker, or
+data vendor -- as a permanent habit, not a pass/fail gate. There is no
+target number to hit per capability, and no threshold that makes a
+given addition "fail." The point is staying aware of the number every
+time, and using judgment on what it implies: a couple of existing files
+touched to wire in something new is normal and expected; needing to
+touch a large fraction of the codebase is the actual signal --
+concretely, if adding one feature means editing something like half the
+project's files, that's a sign the architecture has been violated
+somewhere, whether or not any single number was "supposed" to be zero.
+
+Process: the `CHANGELOG.md` entry for a new indicator, strategy,
+broker, or data vendor includes a line -- `Extension Cost: N file(s)
+changed: <list>`. If that number looks disproportionate for what was
+added, it gets flagged and discussed in the same entry (why, and
+whether it's one-time or a recurring pattern) rather than absorbed
+silently -- the same discipline already applied to architectural
+conflicts (ADR-0003). A new tradable *symbol* (e.g. adding "TSLA" to
+the watchlist) isn't tracked under this metric -- that's a config data
+change, not a code extension.
+
+**Consequences:** Keeps ADR-0000 grounded in an honest, running record
+instead of relying on memory or a vague sense that things are fine,
+without pretending a single integer can fully capture "extensible."
+Applying it once already surfaced something worth knowing, not fixing:
+today, using a second data vendor means changing whatever call site
+constructs `MarketDataService(provider=...)` (e.g. `src/main.py`) --
+a small, one-file cost, and a reasonable one given there's no
+provider-selection factory yet. That's exactly the kind of observation
+this metric is for -- noticing it, not necessarily reacting to it. If a
+provider-selection factory is ever built (it would naturally fit
+alongside ADR-0005's typed `Settings` object, already deferred to
+pre-1.0), that cost could drop further, but nothing here requires that
+work to happen. No capability has a measured Extension Cost yet, since
+nothing has been added incrementally to these seams so far -- the
+first real strategy in Sprint 3 will be the first live data point.
+
+---
+
+## ADR-0015: The Signal Framework -- supersedes ADR-0011
+
+**Status:** Accepted -- Sprint 3
+
+**Context:** Sprint 3's theme is "The Research Layer": given historical
+data, what opportunity exists, how confident are we, and what evidence
+supports it. ADR-0011 (Sprint 2) had strategies return a dense
+DataFrame with a `signal` column (-1/0/1) so the Backtesting Framework
+had something concrete to run against before any real strategy existed.
+That was always a placeholder pending a real contract -- Sprint 3 is
+that contract. Three things needed settling: what a `Signal` actually
+contains, whether a strategy emits one per candle or only at decision
+points, and whether it carries a price.
+
+**Decision:** `Signal` (`src/signals/models.py`) is a frozen dataclass:
+`timestamp`, `direction` (`SignalDirection`: `LONG` / `SHORT` / `FLAT`),
+`confidence` (0.0-1.0, validated), `metadata` (free-form dict), and
+`id` (a `UUID`, assigned client-side at construction via `uuid4()`, not
+by a database on insert -- see ADR-0016 for why that matters). No
+`price` field: a Signal answers "what position should the portfolio
+move toward," not "at what price" -- that's execution's job
+(`src/execution`, not built yet), and folding it in would smuggle
+order-level thinking back into what's supposed to be a pure decision.
+Strategies emit signals sparsely -- one per decision point (e.g. the
+moment EMA20 crosses EMA50), not one per candle -- since metadata like
+`"reason": "EMA20 crossed EMA50"` is only true at the moment it
+happens; repeating it on every unchanged bar would be misleading.
+`Strategy.generate_signals(data) -> list[Signal]` replaces the old
+DataFrame/`SIGNAL_COLUMN` contract entirely. The Backtester
+(`src/backtesting/engine.py`) holds each signal's direction from its
+own bar forward until the next signal supersedes it (unshifted
+position), then applies the existing ADR-0011 no-lookahead shift once,
+in `_compute_equity_curve`, exactly as before -- only the *source* of
+the position series changed, from a dense column to a sparse signal
+list. A `Trade` now falls directly out of two consecutive signals (the
+one that opened it, the one that changed or flattened it) rather than
+being inferred by diffing a dense column.
+
+**Consequences:** `src/strategies/base.py`, `src/backtesting/engine.py`,
+`src/backtesting/models.py`, and `tests/test_backtesting.py` all
+changed as part of this ADR -- this is a supersession of Sprint 2 work,
+not a pure addition, and was flagged as such before implementation
+started. `SIGNAL_COLUMN` and the -1/0/1 DataFrame convention no longer
+exist. Every future strategy (Sprint 3's first real one, and everything
+after) speaks this contract from day one -- the Extension Cost
+(ADR-0014) of adding a new strategy should now be close to 0 existing
+files, same as before, but the shape of what gets added has changed
+from "a DataFrame column" to "a list of typed decisions with evidence
+attached," which is what Performance Attribution and the AI Research
+Reporter (later Sprint 3 modules) actually need to do their jobs.
+
+---
+
+## ADR-0016: Signals are stored as first-class rows in the Experiment Registry
+
+**Status:** Accepted -- Sprint 3
+
+**Context:** ADR-0015 introduced `Signal.id` (a `UUID`) so a `Trade`
+can reference the signals that opened and closed it
+(`entry_signal_id` / `exit_signal_id`) without embedding the full
+`Signal` object -- a `Trade` stays small and storable, and whoever
+needs the full evidence behind a trade (Performance Attribution, the
+AI Research Reporter) looks it up separately. That raised the question
+ADR-0012 (Experiment Registry) didn't need to answer at the time:
+where do the actual `Signal` objects live? Two options were
+considered: a new, dedicated `SignalRepository` (mirroring why
+`CacheManager` was split out of `MarketDataService`, ADR-0008), or
+storing signals directly in the existing `ExperimentRegistry`.
+
+**Decision:** Store signals as first-class rows inside
+`ExperimentRegistry` (`src/experiments/registry.py`), not a separate
+repository. A new `signals` table (`id`, `experiment_id`, `timestamp`,
+`direction`, `confidence`, `metadata`), with `save_signals(experiment_id,
+signals)`, `get_signals(experiment_id)`, and `get_signal(signal_id)`.
+Deliberately added as new methods rather than a new parameter on
+`log_experiment()`, so that method's existing signature -- and every
+test written against it -- is untouched. This narrows ADR-0012's
+"does not know about `BacktestResult`/`Trade`" boundary slightly:
+`ExperimentRegistry` now imports `src.signals.models.Signal`, though
+still nothing from `src.backtesting`. Signal is treated as a
+lower-level, foundational concept (Sprint 3's Module 1) that experiments
+(a higher layer) can depend on, the same way `src/backtesting` already
+depends on `src/strategies`.
+
+**Consequences:** One SQLite file, one registry class, no new module
+to build, test, and maintain -- lower Extension Cost (ADR-0014) today.
+The tradeoff, made deliberately rather than by default: signal-keeping
+and experiment-keeping are now coupled in one class with two
+responsibilities, and if a future capability (live paper trading, a
+dashboard) wants to read signal history independently of any specific
+experiment, it goes through `ExperimentRegistry` to do it. If that
+coupling becomes a real cost later, a `SignalRepository` extraction
+would follow the exact precedent ADR-0008 already set -- this ADR
+doesn't foreclose that, it just says now isn't that time.
+
+---
+
+## ADR-0017: Every component produces knowledge for the next component
+
+**Status:** Accepted -- Sprint 3
+
+**Context:** Sprint 3 ("The Research Layer") stacks four new modules
+-- Signal Framework, Strategy SDK, Performance Attribution, AI Research
+Reporter -- on top of Sprint 2's research engine. With that many
+layers, it's easy for a shortcut in one layer (e.g. a strategy peeking
+at execution details, or attribution reaching back into raw indicator
+math) to quietly recreate the tight coupling ADR-0001's capability-based
+organization was meant to prevent in the first place. ADR-0000 already
+established extensibility as the north star for *adding* new instances
+of a capability; this is the complementary principle for what each
+*layer* is allowed to hand to the next one.
+
+**Decision:** Adopt as a second standing engineering principle: every
+component produces knowledge for the next component, not a finished
+decision on the next component's behalf. Concretely, in this
+architecture: Market Data doesn't produce trades, it produces clean
+data. Indicators don't produce profits, they produce features. Regime
+detection doesn't produce trades, it produces context. Strategies don't
+produce orders, they produce signals (this is exactly why ADR-0015 gave
+`Signal` no `price` field). Backtesting doesn't produce trades as an
+end in themselves, it produces evidence -- metrics, attribution, a
+record of what happened. Experiments don't produce conclusions, they
+produce a permanent, queryable record of what was tried. The AI
+Research Reporter (Sprint 3, Module 4) doesn't produce trading
+decisions, it produces a research recommendation for a person to weigh.
+When designing any new module, the test is: does this component's
+output stay knowledge the next layer can use on its own terms, or does
+it sneak in a decision that belongs to a layer further downstream?
+
+**Consequences:** Each layer stays independently testable and
+independently replaceable -- a strategy can be swapped, a backtester's
+execution model can be made more realistic, an attribution method can
+change, all without the other layers needing to know. Cost: this
+sometimes means a layer produces something less immediately "useful"
+on its own (a `Signal` with no price can't be handed straight to a
+broker) in exchange for staying honest about which layer actually owns
+that decision. Alongside ADR-0000 (extensibility), this is now the
+second standing test applied when a design decision is unclear.

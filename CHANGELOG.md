@@ -3,6 +3,88 @@
 All notable changes to this project are documented here, grouped by
 sprint. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+**Extension Cost convention (see `DECISIONS.md`, ADR-0014):** any entry
+that adds a new indicator, strategy, broker, or data vendor includes an
+`Extension Cost: N file(s) changed: <list>` line. This isn't a target
+to hit -- it's a running record so we stay aware of how many existing
+files a new feature actually touches. A couple of files is normal;
+touching a large share of the codebase for one addition is the real
+warning sign that the architecture's been violated.
+
+## Sprint 3 (in progress) -- 2026-07-28
+
+### Added
+
+- `src/signals/` -- the Signal Framework, Sprint 3 Module 1 and one of
+  the platform's foundational contracts (see `DECISIONS.md`, ADR-0015,
+  supersedes ADR-0011):
+  - `models.py` -- `Signal` (frozen dataclass: `timestamp`, `direction`,
+    `confidence` validated to `[0.0, 1.0]`, `metadata`, `id: UUID`
+    assigned client-side) and `SignalDirection` (`LONG`/`SHORT`/`FLAT`).
+    No `price` field, deliberately -- a Signal is a decision, not a
+    market event or an order.
+- `tests/test_signals.py` -- 10 tests: confidence validation at and
+  past both boundaries, immutability, id uniqueness/reconstruction,
+  metadata defaults, confirming no `price` attribute exists.
+- `src/strategies/base.py` -- `Strategy.generate_signals()` now returns
+  `list[Signal]` (sparse -- one per decision point, not one per
+  candle), replacing the `SIGNAL_COLUMN`/DataFrame contract entirely.
+- `src/backtesting/models.py` -- `Trade` now references `entry_signal_id`
+  / `exit_signal_id: UUID | None` instead of embedding `Signal` objects.
+  `BacktestResult` gained a `signals: list[Signal]` field.
+- `src/backtesting/engine.py` -- rewritten to consume a sparse
+  `list[Signal]`: holds each signal's direction from its own bar
+  forward until the next signal, then applies ADR-0011's no-lookahead
+  shift once when computing the equity curve. A `Trade` now falls
+  directly out of two consecutive signals rather than being inferred
+  by diffing a dense column. `Backtester.run()` raises `ValueError` if
+  `generate_signals()` doesn't return a `list[Signal]`.
+- `src/experiments/registry.py` -- new `signals` table plus
+  `save_signals(experiment_id, signals)`, `get_signals(experiment_id)`,
+  `get_signal(signal_id)` (see `DECISIONS.md`, ADR-0016: signals are
+  stored here, not in a separate repository). Added as new methods,
+  not a new parameter on `log_experiment()` -- its signature and every
+  existing test against it are unchanged.
+- `tests/test_backtesting.py` -- rewritten for the new contract: 11
+  tests covering signal-id linkage on both sides of a trade, redundant
+  same-direction signals not splitting a trade, a signal referencing a
+  timestamp outside the backtest's candles being skipped rather than
+  crashing, and the existing no-lookahead/metrics/report coverage
+  carried forward.
+- `tests/test_experiments.py` -- 6 new tests for signal storage
+  (round-trip, ordering by timestamp, isolation between experiments,
+  direct lookup by id, persistence across reconnects); all 10 original
+  tests unchanged.
+
+### Decided
+
+- Standardized `Signal` as `timestamp`/`direction`/`confidence`/
+  `metadata`/`id`, with `SignalDirection` = `LONG`/`SHORT`/`FLAT` (not
+  `BUY`/`SELL`) and no `price` field -- a Signal answers "what position
+  should the portfolio move toward," not "at what price." See
+  `DECISIONS.md`, ADR-0015.
+- Signals are emitted sparsely (one per decision point) rather than
+  densely (one per candle), since per-signal metadata like "reason"
+  is only accurate at the moment a decision is made. See ADR-0015.
+- `Trade` references signals by `UUID` rather than embedding them, and
+  the Experiment Registry -- not a new dedicated repository -- owns
+  actual `Signal` storage. See `DECISIONS.md`, ADR-0016.
+- This is a supersession of Sprint 2's ADR-0011, not a pure addition --
+  flagged explicitly before implementation started, since it touches
+  already-shipped, tested code (`src/strategies`, `src/backtesting`).
+- Adopted a second standing engineering principle alongside ADR-0000:
+  every component produces knowledge for the next component, not a
+  finished decision on its behalf (data -> features -> signals ->
+  evidence -> a record -> a recommendation). See `DECISIONS.md`,
+  ADR-0017.
+
+### Verified
+
+- Full suite confirmed on the real dev machine: `pytest` -> **112
+  passed** in 0.72s (11 backtesting + 6 cache + 26 cli/doctor + 7
+  config + 16 experiments + 11 indicators + 15 market data + 10 regime
+  + 10 signals). Signal Framework module complete.
+
 ## Pre-Sprint 3 -- 2026-07-28
 
 ### Added

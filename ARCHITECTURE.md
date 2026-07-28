@@ -18,9 +18,10 @@ graph TD
     data[data: MarketDataService]
     indicators[indicators: IndicatorEngine]
     regime[regime: MarketRegimeEngine]
+    signals[signals: Signal + SignalDirection]
     strategies[strategies: Strategy interface only]
     backtesting[backtesting: Backtester]
-    experiments[experiments: ExperimentRegistry]
+    experiments[experiments: ExperimentRegistry + Signal storage]
     risk[risk: not yet built]
     execution[execution: not yet built]
     broker[broker: not yet built]
@@ -35,8 +36,11 @@ graph TD
     indicators --> regime
     indicators --> strategies
     regime --> strategies
+    signals --> strategies
     strategies --> backtesting
+    signals --> backtesting
     backtesting --> experiments
+    signals --> experiments
     strategies --> risk
     risk --> execution
     execution --> broker
@@ -205,49 +209,82 @@ are we in right now." Part of the Sprint 2 research engine
   consumer. Does not know about strategies or backtesting.
 - **Depends on:** `src/indicators` (for `IndicatorEngine`).
 
+### `src/signals`
+
+**Purpose:** the Signal Framework -- one of the platform's foundational
+contracts (`DECISIONS.md`, ADR-0015). Standardizes what a strategy
+actually produces: not an order, not a market event, a decision.
+
+- **Inputs:** none -- `Signal` is a plain data model, constructed
+  directly by whatever produces one (a `Strategy`, today; possibly
+  other sources later).
+- **Outputs:** `Signal` (frozen dataclass: `timestamp`, `direction`,
+  `confidence`, `metadata`, `id`) and `SignalDirection` (`LONG` /
+  `SHORT` / `FLAT`).
+- **Key files:**
+  - `models.py` -- `Signal`, `SignalDirection`. `confidence` is
+    validated to `[0.0, 1.0]` at construction; `id` is a `UUID`
+    assigned client-side (`uuid4()`), not by a database, so a signal
+    can be referenced before it's ever persisted.
+- **Does not:** carry a price -- a Signal says what position the
+  portfolio should move toward, not at what price to transact (that's
+  execution's job, later). Does not know it will eventually be stored
+  in `ExperimentRegistry` (ADR-0016) -- persistence is that module's
+  concern, not this one's.
+- **Depends on:** nothing else in `src/` -- like `src/utils`, it's
+  foundational infrastructure other capabilities build on.
+
 ### `src/strategies`
 
 **Purpose:** the seam strategies plug into. No concrete strategy exists
-yet (that's Sprint 3) -- only the interface, defined now because
-Module 3 (Backtesting Framework) needs something real to run against.
+yet -- Sprint 3's first is deliberately simple (an EMA-cross or
+opening-range-breakout, chosen for how easy it is to reason about, not
+for profitability) -- only the interface is defined here.
 
-- **Inputs/outputs:** see `DECISIONS.md`, ADR-0011 for the full
-  `Strategy` contract.
+- **Inputs/outputs:** see `DECISIONS.md`, ADR-0015 for the full
+  `Strategy` contract (supersedes ADR-0011).
 - **Key files:**
   - `base.py` -- `Strategy` (a `typing.Protocol`: `name`, `prepare()`,
-    `generate_signals()`) and `SIGNAL_COLUMN`.
+    `generate_signals() -> list[Signal]`).
 - **Does not:** contain any concrete strategy yet. Does not compute
   indicators or regimes itself -- a conforming strategy's `prepare()`
-  is expected to call `IndicatorEngine`/`MarketRegimeEngine`.
-- **Depends on:** nothing today (the Protocol only references
-  `pandas`). Concrete strategies (Sprint 3) will depend on
-  `src/indicators` and `src/regime`.
+  is expected to call `IndicatorEngine`/`MarketRegimeEngine`. Does not
+  emit one `Signal` per candle -- only at genuine decision points.
+- **Depends on:** `src/signals` (for the `Signal` return type).
+  Concrete strategies (Sprint 3) will also depend on `src/indicators`
+  and `src/regime`.
 
 ### `src/backtesting`
 
 **Purpose:** the framework, not a strategy. Runs any `Strategy` against
 candles: run strategy -> collect trades -> calculate metrics ->
 generate report. Part of the Sprint 2 research engine (`DECISIONS.md`,
-ADR-0009, ADR-0011).
+ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
 
 - **Inputs:** a `Strategy` and an OHLCV candles DataFrame.
 - **Outputs:** a `BacktestResult` (`strategy_name`, `trades: list[Trade]`,
-  `equity_curve: pd.Series`, `metrics: dict`, plus a `.report()` method
-  for a human-readable summary).
+  `equity_curve: pd.Series`, `metrics: dict`, `signals: list[Signal]`,
+  plus a `.report()` method for a human-readable summary).
 - **Key files:**
-  - `engine.py` -- `Backtester.run()`. Simplified execution model: one
-    unit of position size per signal, entries/exits at candle close,
-    no costs/slippage, position shifted forward one bar (no lookahead).
-  - `models.py` -- `Trade`, `BacktestResult` dataclasses.
+  - `engine.py` -- `Backtester.run()`. Consumes the sparse `list[Signal]`
+    from `strategy.generate_signals()`, holds each signal's direction
+    from its own bar forward until the next signal, then applies the
+    no-lookahead shift once when computing the equity curve. Simplified
+    execution model unchanged from ADR-0011: one unit of position size,
+    entries/exits at candle close, no costs/slippage.
+  - `models.py` -- `Trade` (references its opening/closing signals by
+    `entry_signal_id`/`exit_signal_id: UUID`, not by embedding the
+    `Signal` objects -- see ADR-0015/ADR-0016), `BacktestResult`.
   - `metrics.py` -- `calculate_metrics()`, `sharpe_ratio()`,
     `max_drawdown()`, each independently testable.
 - **Does not:** model realistic execution (partial fills, slippage,
   transaction costs) -- that's `src/execution`'s job later, deliberately
   out of scope here. Does not decide position sizing beyond a single
-  unit -- that's `src/risk`'s job later. Does not persist results --
-  that's `src/experiments`'s job.
-- **Depends on:** `src/strategies` (for the `Strategy`/`SIGNAL_COLUMN`
-  contract).
+  unit, regardless of a signal's `confidence` -- that's `src/risk`'s
+  job later. Does not persist results, and does not store `Signal`
+  objects itself -- `ExperimentRegistry` owns that (ADR-0016).
+- **Depends on:** `src/strategies` (for the `Strategy` contract),
+  `src/signals` (for `Signal`/`SignalDirection`).
 
 ### `src/experiments`
 
@@ -255,25 +292,33 @@ ADR-0009, ADR-0011).
 what changed, what happened to the metrics, what was decided. The
 payoff compounds: hundreds of experiments after a year of use, all
 queryable. Part of the Sprint 2 research engine (`DECISIONS.md`,
-ADR-0009, ADR-0012).
+ADR-0009, ADR-0012); also owns `Signal` storage as of Sprint 3
+(ADR-0016).
 
 - **Inputs:** `log_experiment(changed, metrics_before, metrics_after,
   decision, strategy_name=None, notes="")` -- plain dicts, not
   `BacktestResult` objects (see "Does not," below).
+  `save_signals(experiment_id, signals)` separately persists a
+  `list[Signal]` under an experiment.
 - **Outputs:** `get_experiment(id)` / `list_experiments(decision=...,
   strategy_name=...)` return `Experiment` records (with a
   `.summary()` method for the human-readable "Experiment #18" view).
+  `get_signals(experiment_id)` / `get_signal(signal_id)` return
+  `Signal` objects.
 - **Key files:**
   - `registry.py` -- `ExperimentRegistry`, backed by SQLite (stdlib
     `sqlite3`). `changed`/`metrics_before`/`metrics_after` stored as
-    JSON text columns.
+    JSON text columns; a second `signals` table stores `Signal` rows,
+    keyed by their own `id` (UUID) and looked up by `experiment_id`.
   - `models.py` -- `Experiment` dataclass.
-- **Does not:** know about `BacktestResult`, `Trade`, or any
-  backtesting internals -- it stores whatever dicts it's given. The
-  caller converts two `BacktestResult.metrics` dicts into
-  `metrics_before`/`metrics_after`. Does not run backtests itself.
-- **Depends on:** nothing else in `src/` -- like `src/utils`, it's
-  reusable infrastructure, not owned by backtesting specifically.
+- **Does not:** know about `BacktestResult` or `Trade` -- it stores
+  whatever metric dicts it's given, and `Signal`s are saved as a
+  separate, deliberate call (`save_signals()`), not a parameter on
+  `log_experiment()`, so that method's signature stays untouched. Does
+  not run backtests itself.
+- **Depends on:** `src/signals` (for `Signal`/`SignalDirection` -- see
+  ADR-0016 for why this narrows, but doesn't eliminate, this module's
+  previous independence from backtesting internals).
 
 ### `src/cli`
 

@@ -11,10 +11,20 @@ metrics -> generate report.
     print(result.report())
 
 A single, simplified execution model today: one unit of position size
-per signal (-1/0/1), no transaction costs or slippage, entries/exits at
-the candle's close price. Realistic execution modeling (partial fills,
+per signal, no transaction costs or slippage, entries/exits at the
+candle's close price. Realistic execution modeling (partial fills,
 costs, slippage) is future work for `src/execution/`, not this
 framework's job.
+
+As of `DECISIONS.md` ADR-0015 (superseding ADR-0011), strategies emit a
+sparse list of `Signal` objects -- one per decision point, not one per
+candle -- rather than a dense DataFrame column. A signal's direction is
+held from its own bar forward until the next signal supersedes it. No
+lookahead: the *return* realized on the bar a signal fires on is never
+attributed to that signal (see `_compute_equity_curve`), even though
+the signal's own bar close is used as its trade's entry/exit price --
+the same convention ADR-0011 established, just expressed over a sparse
+signal list instead of a dense column.
 """
 
 from __future__ import annotations
@@ -23,9 +33,16 @@ import pandas as pd
 
 from src.backtesting.metrics import calculate_metrics
 from src.backtesting.models import BacktestResult, Trade
-from src.strategies.base import SIGNAL_COLUMN, Strategy
+from src.signals.models import Signal, SignalDirection
+from src.strategies.base import Strategy
 
 DEFAULT_INITIAL_CASH = 100_000.0
+
+_DIRECTION_TO_UNITS = {
+    SignalDirection.LONG: 1,
+    SignalDirection.SHORT: -1,
+    SignalDirection.FLAT: 0,
+}
 
 
 class Backtester:
@@ -44,19 +61,22 @@ class Backtester:
 
         Raises:
             ValueError: `strategy.generate_signals()` doesn't return a
-                DataFrame containing the required signal column.
+                `list[Signal]`.
         """
         prepared = strategy.prepare(candles)
-        signals = strategy.generate_signals(prepared)
+        raw_signals = strategy.generate_signals(prepared)
 
-        if SIGNAL_COLUMN not in signals.columns:
+        if not isinstance(raw_signals, list) or not all(
+            isinstance(s, Signal) for s in raw_signals
+        ):
             raise ValueError(
-                f"{strategy.name}.generate_signals() must return a DataFrame "
-                f"with a '{SIGNAL_COLUMN}' column"
+                f"{strategy.name}.generate_signals() must return a list[Signal]"
             )
 
-        position = signals[SIGNAL_COLUMN].fillna(0).astype(int)
-        trades = self._extract_trades(candles, position)
+        signals = sorted(raw_signals, key=lambda s: s.timestamp)
+
+        trades = self._extract_trades(candles, signals)
+        position = self._build_position_series(candles, signals)
         equity_curve = self._compute_equity_curve(candles, position)
         metrics = calculate_metrics(trades, equity_curve, self._initial_cash)
 
@@ -65,61 +85,86 @@ class Backtester:
             trades=trades,
             equity_curve=equity_curve,
             metrics=metrics,
+            signals=signals,
         )
 
-    def _extract_trades(self, candles: pd.DataFrame, position: pd.Series) -> list[Trade]:
-        """Turn a position series into a list of completed Trades.
+    def _extract_trades(self, candles: pd.DataFrame, signals: list[Signal]) -> list[Trade]:
+        """Turn a sparse, time-ordered signal list into completed Trades.
 
-        A trade opens whenever position moves away from 0 (or flips
-        sign) and closes whenever it moves back to 0 (or flips again),
-        using the candle's close price for both entry and exit. Any
-        position still open at the end of the series is closed at the
-        final candle's close.
+        A trade opens at a non-FLAT signal's own bar and closes at the
+        next signal that changes direction (using that signal's own bar
+        as the exit), or at the final candle if no closing signal ever
+        arrives (`exit_signal_id=None` in that case). Signals whose
+        timestamp isn't an actual candle in this run are skipped rather
+        than raising -- a strategy analyzing a wider history than it
+        was ultimately backtested against shouldn't crash the run.
         """
         trades: list[Trade] = []
-        current_direction = 0
-        entry_time = None
-        entry_price = None
+        open_trade: dict | None = None
 
-        for timestamp, pos in position.items():
-            pos = int(pos)
-            if pos == current_direction:
+        for signal in signals:
+            if signal.timestamp not in candles.index:
                 continue
 
-            if current_direction != 0:
-                exit_price = float(candles.loc[timestamp, "close"])
+            new_direction = _DIRECTION_TO_UNITS[signal.direction]
+            price = float(candles.loc[signal.timestamp, "close"])
+
+            if open_trade is not None and new_direction != open_trade["direction"]:
                 trades.append(
                     Trade(
-                        entry_time=entry_time,
-                        exit_time=timestamp,
-                        direction=current_direction,
-                        entry_price=entry_price,
-                        exit_price=exit_price,
+                        entry_time=open_trade["entry_time"],
+                        exit_time=signal.timestamp,
+                        direction=open_trade["direction"],
+                        entry_price=open_trade["entry_price"],
+                        exit_price=price,
+                        entry_signal_id=open_trade["entry_signal_id"],
+                        exit_signal_id=signal.id,
                     )
                 )
+                open_trade = None
 
-            if pos != 0:
-                entry_time = timestamp
-                entry_price = float(candles.loc[timestamp, "close"])
+            if new_direction != 0 and open_trade is None:
+                open_trade = {
+                    "entry_time": signal.timestamp,
+                    "entry_price": price,
+                    "direction": new_direction,
+                    "entry_signal_id": signal.id,
+                }
 
-            current_direction = pos
-
-        if current_direction != 0:
-            last_timestamp = candles.index[-1]
+        if open_trade is not None:
+            last_time = candles.index[-1]
             trades.append(
                 Trade(
-                    entry_time=entry_time,
-                    exit_time=last_timestamp,
-                    direction=current_direction,
-                    entry_price=entry_price,
-                    exit_price=float(candles.loc[last_timestamp, "close"]),
+                    entry_time=open_trade["entry_time"],
+                    exit_time=last_time,
+                    direction=open_trade["direction"],
+                    entry_price=open_trade["entry_price"],
+                    exit_price=float(candles["close"].iloc[-1]),
+                    entry_signal_id=open_trade["entry_signal_id"],
+                    exit_signal_id=None,
                 )
             )
 
         return trades
 
+    def _build_position_series(self, candles: pd.DataFrame, signals: list[Signal]) -> pd.Series:
+        """Dense per-bar position, derived from the sparse signal list.
+
+        Holds each signal's direction from its own bar forward until
+        the next signal. This is deliberately the *unshifted* position
+        -- equivalent to ADR-0011's original dense `signal` column --
+        the no-lookahead adjustment happens once, in
+        `_compute_equity_curve`, not here.
+        """
+        position = pd.Series(0, index=candles.index, dtype=int)
+        for signal in signals:
+            if signal.timestamp not in candles.index:
+                continue
+            position.loc[signal.timestamp:] = _DIRECTION_TO_UNITS[signal.direction]
+        return position
+
     def _compute_equity_curve(self, candles: pd.DataFrame, position: pd.Series) -> pd.Series:
-        """Simulated equity over time, given the position series.
+        """Simulated equity over time, given the (unshifted) position series.
 
         Position at time t is applied to the return realized from
         t-1 to t (position is shifted forward one bar) so a signal

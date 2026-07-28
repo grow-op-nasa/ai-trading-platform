@@ -7,19 +7,32 @@ Backtester (`engine.py`) and metrics (`metrics.py`) do the actual work.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from uuid import UUID
 
 import pandas as pd
+
+from src.signals.models import Signal
 
 
 @dataclass
 class Trade:
-    """One completed position: opened in one direction, later closed."""
+    """One completed position: opened in one direction, later closed.
+
+    References the `Signal`s that opened and closed it by id rather
+    than embedding the `Signal` objects directly (`DECISIONS.md`,
+    ADR-0015) -- `Trade` stays a small, storable record, and whoever
+    wants the full evidence behind a trade (Performance Attribution,
+    the AI Research Reporter) looks it up via the Experiment Registry,
+    which is what actually owns `Signal` storage (ADR-0016).
+    """
 
     entry_time: pd.Timestamp
     exit_time: pd.Timestamp
     direction: int  # 1 = long, -1 = short
     entry_price: float
     exit_price: float
+    entry_signal_id: UUID
+    exit_signal_id: UUID | None = None  # None: closed at end-of-data, not by a signal
 
     @property
     def pnl_per_unit(self) -> float:
@@ -40,6 +53,7 @@ class BacktestResult:
     trades: list[Trade] = field(default_factory=list)
     equity_curve: pd.Series = field(default_factory=pd.Series)
     metrics: dict = field(default_factory=dict)
+    signals: list[Signal] = field(default_factory=list)
 
     def report(self) -> str:
         """A short, human-readable summary -- not a substitute for

@@ -6,13 +6,26 @@ real `data/experiments.db` and never interfere with each other.
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from src.experiments.registry import ExperimentRegistry
+from src.signals.models import Signal, SignalDirection
 
 
 def make_registry(tmp_path) -> ExperimentRegistry:
     return ExperimentRegistry(db_path=tmp_path / "experiments.db")
+
+
+def make_signal(**overrides) -> Signal:
+    defaults = dict(
+        timestamp=pd.Timestamp("2024-01-01"),
+        direction=SignalDirection.LONG,
+        confidence=0.8,
+        metadata={"reason": "test"},
+    )
+    defaults.update(overrides)
+    return Signal(**defaults)
 
 
 def test_log_experiment_returns_incrementing_ids(tmp_path):
@@ -164,3 +177,93 @@ def test_summary_includes_key_fields(tmp_path):
     assert "sma_cross" in summary
     assert "14 -> 10" in summary
     assert "KEEP" in summary
+
+
+# ---------------------------------------------------------------------------
+# Signal storage (DECISIONS.md, ADR-0016) -- signals are first-class rows
+# here, not a separate repository.
+# ---------------------------------------------------------------------------
+
+def test_save_and_get_signals_round_trips(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_id = registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+    signal = make_signal(metadata={"trend": "UP", "reason": "EMA20 crossed EMA50"})
+
+    registry.save_signals(experiment_id, [signal])
+    fetched = registry.get_signals(experiment_id)
+
+    assert len(fetched) == 1
+    assert fetched[0].id == signal.id
+    assert fetched[0].timestamp == signal.timestamp
+    assert fetched[0].direction == signal.direction
+    assert fetched[0].confidence == signal.confidence
+    assert fetched[0].metadata == {"trend": "UP", "reason": "EMA20 crossed EMA50"}
+
+
+def test_get_signals_orders_by_timestamp(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_id = registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+    later = make_signal(timestamp=pd.Timestamp("2024-01-03"))
+    earlier = make_signal(timestamp=pd.Timestamp("2024-01-01"))
+
+    registry.save_signals(experiment_id, [later, earlier])
+    fetched = registry.get_signals(experiment_id)
+
+    assert [s.id for s in fetched] == [earlier.id, later.id]
+
+
+def test_get_signals_only_returns_signals_for_that_experiment(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_a = registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+    experiment_b = registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="DISCARD"
+    )
+    signal_a = make_signal()
+    signal_b = make_signal()
+
+    registry.save_signals(experiment_a, [signal_a])
+    registry.save_signals(experiment_b, [signal_b])
+
+    assert [s.id for s in registry.get_signals(experiment_a)] == [signal_a.id]
+    assert [s.id for s in registry.get_signals(experiment_b)] == [signal_b.id]
+
+
+def test_get_signal_fetches_by_id_directly(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_id = registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+    signal = make_signal()
+    registry.save_signals(experiment_id, [signal])
+
+    fetched = registry.get_signal(signal.id)
+
+    assert fetched is not None
+    assert fetched.id == signal.id
+
+
+def test_get_signal_returns_none_for_missing_id(tmp_path):
+    registry = make_registry(tmp_path)
+    assert registry.get_signal(make_signal().id) is None
+
+
+def test_signals_persist_across_reconnects(tmp_path):
+    db_path = tmp_path / "experiments.db"
+    first_registry = ExperimentRegistry(db_path=db_path)
+    experiment_id = first_registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+    signal = make_signal()
+    first_registry.save_signals(experiment_id, [signal])
+
+    second_registry = ExperimentRegistry(db_path=db_path)
+    fetched = second_registry.get_signal(signal.id)
+
+    assert fetched is not None
+    assert fetched.metadata == signal.metadata

@@ -1,8 +1,10 @@
 # Project State
 
-_Last updated: 2026-07-28 -- `atp doctor` (system health check) added
-ahead of Sprint 3, confirmed on the real dev machine: `pytest` -> 93
-passed, `python -m src.cli doctor` -> Everything Healthy._
+_Last updated: 2026-07-28 -- Sprint 3 Module 1 (Signal Framework)
+confirmed on the real dev machine: `pytest` -> 112 passed.
+`Signal`/`SignalDirection`, `Strategy`/`Backtester` updated to the new
+sparse-signal contract, `Signal` storage added to the Experiment
+Registry._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -62,15 +64,34 @@ For why things were built the way they were, see `DECISIONS.md`.
   real, live checks; Broker Connection and API Keys report
   `NOT_IMPLEMENTED` honestly rather than a faked pass. Run via `python
   -m src.cli doctor`. See `DECISIONS.md`, ADR-0013.
+- ✅ `DECISIONS.md`, ADR-0014 -- Extension Cost adopted as a standing
+  awareness habit (not a pass/fail target): every addition of a new
+  indicator/strategy/broker/data vendor gets an `Extension Cost: N
+  file(s) changed` line in `CHANGELOG.md`. The real signal is
+  disproportionate cost (e.g. touching half the codebase for one
+  feature), not missing an exact number.
+- ✅ Signal Framework (`src/signals/`) -- Sprint 3 Module 1. `Signal`
+  (frozen: `timestamp`, `direction`, `confidence`, `metadata`, `id`)
+  and `SignalDirection` (`LONG`/`SHORT`/`FLAT`). Strategies emit a
+  sparse `list[Signal]` -- one per decision point -- not a dense
+  DataFrame column. No `price` field: a Signal is a decision, not a
+  market event or an order. Supersedes ADR-0011. See `DECISIONS.md`,
+  ADR-0015.
+- ✅ `Strategy`/`Backtester`/`Trade` updated for the Signal contract --
+  `generate_signals() -> list[Signal]`; `Trade.entry_signal_id` /
+  `exit_signal_id: UUID | None` reference signals rather than
+  embedding them; `BacktestResult.signals` carries the full list.
+- ✅ Experiment Registry now stores `Signal`s as first-class rows
+  (`save_signals`/`get_signals`/`get_signal`), not in a separate
+  repository -- `log_experiment()`'s signature is untouched. See
+  `DECISIONS.md`, ADR-0016.
 
 ## Current Module
 
-**Sprint 2 closed; `atp doctor` built and confirmed ahead of Sprint 3.**
-Indicator Engine, Market Regime Detection, Backtesting Framework,
-Experiment Registry, and the health-check CLI are all code-complete,
-tested, documented, and confirmed on the real dev machine (93 tests
-passed; `atp doctor` reports Everything Healthy). No module currently
-in progress -- see "Next Task."
+**Sprint 3, Module 1 (Signal Framework) complete and confirmed.**
+`atp doctor` and all of Sprint 2 are closed. Modules 2-4 of Sprint 3
+(Strategy SDK, Performance Attribution, AI Research Reporter) are not
+started -- see "Next Task."
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2 or 3): no data validation beyond required-column
@@ -80,11 +101,13 @@ live yfinance API.
 
 ## Next Task
 
-Commit and push `atp doctor`. After that, Sprint 3: **Strategies** -- a
-first real strategy (e.g. moving average crossover) implementing the
-`Strategy` protocol from `src/strategies/base.py`, exercised through
-the Sprint 2 Backtester and logged via the Experiment Registry. See
-`ROADMAP.md`.
+Commit and push the Signal Framework. After that, Sprint 3 Module 2:
+**Strategy SDK** -- a base class that handles validation, indicator
+access, logging, and `Signal` construction, so a strategy author only
+writes the trading logic. Sprint 3's own first deliverable after that
+is deliberately simple: an EMA-cross or opening-range-breakout
+strategy, chosen for how easy it is to reason about, not for
+profitability. See `ROADMAP.md`.
 
 ## Known Issues
 
@@ -122,9 +145,9 @@ the Sprint 2 Backtester and logged via the Experiment Registry. See
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 93 passed (7 config + 15 market data + 6 cache
-                          # + 11 indicators + 10 regime + 8 backtesting + 10 experiments
-                          # + 26 cli/doctor)
+pytest                    # should show 112 passed (7 config + 15 market data + 6 cache
+                          # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
+                          # + 26 cli/doctor + 10 signals)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
 ```

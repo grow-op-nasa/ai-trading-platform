@@ -11,7 +11,63 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
-## Sprint 4 (in progress) -- 2026-09-10
+## Sprint 4 (in progress) -- 2026-09-10, Paper Execution
+
+### Added (Paper Execution)
+
+- `src/execution/` -- `PaperBroker` (`DECISIONS.md`, ADR-0022), touching
+  zero existing files (Extension Cost: 0):
+  - `engine.py` -- `PaperBroker.submit_signal(signal, symbol,
+    fill_price, sizing_decision=None) -> Fill`. Translates a
+    `LONG`/`SHORT` signal into a `BUY`/`SELL` order requiring an
+    approved `SizingDecision`; a `FLAT` signal into whichever side
+    closes the existing position, needing no `SizingDecision` at all.
+    Fills instantly and completely at the caller-supplied price -- no
+    slippage or commission. One open position per symbol at a time --
+    opening a second raises rather than averaging into it.
+    `account_state` returns a real `src.risk.AccountState`: `equity` is
+    cash plus each position's *signed* value at entry price (correctly
+    netting out a short's liability); `open_exposure` is the sum of
+    unsigned cost basis. Not marked to market -- an open position's
+    contribution to equity is frozen at its entry price until closed.
+  - `models.py` -- `OrderSide` (`BUY`/`SELL`), `Order` (validated
+    `quantity > 0`, traceable via `signal_id`/`timestamp` back to its
+    originating `Signal`), `Fill` (`order`, `fill_price`,
+    `cash_delta`), `Position` (signed `quantity`, `entry_price`,
+    `entry_signal_id`).
+  - This is the first module verified directly against `src/risk`
+    (tests construct `SizingDecision`s and feed them to `PaperBroker`)
+    -- closes the loop ADR-0021 left open. Not yet wired into
+    `Backtester` or a real strategy loop.
+- `tests/test_execution.py` -- 18 tests: opening/closing long and
+  short (cash accounting, realized P&L on close), rejecting a second
+  position in an already-open symbol, rejecting an unapproved or
+  missing `SizingDecision`, rejecting a `FLAT` close with nothing open,
+  input validation (`starting_cash`, `fill_price`, `Order.quantity`),
+  `account_state` correctness immediately after opening (equity
+  unchanged) and after closing (realized P&L reflected), traceability
+  from `Fill` back to the originating `Signal`, defensive copy of
+  `positions`.
+
+### Decided (Paper Execution)
+
+- Built the fuller version this round: real simulated fills and a
+  tracked portfolio, not just `Signal` -> `Order` translation --
+  explicitly asked and confirmed, since it closes ADR-0021's loop
+  instead of deferring it further. See `DECISIONS.md`, ADR-0022.
+- Cash accounting is uniform by order side (`BUY` pays cash out, `SELL`
+  brings cash in) rather than branching on long/short -- this is what
+  makes shorts "just work" without special-casing.
+- No mark-to-market: equity reflects entry-price valuation until a
+  position closes and P&L is realized into cash. `PaperBroker` has no
+  price feed of its own, matching `PositionSizer`'s posture.
+
+### Verified (Paper Execution)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **192
+  passed**, 0 failed.
+
+## Sprint 4, Position Sizing -- 2026-09-10
 
 ### Added (Position Sizing)
 

@@ -191,9 +191,19 @@ below, where it's now built.
   standalone from `Backtester` this round -- see `DECISIONS.md`,
   ADR-0021. Confidence-scaled sizing and a position-count-based
   portfolio limit are deferred, not rejected.
-- ⬜ `src/execution/`: translates a sized signal into orders, consuming
-  `PositionSizer`'s `SizingDecision` for the first time. Paper
-  execution first; real broker connectivity comes after.
+- ✅ `src/execution/`: `PaperBroker` -- translates a `Signal` +
+  `SizingDecision` into an `Order`, fills it instantly and completely
+  at the caller-supplied price (no slippage/commission), tracks cash
+  and one open position per symbol, and exposes `account_state` as a
+  real `src.risk.AccountState` -- closing the loop `PositionSizer` left
+  open. Not marked to market. See `DECISIONS.md`, ADR-0022. Real broker
+  connectivity, limit orders, partial fills, and multi-position
+  averaging are deferred, not rejected.
+- ⬜ Prove the full loop end-to-end: a real strategy's signals through
+  `PositionSizer` and `PaperBroker`, driven by real candles -- not yet
+  built, since each piece has so far only been verified against the
+  others in isolation (unit tests constructing the intermediate objects
+  directly, not a real run through all three).
 
 ## Sprint 5 -- Broker Connectivity (planned)
 

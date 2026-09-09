@@ -25,7 +25,7 @@ graph TD
     experiments[experiments: ExperimentRegistry + Signal storage]
     research[research: ResearchReporter]
     risk[risk: PositionSizer]
-    execution[execution: not yet built]
+    execution[execution: PaperBroker]
     broker[broker: not yet built]
     analytics[analytics: not yet built]
     ai[ai: not yet built]
@@ -50,6 +50,7 @@ graph TD
     attribution --> research
     utils --> research
     signals --> risk
+    signals --> execution
     risk --> execution
     execution --> broker
     strategies --> analytics
@@ -76,13 +77,16 @@ and recommendation (a research artifact for a person to read), while
 trading decision on its own behalf (ADR-0017) -- `research` explicitly
 never will, since its output is prose for a person, not a `Signal`.
 
-`risk --> execution` is drawn even though `execution` doesn't exist
-yet: it documents where `PositionSizer`'s output (`SizingDecision`) is
-headed, not a dependency that exists today. `risk` does **not** depend
-on, or get called by, `backtesting` -- `Backtester` still sizes every
-trade as a single unit (ADR-0011), unchanged. `PositionSizer` is
-verified standalone until `execution` exists to actually consume it
-(`DECISIONS.md`, ADR-0021).
+`risk --> execution` now reflects a real dependency: `PaperBroker`
+consumes `PositionSizer`'s `SizingDecision` directly to size an opening
+order (`DECISIONS.md`, ADR-0022), closing the loop ADR-0021 left open.
+Neither `risk` nor `execution` depend on, or get called by,
+`backtesting` -- `Backtester` still sizes every trade as a single unit
+(ADR-0011), unchanged; `PositionSizer` and `PaperBroker` are so far
+verified against each other directly, not through a real backtest or
+strategy run. `execution --> broker` is still aspirational: it
+documents where a live fill would come from once Sprint 5 exists, not
+a dependency `PaperBroker` has today -- it simulates fills itself.
 
 `cli` is drawn separately from the main pipeline on purpose: it's a
 diagnostic tool that reaches into several capabilities to check their
@@ -443,11 +447,55 @@ Sprint 4 (`DECISIONS.md`, ADR-0021).
   whole-share/lot rounding -- fractional `position_size` is allowed;
   rounding to a tradable lot is an execution-layer concern, deferred
   the same way ADR-0011 deferred realistic execution mechanics out of
-  `Backtester`. Is not wired into `Backtester` or anything else yet --
-  see the note under the dependency diagram above.
+  `Backtester`. Is not wired into `Backtester` or a real strategy loop
+  -- `src/execution` (below) consumes its output directly, but only in
+  tests that construct a `SizingDecision` and hand it to `PaperBroker`,
+  not a real end-to-end run yet.
 - **Depends on:** `src/signals` (for `Signal`/`SignalDirection`).
   Extension Cost (ADR-0014): 0 -- purely additive, nothing in
   `src/backtesting`, `src/strategies`, or `src/signals` was changed.
+
+### `src/execution`
+
+**Purpose:** translate a signal (and, for `LONG`/`SHORT`, a
+`SizingDecision`) into an `Order`, simulate filling it, and track the
+resulting portfolio -- paper execution, before any real broker exists.
+Sprint 4 (`DECISIONS.md`, ADR-0022).
+
+- **Inputs:** a `Signal`, a `symbol`, a `fill_price`, and (for
+  `LONG`/`SHORT`) an approved `SizingDecision` from `src/risk`.
+- **Outputs:** a `Fill` per call to `submit_signal()`; an
+  `account_state` property returning a real `src.risk.AccountState`.
+- **Key files:**
+  - `engine.py` -- `PaperBroker.submit_signal(signal, symbol,
+    fill_price, sizing_decision=None)`. `LONG`/`SHORT` -> `BUY`/`SELL`
+    to open (requires an approved `SizingDecision`); `FLAT` -> whichever
+    side closes the existing position (no `SizingDecision` needed,
+    since `PositionSizer` refuses to size `FLAT` anyway). Fills
+    instantly and completely at the given price. Cash accounting is
+    uniform by order side (`BUY` pays cash out, `SELL` brings cash in)
+    regardless of long/short, which is what makes both directions work
+    through the same code path. `account_state` computes `equity` as
+    cash plus each position's *signed* value at its own entry price
+    (correctly netting a short's liability) and `open_exposure` as the
+    sum of *unsigned* cost basis, matching what
+    `RiskLimits.max_portfolio_exposure_pct` caps.
+  - `models.py` -- `OrderSide` (`BUY`/`SELL`), `Order` (validated
+    `quantity > 0`, carries `signal_id`/`timestamp` for traceability),
+    `Fill` (`order`, `fill_price`, `cash_delta`), `Position` (signed
+    `quantity`, `entry_price`, `entry_signal_id`).
+- **Does not:** mark positions to market -- an open position's
+  contribution to `equity` is frozen at its entry price until closed;
+  there is no ongoing price feed to mark against (like `PositionSizer`,
+  every price is supplied by the caller). Does not support more than
+  one open position per symbol at a time -- opening a second raises
+  rather than averaging into it. Does not model limit orders, partial
+  fills, slippage, or commission. Is not wired into `Backtester` or a
+  real strategy loop yet.
+- **Depends on:** `src/signals` (for `Signal`/`SignalDirection`),
+  `src/risk` (for `AccountState`/`SizingDecision`). Extension Cost
+  (ADR-0014): 0 -- purely additive, nothing in `src/risk`,
+  `src/signals`, `src/backtesting`, or `src/strategies` was changed.
 
 ### `src/experiments`
 
@@ -519,10 +567,10 @@ guess. See `DECISIONS.md`, ADR-0013.
   -- it reaches into each capability's public API to check it, the same
   way any other consumer would.
 
-### `src/broker`, `src/execution`, `src/analytics`, `src/ai`, `src/dashboard`
+### `src/broker`, `src/analytics`, `src/ai`, `src/dashboard`
 
-(`src/research` and `src/risk` are now built -- see above -- and no
-longer belong in this "not yet implemented" list.)
+(`src/research`, `src/risk`, and `src/execution` are now built -- see
+above -- and no longer belong in this "not yet implemented" list.)
 
 Not yet implemented -- each currently exists only as an empty package
 with a docstring stating its intended purpose (see `src/__init__.py`

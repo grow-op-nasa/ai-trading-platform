@@ -981,3 +981,69 @@ sizing, whole-share-lot rounding, and a position-count-based portfolio
 limit are all explicitly deferred, not rejected -- tracked in
 `ROADMAP.md`/`PROJECT_STATE.md` as future variants once real usage
 shows they're needed.
+
+---
+
+## ADR-0022: Paper execution -- market orders, instant fills, no mark-to-market
+
+**Status:** Accepted -- Sprint 4
+
+**Context:** Sprint 4 asked for `src/execution`: translate a sized
+signal into orders, with paper execution first and real broker
+connectivity after. This is the first module positioned to actually
+consume `PositionSizer`'s `SizingDecision` (ADR-0021 left that loop
+open deliberately). The main question was scope: build only the
+translation from a `Signal` + `SizingDecision` into an `Order` object,
+or go further and simulate actual fills plus a tracked portfolio
+(cash and positions), closing ADR-0021's loop this round. Asked
+directly; the answer was to build the fuller version.
+
+**Decision:** Added `src/execution/` (`PaperBroker`, `Order`,
+`OrderSide`, `Fill`, `Position`), touching zero existing files.
+`PaperBroker.submit_signal(signal, symbol, fill_price,
+sizing_decision=None)` is the single entry point: it translates
+`signal` into an `Order` (`LONG`/`SHORT` -> `BUY`/`SELL` to open,
+requiring an approved `sizing_decision`; `FLAT` -> whichever side
+closes the existing position, needing no `sizing_decision` at all,
+since `PositionSizer` already refuses to size a `FLAT` signal),
+"fills" it instantly and completely at the caller-supplied
+`fill_price` (no partial fills, slippage, or commission -- the same
+simplifications ADR-0011 made for `Backtester`), and updates internal
+cash/position bookkeeping. Only one open position per symbol at a
+time is supported -- opening a second position in a symbol that
+already has one raises, rather than silently averaging or scaling into
+it; that's a deliberately deferred feature, not an oversight. Cash
+accounting is uniform regardless of direction: a `BUY` always pays
+cash out, a `SELL` always brings cash in, whether that `SELL` is
+opening a short or closing a long -- this is what makes both directions
+"just work" through the same code path without special-casing shorts.
+`PaperBroker.account_state` returns a real `src.risk.AccountState`:
+`equity` is cash plus each open position's *signed* value at its own
+entry price (`quantity * entry_price`, which is negative for a short,
+correctly netting out its liability), and `open_exposure` is the sum
+of each position's *unsigned* cost basis (`abs(quantity) *
+entry_price`), matching what `RiskLimits.max_portfolio_exposure_pct`
+is meant to cap regardless of direction. Positions are **not** marked
+to market: an open position's contribution to `equity` stays frozen at
+its entry price until it's closed and the resulting P&L is realized
+into cash -- this broker has no ongoing price feed of its own (like
+`PositionSizer`, every price is supplied by the caller), so there is no
+"current price" to mark against between fills.
+
+**Consequences:** Extension Cost (ADR-0014) for this module: 0 --
+`src/execution` only reads `Signal`'s and `SizingDecision`'s existing
+public fields; nothing in `src/risk`, `src/signals`, `src/backtesting`,
+or `src/strategies` was changed. This is the first module verified
+against `src/risk` directly (tests construct `SizingDecision`s and feed
+them to `PaperBroker`), though still not wired into `Backtester` or any
+real strategy loop -- that end-to-end proof (strategy -> signals ->
+sizer -> broker, all driven by real candles) is a natural next step,
+not built here. No mark-to-market means `AccountState.equity` between
+fills can understate or overstate the account's true value whenever an
+open position has moved in price -- acceptable for now since nothing
+downstream depends on inter-fill equity accuracy yet, but worth
+revisiting once `src/execution` needs to answer "what is this account
+worth right now," not just "what did it realize so far." Real broker
+connectivity, limit orders, partial fills, slippage, commission, and
+multi-position-per-symbol averaging are all explicitly deferred, not
+rejected -- tracked in `ROADMAP.md`/`PROJECT_STATE.md`.

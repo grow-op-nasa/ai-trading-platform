@@ -1,14 +1,15 @@
 # Project State
 
-_Last updated: 2026-09-10 -- Sprint 4 (in progress): `PaperBroker`
-(`src/execution/`) simulates fills and tracks a portfolio, closing the
-loop `PositionSizer` (`src/risk/`) left open -- `account_state` hands
-back a real `AccountState` for the next sizing decision. Long-only
-`EMACrossStrategy` (`src/strategies/ema_cross.py`), the platform's
-first permanent strategy, landed just before both. Sprint 3 (Signal
-Framework, Strategy SDK, Performance Attribution, AI Research Reporter)
-is complete. Confirmed via real `pytest` on the dev machine: 192/192
-tests pass._
+_Last updated: 2026-09-10 -- Sprint 4 feature-complete: the full loop
+(`EMACrossStrategy`'s signals -> `PositionSizer` -> `PaperBroker`) is
+now proven end-to-end in `tests/test_integration_paper_trading.py`, no
+new production code. `PaperBroker` (`src/execution/`) simulates fills
+and tracks a portfolio; `PositionSizer` (`src/risk/`) sizes at a fixed
+fraction of equity. Sprint 3 (Signal Framework, Strategy SDK,
+Performance Attribution, AI Research Reporter) is complete. The
+integration test is verified in sandbox (195/197, the usual 2
+environment-only failures); pending final confirmation via real
+`pytest`._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -151,13 +152,23 @@ For why things were built the way they were, see `DECISIONS.md`.
   marked to market: equity reflects entry-price valuation until a
   position closes and P&L realizes into cash. Touches zero existing
   files (Extension Cost: 0). See `DECISIONS.md`, ADR-0022.
+- ✅ End-to-end proof (`tests/test_integration_paper_trading.py`) --
+  Sprint 4. `EMACrossStrategy`'s real signals over real candles, fed
+  through `PositionSizer` then `PaperBroker` exactly as a future
+  live/paper trading loop would. No new production code. Confirms a
+  signal sized after a completed round trip uses the account's updated
+  post-trade equity, not the original starting value -- proving the
+  `PositionSizer` <-> `PaperBroker` loop (ADR-0021/ADR-0022) actually
+  closes when driven by a real strategy, not just constructed test
+  objects.
 
 ## Current Module
 
-**Sprint 3 is complete and confirmed. Sprint 4 is in progress**:
-`EMACrossStrategy`, `PositionSizer`, and `PaperBroker` are all complete
-and confirmed -- 192/192 tests pass via real `pytest` on the dev
-machine (Python 3.14.6).
+**Sprint 3 is complete and confirmed. Sprint 4 is feature-complete**:
+`EMACrossStrategy`, `PositionSizer`, `PaperBroker`, and the end-to-end
+integration proof are all code-complete. Verified in sandbox (195/197,
+the usual 2 environment-only failures); pending real-machine
+confirmation.
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2, 3, or 4): no data validation beyond required-column
@@ -167,10 +178,10 @@ live yfinance API.
 
 ## Next Task
 
-Commit and push `PaperBroker`. After that, Sprint 4's remaining natural
-step is proving the full loop end-to-end (a real strategy's signals ->
-`PositionSizer` -> `PaperBroker`, driven by real candles) before moving
-to Sprint 5 (Broker Connectivity). See `ROADMAP.md`.
+Confirm the full 197-test suite passes via real `pytest` on the dev
+machine, then commit and push the integration test. Sprint 4 is then
+feature-complete; Sprint 5 (Broker Connectivity) is next, whenever
+that's picked up. See `ROADMAP.md`.
 
 ## Known Issues
 
@@ -210,13 +221,15 @@ to Sprint 5 (Broker Connectivity). See `ROADMAP.md`.
 - No `ResearchReport` persistence -- reports are produced on demand from
   a `BacktestResult` + `AttributionReport` pair, not saved back into
   `ExperimentRegistry`. Natural future step, not built this round.
-- `PositionSizer` and `PaperBroker` are verified against each other in
-  tests, but neither is wired into `Backtester` or a real strategy loop
-  yet -- `Backtester` still assumes single-unit sizing (ADR-0011). A
-  real end-to-end proof (strategy -> signals -> sizer -> broker, driven
-  by real candles) is a natural next step, not built here.
-  Confidence-scaled sizing and a position-count-based portfolio limit
-  are deferred, not rejected -- see `DECISIONS.md`, ADR-0021.
+- `PositionSizer` and `PaperBroker` are proven to compose correctly end
+  to end (`tests/test_integration_paper_trading.py`), but neither is
+  wired into `Backtester` itself -- `Backtester` still assumes
+  single-unit sizing (ADR-0011), unchanged. No reusable orchestration
+  layer (e.g. a `PaperTradingLoop`) exists yet either -- the
+  integration test wires strategy -> sizer -> broker inline, since
+  there's no second real caller yet to justify a new abstraction's
+  shape. Confidence-scaled sizing and a position-count-based portfolio
+  limit are deferred, not rejected -- see `DECISIONS.md`, ADR-0021.
 - `PaperBroker` doesn't mark positions to market -- `equity` between
   fills can understate or overstate the account's true value whenever
   an open position has moved in price. No live price feed exists for
@@ -232,10 +245,11 @@ to Sprint 5 (Broker Connectivity). See `ROADMAP.md`.
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 192 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 197 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
                           # + 27 cli/doctor + 10 signals + 11 strategy_sdk + 8 attribution
-                          # + 15 research + 11 ema_cross_strategy + 16 risk + 18 execution)
+                          # + 15 research + 11 ema_cross_strategy + 16 risk + 18 execution
+                          # + 5 integration_paper_trading)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
 ```

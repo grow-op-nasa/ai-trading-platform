@@ -199,11 +199,22 @@ below, where it's now built.
   open. Not marked to market. See `DECISIONS.md`, ADR-0022. Real broker
   connectivity, limit orders, partial fills, and multi-position
   averaging are deferred, not rejected.
-- ⬜ Prove the full loop end-to-end: a real strategy's signals through
-  `PositionSizer` and `PaperBroker`, driven by real candles -- not yet
-  built, since each piece has so far only been verified against the
-  others in isolation (unit tests constructing the intermediate objects
-  directly, not a real run through all three).
+- ✅ Full loop proven end-to-end
+  (`tests/test_integration_paper_trading.py`): `EMACrossStrategy`'s
+  real signals over real candles, fed through `PositionSizer` then
+  `PaperBroker` exactly as a future live/paper trading loop would. No
+  new production code -- `src/risk` and `src/execution` stay standalone
+  modules; this is proof they compose correctly, not a new
+  orchestration layer. Confirms position sizing reflects equity *at the
+  time of each signal* (not a stale starting value) by asserting a
+  signal sized after a completed round trip uses the account's
+  post-trade equity.
+
+Sprint 4 is now feature-complete: a real strategy, sized positions, and
+simulated execution all compose end to end. What's left before Sprint 5
+is a judgment call, not a fixed scope -- e.g. a reusable orchestration
+layer (a `PaperTradingLoop` or similar) only becomes worth building
+once there's a second real caller that needs one.
 
 ## Sprint 5 -- Broker Connectivity (planned)
 

@@ -11,7 +11,36 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
-## Sprint 4 (in progress) -- 2026-09-10, Paper Execution
+## Sprint 4 -- 2026-09-10, End-to-End Proof (feature-complete)
+
+### Added (End-to-End Proof)
+
+- `tests/test_integration_paper_trading.py` -- 5 tests proving
+  `EMACrossStrategy` -> `PositionSizer` -> `PaperBroker` compose
+  correctly end to end, driven by a real strategy's signals over real
+  candles rather than constructed test objects: full pipeline runs
+  without error; the first opening position is sized at exactly the
+  configured fraction of starting equity; closing a position realizes
+  P&L into cash matching the actual fill prices (derived from the
+  fills themselves, not a hand-predicted EMA crossover value); a
+  signal sized *after* a completed round trip uses the account's
+  updated post-trade equity, not the original starting value -- the
+  key proof that the `PositionSizer` <-> `PaperBroker` loop actually
+  closes; `Signal.id`/`timestamp` remain traceable through every
+  `Fill`. No new production code -- `src/risk` and `src/execution`
+  remain standalone modules (ADR-0021/ADR-0022); this only proves
+  wiring them together works, the way a future caller eventually will.
+
+### Verified (End-to-End Proof)
+
+- New suite verified in sandbox: 5/5
+  `test_integration_paper_trading.py` tests pass. Full project suite:
+  195/197 in sandbox (2 known environment-only failures, consistent
+  with every prior session). Pending final confirmation via real
+  `pytest` on the dev machine. This closes out Sprint 4's remaining
+  ROADMAP item -- Sprint 4 is now feature-complete.
+
+## Sprint 4, Paper Execution -- 2026-09-10
 
 ### Added (Paper Execution)
 

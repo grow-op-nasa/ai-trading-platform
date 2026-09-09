@@ -183,9 +183,16 @@ below, where it's now built.
   `PerformanceAttributor` + `ResearchReporter` before any execution
   logic gets added. Replaces the demonstration-only class that
   previously lived in `tests/test_strategy_sdk.py`.
-- ⬜ `src/risk/`: position sizing, per-trade and portfolio-level exposure
-  limits, given a signal and account state.
-- ⬜ `src/execution/`: translates a sized signal into orders. Paper
+- ✅ `src/risk/`: `PositionSizer` -- position sizing at a fixed fraction
+  of account equity (`RiskLimits.risk_per_trade_pct`, default 10%),
+  identical regardless of `Signal.confidence`; a portfolio-level
+  exposure cap (`RiskLimits.max_portfolio_exposure_pct`, default 50%)
+  that sizes down before it ever rejects outright. Deliberately
+  standalone from `Backtester` this round -- see `DECISIONS.md`,
+  ADR-0021. Confidence-scaled sizing and a position-count-based
+  portfolio limit are deferred, not rejected.
+- ⬜ `src/execution/`: translates a sized signal into orders, consuming
+  `PositionSizer`'s `SizingDecision` for the first time. Paper
   execution first; real broker connectivity comes after.
 
 ## Sprint 5 -- Broker Connectivity (planned)

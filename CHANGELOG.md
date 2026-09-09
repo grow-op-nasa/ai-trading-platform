@@ -11,7 +11,58 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
-## Sprint 4 (in progress) -- 2026-09-09
+## Sprint 4 (in progress) -- 2026-09-10
+
+### Added (Position Sizing)
+
+- `src/risk/` -- `PositionSizer` (`DECISIONS.md`, ADR-0021), touching
+  zero existing files (Extension Cost: 0):
+  - `engine.py` -- `PositionSizer.size(signal, account, price) ->
+    SizingDecision`. Sizes a `LONG`/`SHORT` signal at a **fixed**
+    fraction of account equity (`RiskLimits.risk_per_trade_pct`,
+    default 10%), applied identically regardless of `Signal.confidence`.
+    Sizes down to whatever portfolio exposure headroom remains
+    (`RiskLimits.max_portfolio_exposure_pct`, default 50% of equity)
+    rather than rejecting outright when the full allocation doesn't
+    fit; only rejects (`approved=False`) when there's no headroom left
+    at all. Raises on a `FLAT` signal (nothing to size) or a
+    non-positive price.
+  - `models.py` -- `RiskLimits` (validated percentages, both in
+    `(0, 1]`), `AccountState` (`equity`, `open_exposure`, validated
+    positive/non-negative), `SizingDecision` (`approved`,
+    `position_size`, `capital_allocated`, `reason`).
+  - Deliberately **standalone** from `Backtester` this round --
+    `Backtester` keeps ADR-0011's single-unit execution model
+    untouched; wiring `PositionSizer` into a backtest or the future
+    `src/execution` is a deliberate future step, not built here.
+- `tests/test_risk.py` -- 16 tests: `RiskLimits`/`AccountState`
+  validation (boundary values, out-of-range rejection), input
+  validation on `size()` (`FLAT` signal, non-positive price), full-size
+  allocation, sized-down allocation when headroom is partially used,
+  rejection when the exposure limit is already reached or exceeded,
+  `LONG`/`SHORT` sized identically, default `RiskLimits` behavior.
+
+### Decided (Position Sizing)
+
+- Fixed fraction of equity per trade, not confidence-scaled -- no
+  validated relationship yet between a strategy's confidence score and
+  how much capital it should be trusted with. See `DECISIONS.md`,
+  ADR-0021.
+- Portfolio-level limit is a percentage-of-equity cap, not a
+  position-count cap -- answers "how much of the account is at risk
+  right now" directly, regardless of how many positions that capital
+  is split across.
+- `PositionSizer` stays standalone from `Backtester` this round, so a
+  regression can't be ambiguous between new sizing logic and the
+  existing backtest engine it would otherwise get wired into in the
+  same change.
+
+### Verified (Position Sizing)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **174
+  passed**, 0 failed.
+
+## Sprint 4, EMACrossStrategy -- 2026-09-09
 
 ### Added
 

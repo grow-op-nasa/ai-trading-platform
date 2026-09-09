@@ -24,7 +24,7 @@ graph TD
     attribution[attribution: PerformanceAttributor]
     experiments[experiments: ExperimentRegistry + Signal storage]
     research[research: ResearchReporter]
-    risk[risk: not yet built]
+    risk[risk: PositionSizer]
     execution[execution: not yet built]
     broker[broker: not yet built]
     analytics[analytics: not yet built]
@@ -49,7 +49,7 @@ graph TD
     backtesting --> research
     attribution --> research
     utils --> research
-    strategies --> risk
+    signals --> risk
     risk --> execution
     execution --> broker
     strategies --> analytics
@@ -75,6 +75,14 @@ and recommendation (a research artifact for a person to read), while
 `strategies` like any other signal source. Neither module makes a
 trading decision on its own behalf (ADR-0017) -- `research` explicitly
 never will, since its output is prose for a person, not a `Signal`.
+
+`risk --> execution` is drawn even though `execution` doesn't exist
+yet: it documents where `PositionSizer`'s output (`SizingDecision`) is
+headed, not a dependency that exists today. `risk` does **not** depend
+on, or get called by, `backtesting` -- `Backtester` still sizes every
+trade as a single unit (ADR-0011), unchanged. `PositionSizer` is
+verified standalone until `execution` exists to actually consume it
+(`DECISIONS.md`, ADR-0021).
 
 `cli` is drawn separately from the main pipeline on purpose: it's a
 diagnostic tool that reaches into several capabilities to check their
@@ -405,6 +413,42 @@ scope -- see the note under the dependency diagram above.
   `src/utils/formatting.py` (new), `src/cli/checks.py`. See ADR-0020 for
   why this is proportionate rather than a violation.
 
+### `src/risk`
+
+**Purpose:** decide how large a position to take for a signal -- and
+whether to take one at all -- given the account's current state.
+Sprint 4 (`DECISIONS.md`, ADR-0021).
+
+- **Inputs:** a `Signal` (must be `LONG` or `SHORT`), an `AccountState`
+  (`equity`, `open_exposure`), and the instrument's current `price`.
+- **Outputs:** a `SizingDecision` (`approved`, `position_size`,
+  `capital_allocated`, `reason`).
+- **Key files:**
+  - `engine.py` -- `PositionSizer.size(signal, account, price)`. Sizes
+    at a **fixed** fraction of equity (`RiskLimits.risk_per_trade_pct`,
+    default 10%) regardless of `Signal.confidence`. Sizes down to
+    whatever portfolio exposure headroom remains
+    (`RiskLimits.max_portfolio_exposure_pct`, default 50% of equity)
+    rather than rejecting outright when the full allocation doesn't
+    fit; only rejects (`approved=False`) when there's no headroom left
+    at all. `LONG` and `SHORT` sized identically.
+  - `models.py` -- `RiskLimits` (validated percentages, `(0, 1]`),
+    `AccountState` (validated `equity > 0`, `open_exposure >= 0`),
+    `SizingDecision`.
+- **Does not:** scale size by `Signal.confidence` -- deliberately
+  deferred, since there's no validated relationship yet between a
+  confidence score and how much capital it should be trusted with.
+  Does not cap the number of concurrent open positions -- only a
+  percentage-of-equity portfolio cap exists today. Does not enforce
+  whole-share/lot rounding -- fractional `position_size` is allowed;
+  rounding to a tradable lot is an execution-layer concern, deferred
+  the same way ADR-0011 deferred realistic execution mechanics out of
+  `Backtester`. Is not wired into `Backtester` or anything else yet --
+  see the note under the dependency diagram above.
+- **Depends on:** `src/signals` (for `Signal`/`SignalDirection`).
+  Extension Cost (ADR-0014): 0 -- purely additive, nothing in
+  `src/backtesting`, `src/strategies`, or `src/signals` was changed.
+
 ### `src/experiments`
 
 **Purpose:** every backtest run becomes a permanent, queryable record --
@@ -475,10 +519,10 @@ guess. See `DECISIONS.md`, ADR-0013.
   -- it reaches into each capability's public API to check it, the same
   way any other consumer would.
 
-### `src/broker`, `src/execution`, `src/risk`, `src/analytics`, `src/ai`, `src/dashboard`
+### `src/broker`, `src/execution`, `src/analytics`, `src/ai`, `src/dashboard`
 
-(`src/research` is now built -- see above -- and no longer belongs in
-this "not yet implemented" list.)
+(`src/research` and `src/risk` are now built -- see above -- and no
+longer belong in this "not yet implemented" list.)
 
 Not yet implemented -- each currently exists only as an empty package
 with a docstring stating its intended purpose (see `src/__init__.py`

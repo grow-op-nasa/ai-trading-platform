@@ -914,3 +914,70 @@ in the platform) still hasn't been built as a permanent
 `src/strategies/` file -- `EMACrossStrategy` remains a demonstration
 class in `tests/test_strategy_sdk.py` only, tracked in
 `PROJECT_STATE.md`/`ROADMAP.md` as the next concrete piece of work.
+
+---
+
+## ADR-0021: Position sizing -- fixed fraction of equity, standalone from Backtester
+
+**Status:** Accepted -- Sprint 4
+
+**Context:** Sprint 4 asked for `src/risk`: position sizing plus
+per-trade and portfolio-level exposure limits, given a signal and
+account state. Every prior module in this codebase decides one thing
+deliberately and defers the rest (Signal has no price; `BaseStrategy`
+never picks a direction; `PerformanceAttributor` doesn't touch session
+timing) -- three questions needed the same treatment here. (1) Sizing
+basis: should position size scale with `Signal.confidence` (giving that
+field its first real consumer), or use a fixed fraction of equity
+regardless of confidence? (2) Portfolio-level limit: cap total deployed
+capital as a percentage of equity, cap the number of concurrent
+positions, or both? (3) Should `PositionSizer` wire directly into
+`Backtester.run()` now, changing already-shipped, tested code, or stay
+a standalone module this round?
+
+**Decision:** All three were settled toward the simpler, more
+conservative option, matching the "deliberately simple first" posture
+`EMACrossStrategy` set. Added `src/risk/` (`PositionSizer`,
+`RiskLimits`, `AccountState`, `SizingDecision`), touching zero existing
+files. `RiskLimits.risk_per_trade_pct` (default `0.10`) is a **fixed**
+fraction of account equity deployed per trade -- applied identically to
+every signal regardless of `Signal.confidence`. Confidence-scaled
+sizing is a natural, compatible future extension (a second
+`RiskLimits`/sizer variant, not a rewrite), deliberately not built this
+round since there's no validated relationship yet between a strategy's
+confidence score and how much capital it should actually be trusted
+with. `RiskLimits.max_portfolio_exposure_pct` (default `0.50`) caps
+total capital committed to open positions as a percentage of equity --
+chosen over a raw position-count cap since it answers the more direct
+question ("how much of the account is at risk right now") regardless
+of how many separate positions that capital happens to be split across;
+a count-based cap can be layered on later if it turns out to matter
+independently. `PositionSizer.size(signal, account, price)` is
+**standalone** this round: `Backtester` keeps ADR-0011's existing
+single-unit execution model completely untouched. Wiring position
+sizing into a backtest -- or into the future `src/execution` -- is a
+deliberate future step, not built here, since doing both in the same
+change would make it hard to tell whether a regression came from the
+new sizing logic or from the backtest engine it got wired into.
+`PositionSizer.size()` raises on a `FLAT` signal (there's nothing to
+open a position for) and on a non-positive price; when the full desired
+allocation doesn't fit in remaining portfolio headroom, it sizes down
+to whatever headroom remains rather than rejecting outright, and only
+rejects (`approved=False`, `position_size=0.0`) when there's no
+headroom left at all -- a smaller position within limits is treated as
+better than discarding a valid signal entirely. `LONG` and `SHORT`
+signals are sized identically, since both commit capital, just in
+opposite directions.
+
+**Consequences:** Extension Cost (ADR-0014) for this module: 0 --
+`src/risk` only reads `Signal`'s existing public fields (`direction`),
+nothing in `src/backtesting`, `src/strategies`, or `src/signals` was
+changed to add it. `PositionSizer`'s output (`SizingDecision`) isn't
+consumed by anything yet -- there is no `src/execution` to hand it to,
+and `Backtester` doesn't ask it for a size -- so this module is
+verified in isolation, not proven end-to-end against a real backtest,
+until `src/execution` exists to close that loop. Confidence-scaled
+sizing, whole-share-lot rounding, and a position-count-based portfolio
+limit are all explicitly deferred, not rejected -- tracked in
+`ROADMAP.md`/`PROJECT_STATE.md` as future variants once real usage
+shows they're needed.

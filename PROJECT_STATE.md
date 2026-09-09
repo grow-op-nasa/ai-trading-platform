@@ -1,11 +1,13 @@
 # Project State
 
-_Last updated: 2026-09-10 -- Sprint 4 (in progress): `EMACrossStrategy`
-(`src/strategies/ema_cross.py`) is the platform's first permanent
-strategy -- long while EMA(fast) > EMA(slow), flat otherwise,
-deliberately simple. Sprint 3 (Signal Framework, Strategy SDK,
-Performance Attribution, AI Research Reporter) is complete. Confirmed
-via real `pytest` on the dev machine: 158/158 tests pass._
+_Last updated: 2026-09-10 -- Sprint 4 (in progress): `PositionSizer`
+(`src/risk/`) sizes a signal at a fixed fraction of account equity and
+enforces a portfolio-level exposure cap, standalone from `Backtester`
+for now. `EMACrossStrategy` (`src/strategies/ema_cross.py`), the
+platform's first permanent strategy, landed just before it. Sprint 3
+(Signal Framework, Strategy SDK, Performance Attribution, AI Research
+Reporter) is complete. Confirmed via real `pytest` on the dev machine:
+174/174 tests pass._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -126,14 +128,24 @@ For why things were built the way they were, see `DECISIONS.md`.
   end to end on a real (if minimal) trading idea. Replaces the
   demonstration-only `EMACrossStrategy` that previously lived solely in
   `tests/test_strategy_sdk.py`.
+- ✅ Position Sizing (`src/risk/`) -- Sprint 4.
+  `PositionSizer.size(signal, account, price)` sizes a `LONG`/`SHORT`
+  signal at a fixed fraction of account equity
+  (`RiskLimits.risk_per_trade_pct`, default 10%), the same for every
+  signal regardless of `Signal.confidence`. Sizes down to remaining
+  portfolio exposure headroom (`RiskLimits.max_portfolio_exposure_pct`,
+  default 50% of equity) rather than rejecting outright when the full
+  allocation doesn't fit; only rejects when there's no headroom left.
+  Deliberately standalone from `Backtester` this round -- ADR-0011's
+  single-unit execution model is untouched. Touches zero existing
+  files (Extension Cost: 0). See `DECISIONS.md`, ADR-0021.
 
 ## Current Module
 
-**Sprint 3 is complete and confirmed** -- all four modules (Signal
-Framework, Strategy SDK, Performance Attribution, AI Research Reporter)
-built, documented, and verified. **Sprint 4 is in progress**:
-`EMACrossStrategy` is complete and confirmed too -- 158/158 tests pass
-via real `pytest` on the dev machine (Python 3.14.6).
+**Sprint 3 is complete and confirmed. Sprint 4 is in progress**:
+`EMACrossStrategy` and `PositionSizer` are both complete and confirmed
+-- 174/174 tests pass via real `pytest` on the dev machine
+(Python 3.14.6).
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2, 3, or 4): no data validation beyond required-column
@@ -143,9 +155,10 @@ live yfinance API.
 
 ## Next Task
 
-Commit and push `EMACrossStrategy`. After that, continue Sprint 4:
-`src/risk/` (position sizing, exposure limits) and `src/execution/`
-(translating a sized signal into paper orders). See `ROADMAP.md`.
+Commit and push `PositionSizer`. After that, continue Sprint 4:
+`src/execution/` (translating a sized signal into paper orders,
+consuming `PositionSizer`'s output for the first time). See
+`ROADMAP.md`.
 
 ## Known Issues
 
@@ -185,6 +198,12 @@ Commit and push `EMACrossStrategy`. After that, continue Sprint 4:
 - No `ResearchReport` persistence -- reports are produced on demand from
   a `BacktestResult` + `AttributionReport` pair, not saved back into
   `ExperimentRegistry`. Natural future step, not built this round.
+- `PositionSizer` isn't wired into anything yet -- `Backtester` still
+  assumes single-unit sizing (ADR-0011), and there's no `src/execution`
+  to hand a `SizingDecision` to. Verified in isolation only; not yet
+  proven end-to-end against a real backtest. Confidence-scaled sizing
+  and a position-count-based portfolio limit are deferred, not
+  rejected -- see `DECISIONS.md`, ADR-0021.
 - Package layout (`src/` vs. `src/ai_trading_platform/`) and flat
   config constants vs. a typed `Settings` object -- both deferred to
   pre-1.0, tracked as ADR-0004 and ADR-0005.
@@ -192,10 +211,10 @@ Commit and push `EMACrossStrategy`. After that, continue Sprint 4:
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 158 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 174 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
                           # + 27 cli/doctor + 10 signals + 11 strategy_sdk + 8 attribution
-                          # + 15 research + 11 ema_cross_strategy)
+                          # + 15 research + 11 ema_cross_strategy + 16 risk)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
 ```

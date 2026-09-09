@@ -11,6 +11,45 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 4 (in progress) -- 2026-09-09
+
+### Added
+
+- `src/strategies/ema_cross.py` -- `EMACrossStrategy`, the platform's
+  first permanent strategy: long while EMA(fast) > EMA(slow), flat
+  otherwise, long-only. Deliberately simple by design, not tuned for
+  profitability -- carried forward from Sprint 3's roadmap note (see
+  `ROADMAP.md`). Defaults `fast=12, slow=26`; raises `ValueError` if
+  `fast >= slow`. `confidence` is a fixed, configurable constant per
+  instance (no natural continuous confidence measure for a strategy
+  this simple). Exported from `src/strategies/__init__.py`.
+  Extension Cost (ADR-0014): 1 file changed outside the new file itself
+  (`src/strategies/__init__.py`, one export added) -- as close to the
+  "add a strategy, touch nothing else" ideal as the package's own
+  `__all__` convention allows.
+- `tests/test_ema_cross_strategy.py` -- 11 tests: constructor
+  validation, `prepare()` output matches `IndicatorEngine` directly,
+  no input mutation, sparsity (no two consecutive signals share a
+  direction), never emits `SHORT`, EMA's lack of NaN warmup documented
+  explicitly (its `.ewm(adjust=False)` is defined from row one -- the
+  strategy's `pd.isna()` guard is defensive, not load-bearing, for this
+  particular indicator), confidence is fixed and configurable, signal
+  metadata includes `strategy`/`reason`, end-to-end through the real
+  `Backtester` with default periods.
+
+### Changed
+
+- `tests/test_strategy_sdk.py` -- its local `EMACrossStrategy` demo
+  class was removed in favor of importing the real
+  `src/strategies/ema_cross.EMACrossStrategy`, so the SDK-integration
+  tests and the strategy's own logic tests share one implementation
+  instead of two copies that could quietly drift apart.
+
+### Verified
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **158
+  passed**, 0 failed.
+
 ## Sprint 3 -- 2026-09-09
 
 ### Added (Module 4 -- AI Research Reporter)

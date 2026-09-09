@@ -167,26 +167,25 @@ produced from an experiment's results (✅ as of Module 4); the full
 test suite continues to pass (✅, 147 tests as of Module 4, pending
 real-machine confirmation).
 
-Sprint 3's own first strategy (a deliberately simple EMA-cross or
-opening-range-breakout, chosen so a straightforward result can be
-validated before anything more complex) still hasn't been built as a
-permanent `src/strategies/` file -- `EMACrossStrategy` remains a
-demonstration class in `tests/test_strategy_sdk.py`. Carried forward as
-the first item of Sprint 4 rather than blocking Sprint 3's close, since
-every Sprint 3 success criterion above is about the platform's
-*capability* to run and explain a strategy, not about having shipped a
-specific one yet.
+Sprint 3's own first strategy was carried forward into Sprint 4 rather
+than blocking Sprint 3's close, since every Sprint 3 success criterion
+above is about the platform's *capability* to run and explain a
+strategy, not about having shipped a specific one -- see Sprint 4,
+below, where it's now built.
 
-## Sprint 4 -- Risk & Execution (planned)
+## Sprint 4 -- Risk & Execution (in progress)
 
-- First permanent strategy in `src/strategies/` -- an EMA-cross or
-  opening-range-breakout, carried forward from Sprint 3 (see above).
-  Built via the Strategy SDK (`BaseStrategy`), validated through
-  `Backtester` + `PerformanceAttributor` + `ResearchReporter` before any
-  execution logic is added.
-- `src/risk/`: position sizing, per-trade and portfolio-level exposure
+- ✅ First permanent strategy: `EMACrossStrategy`
+  (`src/strategies/ema_cross.py`) -- long while EMA(fast) > EMA(slow),
+  flat otherwise, long-only, defaults `fast=12, slow=26`. Deliberately
+  simple, not tuned for profitability -- built via the Strategy SDK
+  (`BaseStrategy`) and validated through `Backtester` +
+  `PerformanceAttributor` + `ResearchReporter` before any execution
+  logic gets added. Replaces the demonstration-only class that
+  previously lived in `tests/test_strategy_sdk.py`.
+- ⬜ `src/risk/`: position sizing, per-trade and portfolio-level exposure
   limits, given a signal and account state.
-- `src/execution/`: translates a sized signal into orders. Paper
+- ⬜ `src/execution/`: translates a sized signal into orders. Paper
   execution first; real broker connectivity comes after.
 
 ## Sprint 5 -- Broker Connectivity (planned)

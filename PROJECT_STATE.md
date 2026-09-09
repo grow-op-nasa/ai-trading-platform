@@ -1,11 +1,11 @@
 # Project State
 
-_Last updated: 2026-09-09 -- Sprint 3 Module 4 (AI Research Reporter)
-built: `ResearchReporter` compiles a completed backtest + attribution
-report into evidence-grounded findings and a rendered narrative
-(deterministic fallback always available; Claude rephrasing optional).
-Sprint 3 is complete and confirmed: 147/147 tests pass via real
-`pytest` on the dev machine (Python 3.14.6)._
+_Last updated: 2026-09-10 -- Sprint 4 (in progress): `EMACrossStrategy`
+(`src/strategies/ema_cross.py`) is the platform's first permanent
+strategy -- long while EMA(fast) > EMA(slow), flat otherwise,
+deliberately simple. Sprint 3 (Signal Framework, Strategy SDK,
+Performance Attribution, AI Research Reporter) is complete. Confirmed
+via real `pytest` on the dev machine: 158/158 tests pass._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -116,31 +116,36 @@ For why things were built the way they were, see `DECISIONS.md`.
   `FallbackNarrativeRenderer` (always available) or an optional
   `ClaudeNarrativeRenderer` (rephrases only, forbidden from inventing
   facts), auto-selected by whether `ANTHROPIC_API_KEY` is set. See
-  `DECISIONS.md`, ADR-0020. Sprint 3 is code-complete.
+  `DECISIONS.md`, ADR-0020. Sprint 3 is complete.
+- ✅ `EMACrossStrategy` (`src/strategies/ema_cross.py`) -- the platform's
+  first permanent strategy, carried forward from Sprint 3's roadmap
+  note into Sprint 4. Long-only: long while EMA(fast) > EMA(slow), flat
+  otherwise, defaults `fast=12, slow=26`. Deliberately simple, not
+  tuned for profitability -- a vehicle for exercising the Strategy SDK,
+  Backtester, Performance Attribution, and AI Research Reporter
+  end to end on a real (if minimal) trading idea. Replaces the
+  demonstration-only `EMACrossStrategy` that previously lived solely in
+  `tests/test_strategy_sdk.py`.
 
 ## Current Module
 
 **Sprint 3 is complete and confirmed** -- all four modules (Signal
 Framework, Strategy SDK, Performance Attribution, AI Research Reporter)
-built, documented, and verified: 147/147 tests pass via real `pytest`
-on the dev machine. `atp doctor` and all of Sprint 2 remain closed too.
-See "Next Task" for what's next.
+built, documented, and verified. **Sprint 4 is in progress**:
+`EMACrossStrategy` is complete and confirmed too -- 158/158 tests pass
+via real `pytest` on the dev machine (Python 3.14.6).
 
 What's left on the Market Data Service (moved to Roadmap, not
-blocking Sprint 2 or 3): no data validation beyond required-column
+blocking Sprint 2, 3, or 4): no data validation beyond required-column
 checks (ADR-0006); caching is CSV-only and re-fetches whole ranges on
 any cache-key miss (ADR-0007); no integration test suite against the
 live yfinance API.
 
 ## Next Task
 
-Commit and push the AI Research Reporter (Sprint 3's final module) --
-this closes Sprint 3. After that, per `ROADMAP.md`'s Sprint 4 notes:
-build Sprint 3's own first strategy (an EMA-cross or
-opening-range-breakout, deliberately simple) as a permanent
-`src/strategies/` file -- `EMACrossStrategy` currently exists only as a
-demonstration class in `tests/test_strategy_sdk.py`. Then move to the
-rest of Sprint 4 (Risk & Execution).
+Commit and push `EMACrossStrategy`. After that, continue Sprint 4:
+`src/risk/` (position sizing, exposure limits) and `src/execution/`
+(translating a sized signal into paper orders). See `ROADMAP.md`.
 
 ## Known Issues
 
@@ -180,10 +185,6 @@ rest of Sprint 4 (Risk & Execution).
 - No `ResearchReport` persistence -- reports are produced on demand from
   a `BacktestResult` + `AttributionReport` pair, not saved back into
   `ExperimentRegistry`. Natural future step, not built this round.
-- Sprint 3's own first strategy (EMA-cross or opening-range-breakout)
-  hasn't been built as a permanent `src/strategies/` file yet --
-  `EMACrossStrategy` exists only as a demonstration class in
-  `tests/test_strategy_sdk.py`.
 - Package layout (`src/` vs. `src/ai_trading_platform/`) and flat
   config constants vs. a typed `Settings` object -- both deferred to
   pre-1.0, tracked as ADR-0004 and ADR-0005.
@@ -191,10 +192,10 @@ rest of Sprint 4 (Risk & Execution).
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 147 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 158 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
                           # + 27 cli/doctor + 10 signals + 11 strategy_sdk + 8 attribution
-                          # + 15 research)
+                          # + 15 research + 11 ema_cross_strategy)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
 ```

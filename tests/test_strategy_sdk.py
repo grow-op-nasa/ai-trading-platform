@@ -1,9 +1,14 @@
 """Tests for the Strategy SDK (src/strategies/sdk.py).
 
 Covers `BaseStrategy`'s helpers in isolation, then one end-to-end demo
-(`EMACrossStrategy`) run through the real `Backtester` -- the same
-"real strategy calling IndicatorEngine" pattern `SmaCrossStrategy`
+(`EMACrossStrategy`, the platform's real permanent strategy -- see
+`src/strategies/ema_cross.py`) run through the real `Backtester` -- the
+same "real strategy calling IndicatorEngine" pattern `SmaCrossStrategy`
 demonstrated in `tests/test_backtesting.py`, but built on the SDK.
+`EMACrossStrategy`'s own trading logic (crossover detection, warmup
+handling, long-only behavior) is tested in `tests/test_ema_cross_strategy.py`,
+not duplicated here -- these tests only care that a real SDK-based
+strategy integrates correctly with `Backtester`.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import pytest
 from src.backtesting.engine import Backtester
 from src.indicators.engine import IndicatorEngine
 from src.signals.models import SignalDirection
+from src.strategies.ema_cross import EMACrossStrategy
 from src.strategies.sdk import BaseStrategy
 
 
@@ -39,56 +45,6 @@ class MinimalStrategy(BaseStrategy):
 
     def generate_signals(self, data: pd.DataFrame) -> list:
         return []
-
-
-class EMACrossStrategy(BaseStrategy):
-    """Deliberately simple: long while EMA(fast) > EMA(slow), else flat.
-
-    Emits a Signal only when the crossover state changes -- the author
-    (this class) owns that sparsity decision entirely; BaseStrategy
-    only supplies self.indicator/self.emit_signal.
-    """
-
-    def __init__(self, fast: int = 2, slow: int = 4):
-        super().__init__(name="ema_cross")
-        self._fast = fast
-        self._slow = slow
-
-    def prepare(self, data: pd.DataFrame) -> pd.DataFrame:
-        self.require_columns(data)
-        out = data.copy()
-        out["ema_fast"] = self.indicator(data, "EMA", period=self._fast)
-        out["ema_slow"] = self.indicator(data, "EMA", period=self._slow)
-        return out
-
-    def generate_signals(self, data: pd.DataFrame) -> list:
-        signals = []
-        in_position = False
-        for timestamp, row in data.iterrows():
-            if pd.isna(row["ema_fast"]) or pd.isna(row["ema_slow"]):
-                continue
-            crossed_up = row["ema_fast"] > row["ema_slow"]
-            if crossed_up and not in_position:
-                signals.append(
-                    self.emit_signal(
-                        timestamp,
-                        SignalDirection.LONG,
-                        confidence=0.7,
-                        reason="EMA fast crossed above EMA slow",
-                    )
-                )
-                in_position = True
-            elif not crossed_up and in_position:
-                signals.append(
-                    self.emit_signal(
-                        timestamp,
-                        SignalDirection.FLAT,
-                        confidence=0.7,
-                        reason="EMA fast crossed below EMA slow",
-                    )
-                )
-                in_position = False
-        return signals
 
 
 def test_base_strategy_cannot_be_instantiated_directly():

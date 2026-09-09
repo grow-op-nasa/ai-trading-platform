@@ -1,10 +1,11 @@
 # Project State
 
-_Last updated: 2026-07-28 -- Sprint 3 Module 2 (Strategy SDK) confirmed
-on the real dev machine: `pytest` -> 123 passed. `BaseStrategy`
-(`src/strategies/sdk.py`) provides indicator access, logging, column
-validation, and signal construction, but a strategy author still
-writes `prepare()`/`generate_signals()` in full._
+_Last updated: 2026-09-09 -- Sprint 3 Module 4 (AI Research Reporter)
+built: `ResearchReporter` compiles a completed backtest + attribution
+report into evidence-grounded findings and a rendered narrative
+(deterministic fallback always available; Claude rephrasing optional).
+Sprint 3 is complete and confirmed: 147/147 tests pass via real
+`pytest` on the dev machine (Python 3.14.6)._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -60,10 +61,13 @@ For why things were built the way they were, see `DECISIONS.md`.
   extensions easier or harder?" is now the standing test for any
   unclear design decision.
 - ✅ `atp doctor` (`src/cli/`) -- a full system health check: Python
-  Version, Configuration, Market Data, Cache, and Experiments DB are
-  real, live checks; Broker Connection and API Keys report
+  Version, Configuration, Market Data, Cache, Experiments DB, and API
+  Keys are real, live checks; Broker Connection reports
   `NOT_IMPLEMENTED` honestly rather than a faked pass. Run via `python
-  -m src.cli doctor`. See `DECISIONS.md`, ADR-0013.
+  -m src.cli doctor`. See `DECISIONS.md`, ADR-0013 (original design)
+  and ADR-0020 (API Keys upgraded from `NOT_IMPLEMENTED` to a real,
+  always-`OK` check once the AI Research Reporter gave it something to
+  report on).
 - ✅ `DECISIONS.md`, ADR-0014 -- Extension Cost adopted as a standing
   awareness habit (not a pass/fail target): every addition of a new
   indicator/strategy/broker/data vendor gets an `Extension Cost: N
@@ -95,13 +99,32 @@ For why things were built the way they were, see `DECISIONS.md`.
   -- the strategy author still writes `prepare()`/`generate_signals()`
   in full. `Strategy` (the Protocol) is unchanged. See `DECISIONS.md`,
   ADR-0018.
+- ✅ Performance Attribution (`src/attribution/`) -- Sprint 3 Module 3.
+  `PerformanceAttributor.run(result, candles)` independently recomputes
+  regime via `MarketRegimeEngine` (never trusts `Signal.metadata`),
+  buckets each trade by trend+volatility regime **at entry**, excludes
+  warmup-period trades from "Best"/"Worst Regime" rather than
+  mislabeling them. Touches zero existing files (Extension Cost: 0).
+  Session-of-day breakdown deliberately deferred pending ADR-0006
+  timezone consistency. See `DECISIONS.md`, ADR-0019.
+- ✅ AI Research Reporter (`src/research/`) -- Sprint 3 Module 4.
+  `compile_findings(result, attribution)` deterministically extracts
+  evidence (trade count, win rate, Sharpe, drawdown, average hold,
+  best/worst regime) into a `ResearchFindings`, with a `recommendation`
+  only when the worst regime bucket is an actual loser -- never a
+  fabricated session-of-day claim. `ResearchReporter` renders it via a
+  `FallbackNarrativeRenderer` (always available) or an optional
+  `ClaudeNarrativeRenderer` (rephrases only, forbidden from inventing
+  facts), auto-selected by whether `ANTHROPIC_API_KEY` is set. See
+  `DECISIONS.md`, ADR-0020. Sprint 3 is code-complete.
 
 ## Current Module
 
-**Sprint 3, Module 2 (Strategy SDK) complete and confirmed.** Module 1
-(Signal Framework), `atp doctor`, and all of Sprint 2 are closed.
-Modules 3-4 of Sprint 3 (Performance Attribution, AI Research Reporter)
-are not started -- see "Next Task."
+**Sprint 3 is complete and confirmed** -- all four modules (Signal
+Framework, Strategy SDK, Performance Attribution, AI Research Reporter)
+built, documented, and verified: 147/147 tests pass via real `pytest`
+on the dev machine. `atp doctor` and all of Sprint 2 remain closed too.
+See "Next Task" for what's next.
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2 or 3): no data validation beyond required-column
@@ -111,11 +134,13 @@ live yfinance API.
 
 ## Next Task
 
-Commit and push the Strategy SDK. After that, Sprint 3 Module 3:
-**Performance Attribution** -- explain backtest results (best/worst
-regime, session-by-session breakdown, average hold time), not just
-report win rate and P&L. Builds on `BacktestResult.signals` and
-`Trade.entry_signal_id` from Module 1. See `ROADMAP.md`.
+Commit and push the AI Research Reporter (Sprint 3's final module) --
+this closes Sprint 3. After that, per `ROADMAP.md`'s Sprint 4 notes:
+build Sprint 3's own first strategy (an EMA-cross or
+opening-range-breakout, deliberately simple) as a permanent
+`src/strategies/` file -- `EMACrossStrategy` currently exists only as a
+demonstration class in `tests/test_strategy_sdk.py`. Then move to the
+rest of Sprint 4 (Risk & Execution).
 
 ## Known Issues
 
@@ -146,6 +171,19 @@ report win rate and P&L. Builds on `BacktestResult.signals` and
   level -- but it's now a real, user-visible rough edge, not just a
   someday concern.
 - No CI (GitHub Actions or similar) running the test suite on push yet.
+- Performance Attribution has no session-of-day breakdown (morning/
+  lunch/power hour) -- deliberately deferred since it would depend on
+  candle timestamps reliably being in market-local time, which isn't
+  guaranteed until ADR-0006 (timezone consistency) lands. Add once that
+  gap closes. The AI Research Reporter inherits this gap too -- it
+  cannot yet suggest anything session-related, only regime-related.
+- No `ResearchReport` persistence -- reports are produced on demand from
+  a `BacktestResult` + `AttributionReport` pair, not saved back into
+  `ExperimentRegistry`. Natural future step, not built this round.
+- Sprint 3's own first strategy (EMA-cross or opening-range-breakout)
+  hasn't been built as a permanent `src/strategies/` file yet --
+  `EMACrossStrategy` exists only as a demonstration class in
+  `tests/test_strategy_sdk.py`.
 - Package layout (`src/` vs. `src/ai_trading_platform/`) and flat
   config constants vs. a typed `Settings` object -- both deferred to
   pre-1.0, tracked as ADR-0004 and ADR-0005.
@@ -153,9 +191,10 @@ report win rate and P&L. Builds on `BacktestResult.signals` and
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 123 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 147 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
-                          # + 26 cli/doctor + 10 signals + 11 strategy_sdk)
+                          # + 27 cli/doctor + 10 signals + 11 strategy_sdk + 8 attribution
+                          # + 15 research)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
 ```

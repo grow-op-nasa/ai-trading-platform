@@ -218,9 +218,18 @@ def test_broker_connection_is_not_implemented():
     assert "Sprint 5" in result.detail
 
 
-def test_api_keys_is_not_implemented():
+def test_api_keys_ok_when_anthropic_key_set(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-123")
     result = checks.check_api_keys()
-    assert result.status is CheckStatus.NOT_IMPLEMENTED
+    assert result.status is CheckStatus.OK
+    assert "ANTHROPIC_API_KEY set" in result.detail
+
+
+def test_api_keys_ok_when_anthropic_key_absent(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = checks.check_api_keys()
+    assert result.status is CheckStatus.OK
+    assert "deterministic fallback" in result.detail
 
 
 # ---------------------------------------------------------------------------

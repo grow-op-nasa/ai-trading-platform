@@ -11,7 +11,118 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
-## Sprint 3 (in progress) -- 2026-07-28
+## Sprint 3 -- 2026-09-09
+
+### Added (Module 4 -- AI Research Reporter)
+
+- `src/research/` -- the AI Research Reporter (`DECISIONS.md`,
+  ADR-0020):
+  - `compiler.py` -- `compile_findings(result, attribution) ->
+    ResearchFindings`. Fully deterministic: extracts trade count, win
+    rate, Sharpe, max drawdown, average hold, and best/worst regime as
+    `Finding(label, value)` pairs, plus an optional single
+    `recommendation` string produced only when the worst regime bucket
+    actually has a negative average return. Never reasons about
+    session-of-day timing -- that axis doesn't exist yet (ADR-0019).
+  - `renderers.py` -- `NarrativeRenderer` protocol,
+    `FallbackNarrativeRenderer` (template-based prose, zero setup,
+    always available), `ClaudeNarrativeRenderer` (calls the Claude API
+    with a system prompt that forbids stating any fact not already in
+    the findings). `anthropic` is a lazy, optional import -- not added
+    to `requirements.txt`.
+  - `reporter.py` -- `ResearchReporter.run(result, attribution) ->
+    ResearchReport`. Picks `ClaudeNarrativeRenderer` when
+    `ANTHROPIC_API_KEY` is set and `anthropic` is importable,
+    `FallbackNarrativeRenderer` otherwise; falls back to the
+    deterministic renderer on any LLM-path exception rather than losing
+    the report.
+  - `models.py` -- `Finding`, `ResearchFindings`, `ResearchReport`.
+- `src/utils/formatting.py` (new) -- `format_timedelta`, promoted out of
+  `src/attribution/models.py`'s private `_format_timedelta` so
+  `AttributionReport.report()` and `compile_findings()` share one
+  implementation (same precedent as `CacheManager`, ADR-0008).
+- `tests/test_research.py` -- 15 tests: findings extraction (present/
+  absent metrics, formatting, recommendation logic, explicit check that
+  session-of-day is never mentioned), both renderers (fallback prose,
+  a mocked Claude call asserting the system prompt and findings text
+  sent), and `ResearchReporter` (fallback selection, injected renderer,
+  fallback-on-exception, findings always populated).
+
+### Changed (Module 4)
+
+- `src/attribution/models.py` -- removed the private `_format_timedelta`,
+  now imports and uses `src/utils/formatting.format_timedelta`.
+- `src/utils/__init__.py` -- exports `format_timedelta` alongside
+  `CacheManager`.
+- `src/cli/checks.py` -- `check_api_keys` upgraded from `NOT_IMPLEMENTED`
+  to a real, always-`OK` check reporting whether `ANTHROPIC_API_KEY` is
+  set. Its absence doesn't degrade platform health -- research reports
+  always work via the fallback renderer.
+
+### Decided (Module 4)
+
+- Hybrid mechanism: deterministic findings compiler + optional LLM
+  rendering pass that only rephrases, never invents. See `DECISIONS.md`,
+  ADR-0020.
+- Strictly evidence-grounded: the compiler only reasons about metrics
+  the platform already computes (regime breakdown), and explicitly
+  never fabricates a session-of-day claim, since that attribution axis
+  is still deferred pending ADR-0006.
+- `src/research/` is distinct from the Sprint 7+ `src/ai/` scope: this
+  module produces a research recommendation for a person to weigh
+  (ADR-0017), never a trading signal.
+
+### Verified (Module 4)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **147
+  passed**, 0 failed. This closes Sprint 3 -- all four modules verified
+  end to end.
+
+### Added (Module 3 -- Performance Attribution)
+
+- `src/attribution/` -- `PerformanceAttributor` (`DECISIONS.md`,
+  ADR-0019), touching zero existing files (Extension Cost: 0):
+  - `engine.py` -- `PerformanceAttributor.run(result, candles,
+    **regime_kwargs) -> AttributionReport`. Independently recomputes
+    regime via `MarketRegimeEngine(candles)` rather than reading
+    `Signal.metadata`, so attribution works for every backtest
+    regardless of what a strategy recorded. Buckets each trade by the
+    regime (trend + volatility only, risk axis excluded) at its
+    `entry_time`; a trade entering during indicator warmup is bucketed
+    `"unknown"` and excluded from "Best"/"Worst Regime".
+  - `models.py` -- `AttributionReport` (trades, winning trades, win
+    rate, average hold, regime breakdown, best/worst regime, plus
+    `.report()`), `RegimeStats`.
+- `tests/test_attribution.py` -- 8 tests: counts/win rate, average
+  hold (mean duration + unit-appropriate formatting), regime label
+  correctness cross-checked directly against `MarketRegimeEngine`'s own
+  output (not hardcoded), warmup-period trades excluded from best/worst,
+  best/worst reflecting engineered returns across two distinct regimes,
+  empty-trades neutral report.
+
+### Decided (Module 3)
+
+- Regime attribution uses the regime **at trade entry**, not the
+  dominant regime across the whole hold -- simpler, matches "what
+  conditions was this decision made in." See `DECISIONS.md`, ADR-0019.
+- Session-of-day attribution (morning/lunch/power hour) is deliberately
+  **not** included this round -- it depends on candle timestamps being
+  in market-local time, which ADR-0006 (timezone consistency) hasn't
+  landed. Shipping it now would mean an unverified assumption baked
+  into a headline number; held off instead. See `DECISIONS.md`,
+  ADR-0019.
+- `src/attribution` is distinct from the planned `src/analytics`
+  (Sprint 6): attribution explains one backtest, analytics is
+  cross-experiment/live tracking. Noted in `ARCHITECTURE.md` so the two
+  don't quietly duplicate each other later.
+
+### Verified (Module 3)
+
+- New suite verified in sandbox: 8/8 `test_attribution.py` tests pass.
+  Full project suite: 129/131 in sandbox (2 known environment-only
+  failures, consistent with prior sessions). Real-machine confirmation
+  came alongside Module 4's -- see "Verified (Module 4)" above: all 147
+  tests, including these 8, passed via real `pytest`.
 
 ### Added (Module 2 -- Strategy SDK)
 

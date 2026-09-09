@@ -19,9 +19,11 @@ graph TD
     indicators[indicators: IndicatorEngine]
     regime[regime: MarketRegimeEngine]
     signals[signals: Signal + SignalDirection]
-    strategies[strategies: Strategy interface only]
+    strategies[strategies: Strategy interface + BaseStrategy SDK]
     backtesting[backtesting: Backtester]
+    attribution[attribution: PerformanceAttributor]
     experiments[experiments: ExperimentRegistry + Signal storage]
+    research[research: ResearchReporter]
     risk[risk: not yet built]
     execution[execution: not yet built]
     broker[broker: not yet built]
@@ -41,6 +43,12 @@ graph TD
     signals --> backtesting
     backtesting --> experiments
     signals --> experiments
+    backtesting --> attribution
+    regime --> attribution
+    utils --> attribution
+    backtesting --> research
+    attribution --> research
+    utils --> research
     strategies --> risk
     risk --> execution
     execution --> broker
@@ -52,6 +60,21 @@ graph TD
     utils --> cli
     experiments --> cli
 ```
+
+`attribution` is not the same thing as the planned `analytics` (Sprint 6,
+still not built): `attribution` explains a single completed backtest
+(which regime/session it did well or badly in), while `analytics` is
+scoped for cross-experiment and live P&L tracking. If that boundary
+ever gets blurry when `analytics` is actually built, revisit here
+rather than letting the two quietly duplicate each other.
+
+`research` is also distinct from the Sprint 7+ `ai` module: `research`
+turns one completed backtest's evidence into a human-readable summary
+and recommendation (a research artifact for a person to read), while
+`ai` (not yet built) will generate trading *signals* consumed by
+`strategies` like any other signal source. Neither module makes a
+trading decision on its own behalf (ADR-0017) -- `research` explicitly
+never will, since its output is prose for a person, not a `Signal`.
 
 `cli` is drawn separately from the main pipeline on purpose: it's a
 diagnostic tool that reaches into several capabilities to check their
@@ -295,6 +318,93 @@ ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
 - **Depends on:** `src/strategies` (for the `Strategy` contract),
   `src/signals` (for `Signal`/`SignalDirection`).
 
+### `src/attribution`
+
+**Purpose:** explain a completed backtest, not just report its win
+rate -- trade counts, average hold time, and which market regime
+trades did best/worst in. Sprint 3 Module 3 (`DECISIONS.md`, ADR-0019).
+Not the same thing as the planned `src/analytics` (Sprint 6) -- see the
+note under the dependency diagram above.
+
+- **Inputs:** a `BacktestResult` and the same candles it was produced
+  from (regime is looked up by each trade's `entry_time` against them).
+- **Outputs:** an `AttributionReport` (`total_trades`, `winning_trades`,
+  `win_rate`, `average_hold`, `regime_breakdown: dict[str, RegimeStats]`,
+  `best_regime`, `worst_regime`, plus a `.report()` method).
+- **Key files:**
+  - `engine.py` -- `PerformanceAttributor.run(result, candles,
+    **regime_kwargs)`. Independently recomputes regime via
+    `MarketRegimeEngine(candles)` rather than trusting a strategy to
+    have tagged `Signal.metadata` with it, so attribution works for
+    every backtest regardless of what a given strategy recorded. Buckets
+    each trade by the regime at its `entry_time` (joining
+    `trend_regime` + `volatility_regime` only -- `risk_regime` is
+    excluded since it's always `"unknown"` per ADR-0010). A trade
+    entering during the regime engine's indicator warmup period is
+    bucketed `"unknown"` and excluded from "Best"/"Worst Regime" rather
+    than trusting a misleading NaN-comparison default.
+  - `models.py` -- `AttributionReport`, `RegimeStats` dataclasses.
+- **Does not:** include a session-of-day breakdown (morning/lunch/
+  power hour) yet -- deferred until `DECISIONS.md` ADR-0006 (timezone
+  consistency) actually lands, since session buckets are only
+  meaningful if candle timestamps are reliably in market-local time,
+  which isn't yet guaranteed. Does not persist its output -- an
+  `AttributionReport` is in-memory only today; wiring it into
+  `ExperimentRegistry` is a natural future step, not built here.
+- **Depends on:** `src/backtesting` (for `BacktestResult`/`Trade`),
+  `src/regime` (for `MarketRegimeEngine`), `src/utils` (for the shared
+  `format_timedelta`, promoted here as of ADR-0020 once `src/research`
+  became a second consumer). Zero existing files changed to add this
+  module originally -- Extension Cost (ADR-0014) of 0; the later
+  `format_timedelta` extraction is accounted for under `src/research`'s
+  own Extension Cost instead.
+
+### `src/research`
+
+**Purpose:** turn a completed backtest + attribution report into an
+evidence-grounded research summary -- a recommendation for a person to
+weigh, never a trading decision (ADR-0017). Sprint 3 Module 4
+(`DECISIONS.md`, ADR-0020). Distinct from the Sprint 7+ `src/ai`
+scope -- see the note under the dependency diagram above.
+
+- **Inputs:** a `BacktestResult` and the `AttributionReport` produced
+  from it (`PerformanceAttributor.run(result, candles)`).
+- **Outputs:** a `ResearchReport` (`findings: ResearchFindings`,
+  `narrative: str`, `rendered_by: "fallback" | "claude"`).
+- **Key files:**
+  - `compiler.py` -- `compile_findings(result, attribution) ->
+    ResearchFindings`. Fully deterministic: extracts only what the
+    platform already computes (trade count, win rate, Sharpe, max
+    drawdown, average hold, best/worst regime) as `Finding(label,
+    value)` pairs. Produces a single `recommendation` string only when
+    the worst regime bucket's average return is actually negative --
+    stays silent rather than guessing otherwise. Never mentions
+    session-of-day timing, since that axis doesn't exist yet
+    (ADR-0006/ADR-0019).
+  - `renderers.py` -- `NarrativeRenderer` protocol,
+    `FallbackNarrativeRenderer` (template-based, no network, no API
+    key), `ClaudeNarrativeRenderer` (calls the Claude API under a
+    system prompt that forbids stating any fact not already present in
+    `ResearchFindings` -- rephrasing only).
+  - `reporter.py` -- `ResearchReporter.run(result, attribution)`. Picks
+    `ClaudeNarrativeRenderer` when `ANTHROPIC_API_KEY` is set and
+    `anthropic` is importable, `FallbackNarrativeRenderer` otherwise;
+    catches any renderer exception and falls back to the deterministic
+    renderer rather than losing the report.
+  - `models.py` -- `Finding`, `ResearchFindings`, `ResearchReport`.
+- **Does not:** reason about session-of-day timing (deferred pending
+  ADR-0006). Does not persist its output -- a `ResearchReport` is
+  produced on demand, not saved into `ExperimentRegistry`; a natural
+  future step, not built here. Does not require `anthropic` or
+  `ANTHROPIC_API_KEY` -- both are optional, and the platform's research
+  reports work identically (just with template prose) without either.
+- **Depends on:** `src/backtesting` (for `BacktestResult`), `src/attribution`
+  (for `AttributionReport`), `src/utils` (for `format_timedelta`).
+  Extension Cost (ADR-0014): 4 files changed outside the new package
+  itself -- `src/attribution/models.py`, `src/utils/__init__.py`,
+  `src/utils/formatting.py` (new), `src/cli/checks.py`. See ADR-0020 for
+  why this is proportionate rather than a violation.
+
 ### `src/experiments`
 
 **Purpose:** every backtest run becomes a permanent, queryable record --
@@ -348,10 +458,12 @@ guess. See `DECISIONS.md`, ADR-0013.
     Market Data (a real, cache-bypassing fetch -- a cache hit shouldn't
     be able to hide a dead provider), Cache (round-trips a throwaway
     key through the real cache directory), Experiments DB (opens the
-    real SQLite file and queries it). Broker Connection and API Keys
-    report `NOT_IMPLEMENTED` -- `src/broker` doesn't exist yet
-    (Sprint 5) and the current provider needs no key -- rather than
-    being omitted or faked as passing.
+    real SQLite file and queries it), API Keys (reports whether
+    `ANTHROPIC_API_KEY` is set, for `src/research`'s optional
+    `ClaudeNarrativeRenderer` -- always `OK` either way, since its
+    absence doesn't degrade the platform; see ADR-0020). Broker
+    Connection reports `NOT_IMPLEMENTED` -- `src/broker` doesn't exist
+    yet (Sprint 5) -- rather than being omitted or faked as passing.
   - `doctor.py` -- runs every registered check, formats the report,
     computes the exit code. A check that raises is treated as that
     check failing, not as `atp doctor` crashing.
@@ -364,6 +476,9 @@ guess. See `DECISIONS.md`, ADR-0013.
   way any other consumer would.
 
 ### `src/broker`, `src/execution`, `src/risk`, `src/analytics`, `src/ai`, `src/dashboard`
+
+(`src/research` is now built -- see above -- and no longer belongs in
+this "not yet implemented" list.)
 
 Not yet implemented -- each currently exists only as an empty package
 with a docstring stating its intended purpose (see `src/__init__.py`

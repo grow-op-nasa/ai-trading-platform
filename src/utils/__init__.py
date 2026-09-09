@@ -4,5 +4,6 @@ capability.
 """
 
 from src.utils.cache import CacheManager
+from src.utils.formatting import format_timedelta
 
-__all__ = ["CacheManager"]
+__all__ = ["CacheManager", "format_timedelta"]

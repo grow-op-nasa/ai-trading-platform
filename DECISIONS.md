@@ -773,3 +773,144 @@ boilerplate path is ever wanted (e.g. a purely vectorized strategy
 style), that would be a separate, distinct class -- not a retrofit of
 `BaseStrategy` -- since this ADR deliberately chose not to build that
 here.
+
+---
+
+## ADR-0019: Performance Attribution -- regime-at-entry, session breakdown deferred
+
+**Status:** Accepted -- Sprint 3
+
+**Context:** Sprint 3 Module 3 asked backtests to explain results, not
+just report win rate: trade counts, average hold time, which regime
+trades did best/worst in, and eventually a session-of-day breakdown
+(morning/lunch/power hour). Three design questions needed settling
+first. (1) Where does regime information come from -- trusting a
+strategy to have tagged `Signal.metadata` with regime context, or
+recomputing it independently via `MarketRegimeEngine`? Relying on
+strategy-supplied metadata would make attribution only work for
+strategies that remembered to tag it -- fragile and inconsistent. (2)
+A trade spans a range of time (`entry_time` to `exit_time`) -- which
+point in that range determines its regime bucket for "Best"/"Worst
+Regime"? (3) Session buckets only mean something if candle timestamps
+are reliably in market-local time, which `ADR-0006` (timezone
+consistency) hasn't landed -- ship the session breakdown on an
+unverified assumption, or hold it off?
+
+**Decision:** Add `src/attribution/` (`PerformanceAttributor`,
+`AttributionReport`, `RegimeStats`), touching zero existing files.
+`PerformanceAttributor.run(result, candles, **regime_kwargs)`
+independently recomputes regime via `MarketRegimeEngine(candles)` --
+never reads `Signal.metadata` for this -- so attribution works
+identically for every backtest regardless of what a strategy chose to
+record. Each trade is bucketed by the regime **at its `entry_time`**
+(not the dominant regime across its whole hold) -- simplest, matches
+"what conditions was this decision made in," and avoids the added
+complexity of a trade spanning multiple regimes. Buckets join only the
+trend and volatility axes (e.g. "Trending + Low Volatility") --
+`risk_regime` is excluded since it's always `"unknown"` until ADR-0010's
+VIX gap closes, which would otherwise put every trade in a useless
+"+ Unknown" bucket. A trade entering during the regime engine's
+indicator warmup period (trend/volatility scores still `NaN`) is
+bucketed as `"unknown"` and excluded from "Best"/"Worst Regime" --
+`MarketRegimeEngine.dominant()`'s own `NaN >= NaN -> False` comparison
+would otherwise silently mislabel it as "ranging"/"low_volatility"
+rather than admitting it doesn't know yet. Session-of-day attribution
+(morning/lunch/power hour) is **not** included in this module --
+deferred until ADR-0006 timezone consistency actually lands, rather
+than shipped on an assumption about candle timestamps that the
+codebase doesn't yet guarantee.
+
+**Consequences:** Extension Cost (ADR-0014) for this module: 0 --
+`src/backtesting`, `src/regime`, and `src/signals` are all untouched;
+`src/attribution` only reads their existing public APIs
+(`Trade.entry_time`/`return_pct`, `MarketRegimeEngine.score()`/
+`dominant()`). `AttributionReport` is in-memory only for now, not
+persisted -- wiring it into `ExperimentRegistry` (e.g. a
+`save_attribution()` alongside `save_signals()`) is a natural future
+step, not built here since it wasn't asked for this round. Session
+attribution remains a known gap in `ROADMAP.md`/`PROJECT_STATE.md`
+until ADR-0006 lands -- deliberately incomplete rather than silently
+wrong.
+
+---
+
+## ADR-0020: AI Research Reporter -- hybrid deterministic findings + optional LLM prose
+
+**Status:** Accepted -- Sprint 3
+
+**Context:** Sprint 3 Module 4 asked for a research report generated
+from a completed experiment (strategy, Sharpe, drawdown, trades) --
+evidence-based, not generic praise. Two questions needed settling
+first. (1) Mechanism: should the report be produced entirely by an LLM
+reasoning freely over the numbers, or should the numbers be extracted
+deterministically first and an LLM (if used at all) only asked to
+rephrase them? A free-reasoning LLM risks stating a number wrong or
+inferring a pattern the data doesn't actually support -- exactly the
+"generic praise" failure mode this module exists to avoid. (2) Evidence
+scope: should the reporter reach for plausible-sounding narrative
+(e.g. "losses cluster in the first 20 minutes after open") even though
+session-of-day attribution doesn't exist yet (deferred by ADR-0019
+pending ADR-0006), or stay strictly within what `PerformanceAttributor`
+and `BacktestResult` actually contain today?
+
+**Decision:** Both questions were settled toward strict evidence
+grounding. Added `src/research/` as two deliberately separate stages:
+`compile_findings(result, attribution)` (`compiler.py`) is a fully
+deterministic function that extracts a `ResearchFindings` -- a flat list
+of `Finding(label, value)` pairs plus an optional single
+`recommendation` string -- from a `BacktestResult` and an
+`AttributionReport`. It reasons only about evidence the platform already
+has (trade count, win rate, Sharpe, max drawdown, average hold, best/
+worst regime) and never claims anything about session-of-day timing,
+since that axis doesn't exist yet. A `recommendation` (e.g. "investigate
+excluding trades entered during Ranging + Volatile") is only produced
+when the worst regime bucket actually has a negative average return --
+otherwise `None`, rather than manufacturing a suggestion. `renderers.py`
+then turns `ResearchFindings` into prose via a `NarrativeRenderer`
+protocol: `FallbackNarrativeRenderer` (template-based, always available,
+zero setup) and `ClaudeNarrativeRenderer` (calls the Claude API with a
+system prompt that explicitly forbids stating any number or claim not
+already present in the findings, restricts it to rephrasing). Both
+renderers get the exact same `ResearchFindings` -- the LLM path can only
+ever change how the facts are said, never what facts exist.
+`ResearchReporter.run(result, attribution)` picks
+`ClaudeNarrativeRenderer` when `ANTHROPIC_API_KEY` is set and
+`anthropic` is importable, `FallbackNarrativeRenderer` otherwise, and
+falls back to the deterministic renderer on any exception from the LLM
+path (missing package, network error, bad key) rather than losing the
+report. `anthropic` is a lazy, optional import -- deliberately not added
+to `requirements.txt` -- so the platform has zero new required
+dependencies. Placed at `src/research/`, distinct from the Sprint 7+
+`src/ai/` scope (ML/LLM-based *signal generation*, consumed by
+strategies) -- this module produces a recommendation for a person to
+weigh (ADR-0017), never a signal or a trading decision. `atp doctor`'s
+`check_api_keys` (`src/cli/checks.py`) was upgraded from
+`NOT_IMPLEMENTED` to a real, always-`OK` check reporting whether
+`ANTHROPIC_API_KEY` is set -- its absence doesn't degrade platform
+health, since the fallback renderer always works. `format_timedelta`
+was promoted from a private helper in `src/attribution/models.py` into
+`src/utils/formatting.py` so both `AttributionReport.report()` and
+`compile_findings()` share one implementation, following the same
+extraction-on-second-use precedent as `CacheManager` (ADR-0008).
+
+**Consequences:** Extension Cost (ADR-0014) for this module: 4 files
+changed outside the new `src/research/` package --
+`src/attribution/models.py` (import + call site swapped to the shared
+helper, private function removed), `src/utils/__init__.py` (export
+added), `src/utils/formatting.py` (new file, not a change to an
+existing one), and `src/cli/checks.py` (`check_api_keys` rewritten).
+Not purely additive like Module 3, but proportionate: three of the four
+touches are a single import/export line each, and the fourth
+(`check_api_keys`) is a rewrite of one existing function's body, not a
+change to its signature or callers. A completed experiment's
+`ResearchReport` is not yet persisted back into `ExperimentRegistry` --
+it's produced on demand from a `BacktestResult` + `AttributionReport`
+pair, the same "in-memory for now" posture ADR-0019 took with
+`AttributionReport`; wiring it into the registry is a natural future
+step, not built here since it wasn't asked for this round. Sprint 3's
+own first strategy (an EMA-cross or opening-range-breakout, per the
+sprint's own instruction that complexity should come after confidence
+in the platform) still hasn't been built as a permanent
+`src/strategies/` file -- `EMACrossStrategy` remains a demonstration
+class in `tests/test_strategy_sdk.py` only, tracked in
+`PROJECT_STATE.md`/`ROADMAP.md` as the next concrete piece of work.

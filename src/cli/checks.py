@@ -8,6 +8,7 @@ Import order here is display order in `atp doctor`'s output.
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pandas as pd
@@ -138,11 +139,22 @@ def check_broker_connection() -> CheckResult:
 
 @register_check("API Keys")
 def check_api_keys() -> CheckResult:
-    """The only data provider today (yfinance) requires no API key.
-    Revisit when a keyed provider (Polygon, Interactive Brokers, a
-    broker API, etc.) is added."""
+    """Reports whether `ANTHROPIC_API_KEY` is set, for the AI Research
+    Reporter's optional `ClaudeNarrativeRenderer` (`src/research/`).
+
+    Always `OK`, whether or not the key is present: its absence doesn't
+    degrade the platform's health, since `ResearchReporter` falls back
+    to a fully deterministic, template-based narrative with zero setup
+    (`DECISIONS.md`, ADR-0020). This isn't a pass/fail check -- it's
+    telling the reader which mode research reports are running in.
+    The market data provider (yfinance) itself still requires no key.
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return CheckResult(
+            "API Keys", CheckStatus.OK, "ANTHROPIC_API_KEY set (AI-rendered research reports)"
+        )
     return CheckResult(
         "API Keys",
-        CheckStatus.NOT_IMPLEMENTED,
-        "current provider (yfinance) requires no key",
+        CheckStatus.OK,
+        "ANTHROPIC_API_KEY not set (research reports use the deterministic fallback)",
     )

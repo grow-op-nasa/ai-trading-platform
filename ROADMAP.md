@@ -94,7 +94,7 @@ and a keyed provider exist, respectively. Run today as `python -m
 src.cli doctor`; a bare `atp` command depends on the packaging work in
 ADR-0004.
 
-## Sprint 3 -- The Research Layer (in progress)
+## Sprint 3 -- The Research Layer ✅ Complete
 
 Where Sprint 1 proved the codebase could be maintainable and Sprint 2
 proved it could produce reusable research infrastructure, Sprint 3
@@ -129,31 +129,61 @@ component produces knowledge for the next).
   platform, not before it) is still to be built as a permanent
   `src/strategies/` file -- `EMACrossStrategy` so far only exists as a
   demonstration in `tests/test_strategy_sdk.py`.
-- ⬜ **Module 3 -- Performance Attribution** (planned): backtests
-  explain results, not just report them -- trade count, win rate,
-  average hold time, performance broken down by regime (e.g. best:
-  trending + low volatility, worst: high volatility) and by session
-  (morning / lunch / power hour). Builds on `BacktestResult.signals`
-  and `Trade.entry_signal_id` from Module 1 to trace outcomes back to
-  the evidence behind each trade.
-- ⬜ **Module 4 -- AI Research Reporter** (planned): given a completed
-  experiment, generate an evidence-based research summary (e.g. "losses
-  clustered in the first 20 minutes after open; next experiment:
-  exclude trades before 09:50") -- a research recommendation for a
-  person to weigh, not a trading decision (ADR-0017).
+- ✅ **Module 3 -- Performance Attribution** (`src/attribution/`):
+  `PerformanceAttributor.run(result, candles)` explains results, not
+  just reports them -- trade count, winning trades, win rate, average
+  hold time, performance broken down by regime (trend + volatility
+  joined, e.g. "Trending + Low Volatility"), with best/worst regime
+  called out. Regime is recomputed independently via
+  `MarketRegimeEngine`, not read from `Signal.metadata`, so it works
+  for every strategy. Touches zero existing files (Extension Cost: 0).
+  See `DECISIONS.md`, ADR-0019.
+  - ⬜ **Session breakdown** (morning / lunch / power hour) --
+    deliberately deferred: only meaningful if candle timestamps are
+    reliably in market-local time, which isn't guaranteed until
+    ADR-0006 (timezone consistency) lands. Add once that gap closes.
+- ✅ **Module 4 -- AI Research Reporter** (`src/research/`): given a
+  completed backtest + attribution report, `ResearchReporter` compiles
+  deterministic, evidence-grounded findings (trade count, win rate,
+  Sharpe, drawdown, average hold, best/worst regime) and renders them as
+  a narrative -- a template-based fallback always available, an
+  optional Claude-rendered pass that may only rephrase the same
+  findings, never invent new ones. A `recommendation` (e.g. "investigate
+  excluding trades entered during Ranging + Volatile") is only produced
+  when the evidence actually supports one -- no session-of-day claim
+  is possible yet, since that axis is still deferred pending ADR-0006.
+  This is a research recommendation for a person to weigh, not a
+  trading decision (ADR-0017). See `DECISIONS.md`, ADR-0020.
 
 **Success criteria:** every strategy returns a standardized `Signal`
 (✅); a new strategy can be added without modifying the Backtester
 (✅ as of Module 1 -- `Backtester` depends on the `Strategy`/`Signal`
 contracts, not on any concrete strategy); backtests produce attribution
-metrics, not just P&L (Module 3); every completed experiment is stored
+metrics, not just P&L (✅ as of Module 3 -- regime breakdown; session
+breakdown still pending ADR-0006); every completed experiment is stored
 in SQLite with reproducible metadata (✅ since Sprint 2, extended by
 Module 1's signal storage); an AI-generated research report can be
-produced from an experiment's results (Module 4); the full test suite
-continues to pass (✅, 123 tests as of Module 2).
+produced from an experiment's results (✅ as of Module 4); the full
+test suite continues to pass (✅, 147 tests as of Module 4, pending
+real-machine confirmation).
+
+Sprint 3's own first strategy (a deliberately simple EMA-cross or
+opening-range-breakout, chosen so a straightforward result can be
+validated before anything more complex) still hasn't been built as a
+permanent `src/strategies/` file -- `EMACrossStrategy` remains a
+demonstration class in `tests/test_strategy_sdk.py`. Carried forward as
+the first item of Sprint 4 rather than blocking Sprint 3's close, since
+every Sprint 3 success criterion above is about the platform's
+*capability* to run and explain a strategy, not about having shipped a
+specific one yet.
 
 ## Sprint 4 -- Risk & Execution (planned)
 
+- First permanent strategy in `src/strategies/` -- an EMA-cross or
+  opening-range-breakout, carried forward from Sprint 3 (see above).
+  Built via the Strategy SDK (`BaseStrategy`), validated through
+  `Backtester` + `PerformanceAttributor` + `ResearchReporter` before any
+  execution logic is added.
 - `src/risk/`: position sizing, per-trade and portfolio-level exposure
   limits, given a signal and account state.
 - `src/execution/`: translates a sized signal into orders. Paper

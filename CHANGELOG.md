@@ -215,6 +215,105 @@ warning sign that the architecture's been violated.
 - Confirmed via real `pytest` on the dev machine (Python 3.14.6): **248
   passed**, 0 failed.
 
+### Added (Fill Reconciliation)
+
+- `src/reconciliation/` (new package, `DECISIONS.md`, ADR-0027) --
+  compares what `PaperBroker` assumes (instant, complete fill at a
+  caller-supplied price) against what a real broker order actually did:
+  - `models.py` -- `FillReconciliation`: side-normalized
+    `price_slippage_per_share`/`price_slippage_pct` (positive always
+    means real execution was worse than simulated, regardless of
+    BUY/SELL), `quantity_shortfall` (for partial fills), `cost_impact`
+    (dollar impact using the real filled quantity).
+  - `engine.py` -- `reconcile_fill(real_order: BrokerOrder,
+    simulated_fill: Fill) -> FillReconciliation`. Validates matching
+    symbol and side (compared by `.value`, since `OrderSide` is two
+    separate enums per ADR-0024) and that `real_order` has actually
+    filled (`FILLED`/`PARTIALLY_FILLED`) before comparing.
+  - Deliberately depends on both `src.execution` and `src.broker` --
+    a documented, intentional exception to ADR-0024's independence
+    rule, since this is a comparison/analysis layer neither of those
+    two capabilities depends back on (same shape as `src/attribution`
+    depending on `src/backtesting` + `src/regime`).
+  - Single-order comparison primitive only this round -- aggregating
+    across many trades into a summary report is a natural future step.
+- `tests/test_reconciliation.py` (new, 11 tests) -- exact match (zero
+  slippage), price slippage sign normalization for both BUY and SELL,
+  partial-fill quantity shortfall, cost impact using real filled
+  quantity, and validation (symbol mismatch, side mismatch, unfilled/
+  rejected/canceled order, missing `filled_avg_price`).
+- Extension Cost: 0 file(s) changed outside the new
+  `src/reconciliation/` package.
+
+### Decided (Fill Reconciliation)
+
+- `src/reconciliation` may depend on both `src/execution` and
+  `src/broker` -- a deliberate, documented exception to ADR-0024's
+  broker/execution independence rule, since this is a higher-level
+  analysis layer, not a capability either one depends on. See
+  `DECISIONS.md`, ADR-0027.
+- Single-order primitive only this round, not a batch/aggregate report.
+- All slippage/cost fields are side-normalized so "positive" always
+  means "worse than simulated," regardless of order direction.
+
+### Verified (Fill Reconciliation)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **282
+  passed**, 0 failed (verified together with the IG addition below).
+
+### Added (Third Broker -- IG)
+
+- `src/broker/ig.py` (new) -- `IGBroker(BrokerConnection)`
+  (`DECISIONS.md`, ADR-0028), the platform's third concrete broker --
+  and the first second-broker candidate the platform's actual user can
+  use with a real account, since IG doesn't geo-restrict access the way
+  Interactive Brokers does. Built against IG's plain REST Trading API
+  (no local gateway process required, unlike IB). Credentials are a
+  third distinct shape in this codebase: an API key *plus* username and
+  password (`IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD`, env-var fallback),
+  exchanged once via `POST /session` for short-lived `CST`/
+  `X-SECURITY-TOKEN` session tokens, cached for the instance's lifetime
+  (no refresh logic this round). `IG_DEMO_BASE_URL`/`IG_LIVE_BASE_URL`
+  select environment explicitly, like Alpaca's pair (unlike IB).
+  `get_account()` resolves the account (explicit `account_id`, IG's own
+  "preferred" account, or the first listed) and maps `balance.balance`
+  -> equity, `balance.deposit` (margin committed) -> open exposure --
+  a documented approximation, since CFD/spread-bet accounts are
+  margined rather than fully paid. `submit_order`/`get_order`/
+  `cancel_order` all raise `NotImplementedError` -- IG's order model
+  (a short-lived deal reference confirmed into a permanent position, no
+  ongoing order-status endpoint) doesn't fit `BrokerOrder`/
+  `OrderStatus` without its own design round.
+- `src/broker/__init__.py` -- exports `IGBroker`, `IG_DEMO_BASE_URL`,
+  `IG_LIVE_BASE_URL`.
+- `tests/test_ig.py` (new, 23 tests) -- against an injected fake HTTP
+  session, no real IG account: interface conformance, credential
+  validation, demo/live default/override, login flow (token extraction
+  from response headers, caching across calls, only one login per
+  instance), account resolution (preferred/explicit/first-listed),
+  missing-deposit default, error paths (no accounts, unknown
+  `account_id`, 401/403 on login or mid-use, other HTTP failure,
+  network exception, missing tokens in login response), and
+  `submit_order`/`get_order`/`cancel_order` all raising
+  `NotImplementedError`.
+- Extension Cost: 1 file changed outside the new `ig.py`/`test_ig.py`
+  (`src/broker/__init__.py`, exports).
+
+### Decided (Third Broker -- IG)
+
+- IG over Tiger Trade for this round -- both looked viable, IG was
+  picked to build first.
+- Session-based login-for-tokens auth, cached per instance, no refresh
+  logic yet.
+- Connectivity + account state only -- IG's deal-reference/confirm
+  order model doesn't fit `BrokerOrder`/`OrderStatus` without its own
+  design round. See `DECISIONS.md`, ADR-0028.
+
+### Verified (Third Broker -- IG)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **282
+  passed**, 0 failed.
+
 ## Sprint 4 -- 2026-09-10, End-to-End Proof (feature-complete)
 
 ### Added (End-to-End Proof)

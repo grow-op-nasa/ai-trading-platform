@@ -255,10 +255,31 @@ once there's a second real caller that needs one.
   design pass. See `DECISIONS.md`, ADR-0026.
 - ⬜ Interactive Brokers order submission/status/cancel -- the piece
   ADR-0026 deliberately deferred, given IB's added complexity (conid
-  lookup, reply/confirmation).
-- ⬜ Reconciling `PaperBroker`'s simulated fills against a real
-  broker's actual fills, now that order submission and cancellation
-  exist for Alpaca.
+  lookup, reply/confirmation). **On hold:** IB geo-restricts account
+  access for this deployment (OFAC/Section 311 special measures) --
+  confirmed inaccessible for real use, so further investment here isn't
+  currently worthwhile.
+- ✅ Reconciling `PaperBroker`'s simulated fills against a real
+  broker's actual fills -- `src/reconciliation/`'s `reconcile_fill()`
+  compares a simulated `Fill` against a real `BrokerOrder`: side-
+  normalized price slippage, quantity shortfall for partial fills,
+  dollar cost impact. Single-order primitive; aggregating across many
+  trades into a summary report remains a natural future step. See
+  `DECISIONS.md`, ADR-0027.
+- ✅ A third broker (IG) -- and the first second-broker candidate the
+  platform's user can actually use with a real account, since IG
+  doesn't geo-restrict access the way IB does. `IGBroker`: plain REST
+  (no local gateway), a third distinct credential/auth model (API key +
+  username + password, exchanged once for cached session tokens).
+  `get_account()` only this round -- IG's deal-reference/confirm order
+  model doesn't fit `BrokerOrder`/`OrderStatus` without its own design
+  pass. See `DECISIONS.md`, ADR-0028.
+- ⬜ IG order submission/status -- the piece ADR-0028 deliberately
+  deferred, given IG's deal-reference/confirm model not fitting
+  `BrokerOrder`/`OrderStatus` cleanly.
+- ⬜ Tiger Brokers/Tiger Trade as a fourth broker -- another real,
+  usable account (real equities, RSA-signed request auth) the user
+  could exercise; not started.
 
 ## Sprint 6 -- Analytics & Dashboard (planned)
 

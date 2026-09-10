@@ -24,13 +24,25 @@ proof `BrokerConnection` is actually swappable, not just designed to
 be. It only implements `get_account()` so far; `submit_order`/
 `get_order`/`cancel_order` raise `NotImplementedError` until Interactive
 Brokers' order-placement flow (contract id lookup, reply/confirmation
-handling) gets its own design round.
+handling) gets its own design round. IB also geo-restricts account
+access for this platform's actual deployment, so `IBKRBroker` remains
+an architecture proof without a usable real account behind it.
+
+`IGBroker` (ADR-0028) is the platform's third concrete broker, and the
+first second-broker candidate this platform's user can actually use
+with a real account. Session-based auth (API key + username + password
+-> login -> cached session tokens), connectivity + account state only
+this round -- IG's own order model (a short-lived deal reference
+confirmed into a permanent position, no ongoing order-status endpoint)
+doesn't fit `BrokerOrder`/`OrderStatus` without its own design round
+either.
 """
 
 from src.broker.alpaca import ALPACA_LIVE_BASE_URL, ALPACA_PAPER_BASE_URL, AlpacaBroker
 from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError, BrokerError
 from src.broker.ibkr import IBKR_GATEWAY_BASE_URL, IBKRBroker
+from src.broker.ig import IG_DEMO_BASE_URL, IG_LIVE_BASE_URL, IGBroker
 from src.broker.models import BrokerOrder, OrderRequest, OrderSide, OrderStatus
 
 __all__ = [
@@ -40,6 +52,9 @@ __all__ = [
     "ALPACA_LIVE_BASE_URL",
     "IBKRBroker",
     "IBKR_GATEWAY_BASE_URL",
+    "IGBroker",
+    "IG_DEMO_BASE_URL",
+    "IG_LIVE_BASE_URL",
     "BrokerError",
     "BrokerAuthenticationError",
     "BrokerConnectionError",

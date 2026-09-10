@@ -1320,3 +1320,168 @@ reconciling `IBKRBroker` against `AlpacaBroker`'s behavior for the same
 logical operation are all explicitly deferred, not rejected. Like every
 other concrete broker in this codebase, `IBKRBroker` is untested
 against a real gateway -- only against a fake session.
+
+---
+
+## ADR-0027: Fill reconciliation -- a deliberate exception to the broker/execution independence rule
+
+**Status:** Accepted -- Sprint 5
+
+**Context:** `ROADMAP.md` has always listed reconciling `PaperBroker`'s
+simulated fills against a real broker's actual fills as a Sprint 5
+item, but it was blocked until order submission (ADR-0024) gave this
+codebase a real fill to reconcile against in the first place. With
+Alpaca now confirmed working end to end (`atp doctor`'s Broker
+Connection check passing against a real paper account) and Interactive
+Brokers confirmed inaccessible for this platform's actual use (IB
+geo-restricts account access for this deployment, unrelated to
+anything this codebase controls), this was the natural next piece of
+real, usable value: comparing what `PaperBroker` (`src/execution`,
+ADR-0022) assumes -- an instant, complete fill at a caller-supplied
+price -- against what a real broker order actually did. That
+comparison inherently needs both `src.execution.models.Fill` and
+`src.broker.models.BrokerOrder` in the same place, which raised a real
+question given ADR-0024's explicit rule that `src/broker` must stay
+independent of `src/execution` to keep the dependency direction honest:
+does building this violate that rule?
+
+**Decision:** No -- but it's worth stating precisely why, so the
+distinction doesn't get lost. ADR-0024's rule is about `src/broker`
+itself never importing `src.execution` (or vice versa), so that
+neither capability's internals leak into the other and the intended
+`execution --> broker` dependency direction stays real rather than
+accidentally reversed. A new, separate, higher-level module that
+depends on *both* -- without either of them depending on it back -- is
+a different shape entirely, and this codebase already has direct
+precedent for it: `src/attribution` depends on both `src/backtesting`
+and `src/regime` without either depending back (`DECISIONS.md`,
+ADR-0019). `src/reconciliation` (new) follows the same shape.
+`reconcile_fill(real_order: BrokerOrder, simulated_fill: Fill) ->
+FillReconciliation` is a single plain function, no class, matching the
+project's established pattern for this kind of comparison
+(`calculate_metrics()`, `compile_findings()`). It validates that the
+two are actually comparable (same symbol, same side -- compared by
+`.value` since `OrderSide` is deliberately two separate enums per
+ADR-0024) and that `real_order` has actually filled (`FILLED` or
+`PARTIALLY_FILLED`; anything else raises `ValueError`, since there's
+nothing real yet to reconcile against). Every price/cost field on
+`FillReconciliation` is **side-normalized**: positive always means the
+real execution was worse than the simulation assumed, regardless of
+`BUY`/`SELL` direction, so a caller never has to re-derive "worse for
+which side" from a raw signed difference. Partial fills are handled by
+comparing `simulated_quantity` (what `PaperBroker` assumed) against
+`real_filled_quantity` (what actually filled) as `quantity_shortfall`,
+and `cost_impact` uses the real filled quantity, not the simulated one
+-- the dollar impact of a price difference should reflect capital
+actually committed, not capital `PaperBroker` merely assumed would be.
+Scope this round is a **single-order comparison primitive only** --
+aggregating reconciliations across many trades into a summary report
+(average slippage, total cost impact across a batch) is a natural
+future step, not built here, the same "prove the primitive first"
+posture `PositionSizer` (ADR-0021) and `PaperBroker` (ADR-0022) both
+took before anything wired them together.
+
+**Consequences:** Extension Cost (ADR-0014) for this addition: 0 files
+changed outside the new `src/reconciliation/` package -- it only reads
+existing public fields off `Fill`/`Order` (`src.execution.models`) and
+`BrokerOrder` (`src.broker.models`), nothing in either package was
+touched to support it. This is the first module in the codebase that
+deliberately depends on both `src/execution` and `src/broker` at once,
+which is fine precisely because it's a comparison/analysis layer, not a
+capability either of those two depends on -- the same reasoning that
+already justifies `src/attribution`'s dependencies. `reconcile_fill()`
+is not wired into any live trading loop -- a caller assembles the
+`Fill`/`BrokerOrder` pair by hand today (e.g., after manually
+submitting a real Alpaca order and running `PaperBroker` against the
+same signal for comparison); a helper that automates capturing both
+sides of that comparison from one call is a natural future step, not
+built here. Aggregate/batch reconciliation, and reconciling
+`IBKRBroker` specifically (blocked today since it doesn't support order
+submission at all, per ADR-0026), remain explicitly deferred, not
+rejected.
+
+---
+
+## ADR-0028: Third broker -- IG, session-based auth, connectivity only
+
+**Status:** Accepted -- Sprint 5
+
+**Context:** `IBKRBroker` (ADR-0026) proved `BrokerConnection` is
+architecturally swappable, but Interactive Brokers itself turned out to
+geo-restrict account access for this platform's actual deployment (an
+OFAC/Section 311 "special measures" block on IB's end, unrelated to
+anything this codebase controls) -- so the interface's swappability had
+no real account behind it to exercise. The user has real, working
+accounts with two other brokers instead: IG (CFDs, spread betting,
+forex) and Tiger Brokers/Tiger Trade (real equities). IG was chosen for
+this round -- a plain REST API with no locally running gateway process,
+closer to Alpaca's shape operationally than to IB's, and immediately
+usable with an account the user can actually reach. Two things needed
+settling before building. (1) **Credentials/auth:** unlike Alpaca's
+forever-valid static header pair, IG requires an API key *plus* a
+username and password, exchanged once via `POST /session` for
+short-lived session tokens (`CST`/`X-SECURITY-TOKEN`) that must be
+attached to every subsequent request -- a third distinct credential
+shape in this codebase (Alpaca: static headers; IB: an already-
+established browser session this code doesn't create; IG: a login call
+this code does make, producing tokens it must then carry). (2)
+**Scope:** IG's real order-placement flow returns a short-lived
+`dealReference` from `POST /positions/otc`, confirmed once via
+`GET /confirms/{dealReference}` into `ACCEPTED`/`REJECTED` and a
+permanent `dealId` -- but there's no ongoing "check order status"
+endpoint the way Alpaca/IB have, since a filled market order simply
+becomes a position rather than a persistent order object with a
+lifecycle. Forcing that shape onto `BrokerOrder`/`OrderStatus` (which
+assumes `PENDING`/`PARTIALLY_FILLED`/`FILLED` as things a caller can
+poll for) would mean either lying about what `get_order()` can actually
+tell a caller, or quietly changing what the interface promises.
+
+**Decision:** Both were settled the same way ADR-0026 settled IB's
+equivalent questions. **Credentials:** `IGBroker.__init__(api_key=,
+username=, password=, base_url=IG_DEMO_BASE_URL, account_id=None,
+session=None)` -- all three credential pieces fall back to
+`IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD` environment variables (the
+same convention every other broker/API-key integration in this
+codebase already uses), and raise `BrokerAuthenticationError`
+immediately if any is missing, before any network call. Login happens
+lazily on first use (`_ensure_authenticated()`) and the resulting
+`CST`/`X-SECURITY-TOKEN` are cached for the instance's lifetime -- no
+session-refresh logic this round, since IG's tokens last hours, not
+seconds; a long-lived `IGBroker` instance may eventually need to be
+reconstructed to re-authenticate, an accepted gap. `IG_DEMO_BASE_URL`/
+`IG_LIVE_BASE_URL` select environment explicitly, the same shape as
+Alpaca's pair (unlike IB, where paper vs. live is determined by which
+account is logged into the gateway rather than a URL). Which of a
+session's accounts to use is resolved via an explicit `account_id`
+argument (falling back to `IG_ACCOUNT_ID`), or IG's own "preferred"
+account, or the first account returned -- mirroring `IBKRBroker`'s
+account-resolution shape exactly. **Scope:** `submit_order`/
+`get_order`/`cancel_order` all raise `NotImplementedError`, the same
+deliberate choice ADR-0026 made for IB, for the same reason: this is a
+known, static gap in what this module supports today, not a broker-side
+failure. `get_account()` reads `GET /accounts`, resolves the account,
+and maps `balance.balance` (equity, required) and `balance.deposit`
+(open exposure, optional, defaults to `0.0`) into an `AccountState` --
+`deposit` (margin currently committed to open positions) is a
+deliberate, documented approximation of "capital committed," since IG's
+CFD/spread-bet products are margined rather than fully paid the way
+Alpaca's equities are, and IG's balance summary doesn't expose a
+Alpaca-style notional exposure figure directly.
+
+**Consequences:** Extension Cost (ADR-0014) for this addition: 1 file
+changed outside the new `ig.py`/`test_ig.py` -- `src/broker/__init__.py`
+(exports). `BrokerConnection` is now demonstrated by a third
+independent implementation with a third distinct credential/auth model
+(static headers, established browser session, and now a login-for-
+tokens flow), reinforcing ADR-0026's swappability claim -- and, unlike
+`IBKRBroker`, one the platform's actual user can exercise against a
+real account. `OrderRequest.symbol` would need to already be an IG
+"epic" (e.g. `"CS.D.EURUSD.MINI.IP"`), not a plain ticker, if order
+submission is ever built -- the same kind of identifier-mapping caveat
+ADR-0026 already flagged for IB's `conid`, noted here now even though
+order submission itself is deferred. IG order submission/status,
+session token refresh, and reconciling `IGBroker` against `AlpacaBroker`
+for the same logical operation are all explicitly deferred, not
+rejected. `IGBroker` is untested against IG's real API -- only against
+a fake session -- the same accepted gap every other concrete broker in
+this codebase carries.

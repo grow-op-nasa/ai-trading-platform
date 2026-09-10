@@ -1,26 +1,22 @@
 # Project State
 
-_Last updated: 2026-09-10 -- Sprint 5 (in progress): `src/broker/`
-(`BrokerConnection` + `AlpacaBroker`) is the platform's first real
-broker integration -- `get_account()` returns a real
-`src.risk.AccountState`, defaults to Alpaca's paper endpoint, and is
-built/tested against a fake HTTP session (no real account yet). Order
-management now covers the full lifecycle this platform commits to:
-`submit_order`/`get_order` (market orders only) plus `cancel_order`
-(returns `None` -- confirms the broker accepted the request, not that
-the order actually ended up canceled), all using broker-native
-`OrderRequest`/`BrokerOrder` models kept deliberately independent of
-`src/execution`. `atp doctor`'s Broker Connection check is real, gated
-on `ALPACA_API_KEY`/`ALPACA_API_SECRET` being configured. Sprints 3 and
-4 are both complete and confirmed; Sprint 5's connectivity slice is
-confirmed at 213/213, order submission at 228/228, and order
-cancellation at 233/233, all via real `pytest` on the dev machine.
-`IBKRBroker` (`src/broker/ibkr.py`) is now the platform's second
-concrete broker -- proof `BrokerConnection` is actually swappable --
-built against IB's Client Portal Web API, `get_account()` only this
-round (`submit_order`/`get_order`/`cancel_order` raise
-`NotImplementedError`); confirmed at 248/248 via real `pytest` on the
-dev machine._
+_Last updated: 2026-09-10 -- Sprint 5 (in progress). Three concrete
+brokers now implement `BrokerConnection`: **`AlpacaBroker`** (full
+lifecycle -- `get_account`/`submit_order`/`get_order`/`cancel_order`;
+real `ALPACA_API_KEY`/`ALPACA_API_SECRET` are configured and
+`get_account()` is confirmed against Alpaca's real paper account),
+**`IBKRBroker`** (`get_account()` only; IB's Client Portal Web API --
+**confirmed geo-restricted for this deployment**, OFAC/Section 311, so
+it remains an architecture proof without a usable real account), and
+**`IGBroker`** (`get_account()` only; IG's REST API, session-token
+auth -- a real, usable second broker for this platform's user, since IG
+doesn't geo-block). `src/reconciliation/` (new) compares `PaperBroker`'s
+simulated fills against real broker fills (`reconcile_fill()`),
+deliberately depending on both `src/execution` and `src/broker`.
+Confirmed via real `pytest` on the dev machine: connectivity 213/213,
+order submission 228/228, order cancellation 233/233, `IBKRBroker`
+248/248, and fill reconciliation + `IGBroker` together at 282/282.
+Sprints 3 and 4 are both complete and confirmed._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -221,16 +217,50 @@ For why things were built the way they were, see `DECISIONS.md`.
   lookup, reply/confirmation handling) needs its own design pass.
   Extension Cost: 1 file changed outside the new `ibkr.py`/
   `test_ibkr.py` (`src/broker/__init__.py`, exports). See
-  `DECISIONS.md`, ADR-0026.
+  `DECISIONS.md`, ADR-0026. **Note:** IB geo-restricts account access
+  for this deployment (OFAC/Section 311 special measures) -- confirmed
+  inaccessible for real use. `IBKRBroker` remains valid as the
+  architecture proof it was built for, but won't get further real-world
+  investment (e.g. IB order submission) unless that changes.
+- ✅ Fill Reconciliation (`src/reconciliation/`, new package) -- Sprint
+  5. `reconcile_fill(real_order: BrokerOrder, simulated_fill: Fill) ->
+  FillReconciliation` compares what `PaperBroker` assumes (instant,
+  complete fill at a caller-supplied price) against what a real broker
+  order actually did. All price/cost fields are side-normalized --
+  positive always means real execution was worse than simulated,
+  regardless of BUY/SELL. Handles partial fills via
+  `quantity_shortfall`; `cost_impact` uses the real filled quantity.
+  Deliberately depends on both `src/execution` and `src/broker` -- a
+  documented exception to ADR-0024's independence rule, since this is a
+  comparison layer neither capability depends back on (same shape as
+  `src/attribution` depending on `src/backtesting` + `src/regime`).
+  Single-order primitive only this round. Extension Cost: 0 files
+  changed outside the new package. See `DECISIONS.md`, ADR-0027.
+- ✅ Third Broker -- IG (`src/broker/ig.py`) -- Sprint 5. `IGBroker` is
+  the platform's third concrete broker, and the first second-broker
+  candidate the user can actually use with a real account (unlike
+  `IBKRBroker`, IG doesn't geo-block). Session-based auth: API key +
+  username + password (`IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD`) -> a
+  `POST /session` login -> cached `CST`/`X-SECURITY-TOKEN` tokens (no
+  refresh logic this round). `IG_DEMO_BASE_URL`/`IG_LIVE_BASE_URL`
+  select environment explicitly, like Alpaca. `get_account()` resolves
+  the account (explicit, "preferred," or first-listed) and maps
+  `balance.balance` -> equity, `balance.deposit` (margin committed) ->
+  open exposure -- a documented approximation for CFD/spread-bet
+  accounts. `submit_order`/`get_order`/`cancel_order` raise
+  `NotImplementedError` -- IG's deal-reference/confirm order model
+  doesn't fit `BrokerOrder`/`OrderStatus` without its own design round.
+  Extension Cost: 1 file changed outside the new `ig.py`/`test_ig.py`
+  (`src/broker/__init__.py`, exports). See `DECISIONS.md`, ADR-0028.
 
 ## Current Module
 
 **Sprints 3 and 4 are complete and confirmed. Sprint 5 is in
 progress**: `src/broker/` connectivity, order submission, and order
-cancellation for Alpaca, plus `IBKRBroker` (the platform's second
-broker, `get_account()` only) are all complete and confirmed --
-248/248 tests pass via real `pytest` on the dev machine (Python
-3.14.6).
+cancellation for Alpaca, `IBKRBroker`, `src/reconciliation/`, and
+`IGBroker` (the platform's third broker, and first *usable* second
+broker) are all complete and confirmed -- 282/282 tests pass via real
+`pytest` on the dev machine (Python 3.14.6).
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2, 3, 4, or 5): no data validation beyond
@@ -240,13 +270,15 @@ suite against the live yfinance API.
 
 ## Next Task
 
-Once you have real Alpaca **Trader API** paper-trading keys, set
-`ALPACA_API_KEY`/`ALPACA_API_SECRET` as environment variables to
-exercise Alpaca for real; once you have IB Client Portal Gateway
-access, point `IBKRBroker` at it (no code changes needed) to exercise
-IB for real. After that, Sprint 5 continues toward IB order submission
-or reconciling `PaperBroker`'s simulated fills against real broker
-fills. See `ROADMAP.md`.
+Set `IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD` as environment variables
+to exercise `IGBroker.get_account()` against your real IG demo/live
+account for the first time -- the first real-world test of its parsing
+assumptions. Separately, exercising `submit_order`/`get_order`/
+`cancel_order` against the real Alpaca paper account (a real, harmless
+paper-money order), then feeding the resulting `BrokerOrder` and a
+`PaperBroker`-simulated `Fill` for the same trade into
+`reconcile_fill()`, would give the first live reconciliation. See
+`ROADMAP.md`.
 
 ## Known Issues
 
@@ -303,11 +335,14 @@ fills. See `ROADMAP.md`.
 - `PaperBroker` supports only one open position per symbol at a time --
   opening a second raises rather than averaging/scaling into it. Also
   deferred: limit orders, partial fills, slippage, commission.
-- `AlpacaBroker` is untested against Alpaca's real API -- only against
-  a fake session, for `get_account()`, `submit_order()`, `get_order()`,
-  and `cancel_order()` alike. The first real network call (once
-  credentials exist) is also the first real-world check of whether the
-  parsing assumptions in `_parse_account()`/`_parse_order()` hold.
+- `AlpacaBroker.get_account()` is now confirmed against Alpaca's real
+  paper-trading API (`atp doctor`'s Broker Connection check passes with
+  real `ALPACA_API_KEY`/`ALPACA_API_SECRET` credentials) -- the first
+  real-world confirmation that `_parse_account()`'s assumptions about
+  Alpaca's response shape hold. `submit_order()`/`get_order()`/
+  `cancel_order()` remain untested against the real API -- only against
+  a fake session -- since exercising them for real means actually
+  placing/canceling a paper order, not just reading account state.
   `IBKRBroker` is likewise untested against a real Client Portal
   Gateway, and only implements `get_account()` -- `submit_order`/
   `get_order`/`cancel_order` raise `NotImplementedError` until IB's
@@ -324,11 +359,12 @@ fills. See `ROADMAP.md`.
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 248 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 282 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
                           # + 29 cli/doctor + 10 signals + 11 strategy_sdk + 8 attribution
                           # + 15 research + 11 ema_cross_strategy + 16 risk + 18 execution
-                          # + 5 integration_paper_trading + 34 broker + 15 ibkr)
+                          # + 5 integration_paper_trading + 34 broker + 15 ibkr
+                          # + 11 reconciliation + 23 ig)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until

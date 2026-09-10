@@ -26,7 +26,8 @@ graph TD
     research[research: ResearchReporter]
     risk[risk: PositionSizer]
     execution[execution: PaperBroker]
-    broker[broker: BrokerConnection + AlpacaBroker]
+    broker[broker: BrokerConnection + AlpacaBroker + IBKRBroker + IGBroker]
+    reconciliation[reconciliation: reconcile_fill]
     analytics[analytics: not yet built]
     ai[ai: not yet built]
     dashboard[dashboard: not yet built]
@@ -54,6 +55,8 @@ graph TD
     risk --> execution
     execution --> broker
     risk --> broker
+    execution --> reconciliation
+    broker --> reconciliation
     strategies --> analytics
     data --> dashboard
     ai --> strategies
@@ -513,13 +516,16 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
 **Purpose:** connect to a real broker/exchange -- authenticate, read
 account state, and (for Alpaca) submit/check/cancel market orders.
 Sprint 5 (`DECISIONS.md`, ADR-0023 connectivity/account state, ADR-0024
-order submission, ADR-0025 order cancellation, ADR-0026 second broker).
+order submission, ADR-0025 order cancellation, ADR-0026 second broker,
+ADR-0028 third broker).
 
-- **Inputs:** API credentials (`ALPACA_API_KEY`/`ALPACA_API_SECRET`, as
-  constructor arguments or environment variables, for `AlpacaBroker`
-  only -- `IBKRBroker` takes none); `OrderRequest` (`symbol`, `side`,
-  `quantity`) for order submission; a `broker_order_id` for status
-  checks and cancellation.
+- **Inputs:** API credentials -- three different shapes across the
+  three concrete brokers: `ALPACA_API_KEY`/`ALPACA_API_SECRET` for
+  `AlpacaBroker`; none for `IBKRBroker` (an already-established browser
+  gateway session); `IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD` for
+  `IGBroker` (exchanged once for session tokens). `OrderRequest`
+  (`symbol`, `side`, `quantity`) for order submission; a
+  `broker_order_id` for status checks and cancellation.
 - **Outputs:** `get_account() -> src.risk.AccountState`,
   `submit_order(request) -> BrokerOrder`, `get_order(id) -> BrokerOrder`,
   `cancel_order(id) -> None`.
@@ -573,19 +579,78 @@ order submission, ADR-0025 order cancellation, ADR-0026 second broker).
     supports today, not a broker-side failure.
   - `exceptions.py` -- `BrokerError`, `BrokerAuthenticationError`,
     `BrokerConnectionError`.
+  - `ig.py` -- `IGBroker(BrokerConnection)`, the platform's third
+    concrete broker (`DECISIONS.md`, ADR-0028), against IG's plain REST
+    Trading API (no local gateway process, unlike IB). A third distinct
+    credential shape: `IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD` (env-var
+    fallback like Alpaca), exchanged once via `POST /session` for
+    `CST`/`X-SECURITY-TOKEN` session tokens, cached for the instance's
+    lifetime (no refresh logic yet). `IG_DEMO_BASE_URL`/
+    `IG_LIVE_BASE_URL` select environment explicitly, like Alpaca's pair
+    (unlike IB). `get_account()` resolves the account (explicit
+    `account_id`, IG's own "preferred" account, or the first listed)
+    via `GET /accounts`, then maps `balance.balance` -> equity,
+    `balance.deposit` (margin committed to open positions) -> open
+    exposure -- a documented approximation, since IG's CFD/spread-bet
+    products are margined rather than fully paid the way Alpaca's
+    equities are. `submit_order`/`get_order`/`cancel_order` all raise
+    `NotImplementedError` -- IG's order model (a short-lived deal
+    reference confirmed into a permanent position, no ongoing
+    order-status endpoint) doesn't fit `BrokerOrder`/`OrderStatus`
+    without its own design round.
 - **Does not:** support limit/stop order types on Alpaca -- market
   orders only. Doesn't support order submission/status/cancellation on
-  Interactive Brokers at all yet -- IB's order flow (contract id
-  lookup, reply/confirmation handling) needs its own design round.
-  Neither concrete broker is tested against its real API -- both only
-  against a fake HTTP session, the same posture `src/data` already
-  takes toward `YFinanceProvider` (there's no `test_yfinance_provider.py`
-  either).
+  Interactive Brokers or IG at all yet -- both need their own design
+  rounds (IB: contract id lookup, reply/confirmation; IG: the
+  deal-reference/confirm model not fitting `BrokerOrder`/`OrderStatus`).
+  IB is on hold regardless since it geo-restricts account access for
+  this deployment. `AlpacaBroker.get_account()` is confirmed against
+  Alpaca's real paper API; everything else across all three brokers
+  remains tested only against a fake HTTP session, the same posture
+  `src/data` already takes toward `YFinanceProvider` (there's no
+  `test_yfinance_provider.py` either).
 - **Depends on:** `src/risk` (for `AccountState`). Extension Cost
   (ADR-0014): connectivity slice was 1 (`src/cli/checks.py`); order
   submission and order cancellation were each 0; the second broker
-  (`IBKRBroker`) was 1 (`src/broker/__init__.py`, exports) -- all
-  contained within or immediately around `src/broker` itself.
+  (`IBKRBroker`) was 1 (`src/broker/__init__.py`, exports); the third
+  broker (`IGBroker`) was also 1 (same file) -- all contained within or
+  immediately around `src/broker` itself.
+
+### `src/reconciliation`
+
+**Purpose:** compare `PaperBroker`'s simulated fills (`src/execution`)
+against what a real broker order actually did (`src/broker`) -- price
+slippage, partial fills, dollar cost impact. Sprint 5 (`DECISIONS.md`,
+ADR-0027).
+
+- **Inputs:** a `BrokerOrder` (`src.broker.models`, already `FILLED` or
+  `PARTIALLY_FILLED`) and a `Fill` (`src.execution.models`) for the
+  same logical trade.
+- **Outputs:** `reconcile_fill(real_order, simulated_fill) ->
+  FillReconciliation`.
+- **Key files:**
+  - `models.py` -- `FillReconciliation`: side-normalized
+    `price_slippage_per_share`/`price_slippage_pct` (positive always
+    means the real execution was worse than simulated, regardless of
+    `BUY`/`SELL`), `quantity_shortfall` (`simulated_quantity -
+    real_filled_quantity`), `cost_impact` (`price_slippage_per_share *
+    real_filled_quantity`).
+  - `engine.py` -- `reconcile_fill()`. Validates matching symbol and
+    side (`OrderSide` is two separate enums between `src.broker` and
+    `src.execution` per ADR-0024, so sides are compared by `.value`)
+    and that `real_order` has actually filled, raising `ValueError`
+    otherwise.
+- **Does not:** aggregate reconciliations across multiple trades into a
+  summary report -- single-order comparison only this round. Isn't
+  wired into any live trading loop -- a caller assembles the
+  `Fill`/`BrokerOrder` pair by hand today.
+- **Depends on:** both `src/execution` (for `Fill`/`Order`) and
+  `src/broker` (for `BrokerOrder`) -- a deliberate, documented exception
+  to ADR-0024's rule keeping those two independent of each other, since
+  this is a comparison/analysis layer neither of them depends back on
+  (the same shape `src/attribution` already has toward `src/backtesting`
+  + `src/regime`). Extension Cost (ADR-0014): 0 -- reads existing public
+  fields off both, touches neither.
 
 ### `src/experiments`
 

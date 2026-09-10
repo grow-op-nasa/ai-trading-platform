@@ -314,6 +314,39 @@ warning sign that the architecture's been violated.
 - Confirmed via real `pytest` on the dev machine (Python 3.14.6): **282
   passed**, 0 failed.
 
+### Added (IG Order Submission)
+
+- `src/broker/ig.py` -- `IGBroker.submit_order()` implemented
+  (`DECISIONS.md`, ADR-0029): `POST /positions/otc` then
+  `GET /confirms/{dealReference}`, resolving **synchronously** into a
+  final `BrokerOrder` (`FILLED` on `dealStatus == "ACCEPTED"`,
+  `REJECTED` on `"REJECTED"`; an unrecognized status raises
+  `BrokerConnectionError`). `currencyCode` for the order body is read
+  from the selected account's own `currency` field -- never guessed or
+  hardcoded -- via a new shared `_get_selected_account()` helper reused
+  by both `get_account()` and `submit_order()`. `get_order()`/
+  `cancel_order()` stay `NotImplementedError` with an updated message:
+  there's no live status endpoint to poll and nothing left to cancel
+  once a market order has resolved.
+- `tests/test_ig.py` -- extended: order body/currency resolution, FILLED
+  on ACCEPTED, REJECTED mapping, side mapping, unrecognized-status
+  error, and error paths (no accounts for currency resolution, 401/403,
+  other HTTP failure, network exception).
+- Extension Cost: 0 file(s) changed outside `ig.py`/`test_ig.py`.
+
+### Decided (IG Order Submission)
+
+- `get_order()`/`cancel_order()` stay `NotImplementedError` rather than
+  approximating status via a position-existence lookup, which couldn't
+  reliably distinguish "closed after filling" from "never existed."
+- Order currency is read from the account itself, not guessed or added
+  as a new constructor parameter. See `DECISIONS.md`, ADR-0029.
+
+### Verified (IG Order Submission)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **290
+  passed**, 0 failed.
+
 ## Sprint 4 -- 2026-09-10, End-to-End Proof (feature-complete)
 
 ### Added (End-to-End Proof)

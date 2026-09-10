@@ -514,10 +514,11 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
 ### `src/broker`
 
 **Purpose:** connect to a real broker/exchange -- authenticate, read
-account state, and (for Alpaca) submit/check/cancel market orders.
-Sprint 5 (`DECISIONS.md`, ADR-0023 connectivity/account state, ADR-0024
-order submission, ADR-0025 order cancellation, ADR-0026 second broker,
-ADR-0028 third broker).
+account state, and submit market orders (Alpaca: submit/check/cancel;
+IG: submit only, resolved synchronously). Sprint 5 (`DECISIONS.md`,
+ADR-0023 connectivity/account state, ADR-0024 order submission, ADR-0025
+order cancellation, ADR-0026 second broker, ADR-0028 third broker,
+ADR-0029 IG order submission).
 
 - **Inputs:** API credentials -- three different shapes across the
   three concrete brokers: `ALPACA_API_KEY`/`ALPACA_API_SECRET` for
@@ -593,28 +594,36 @@ ADR-0028 third broker).
     `balance.deposit` (margin committed to open positions) -> open
     exposure -- a documented approximation, since IG's CFD/spread-bet
     products are margined rather than fully paid the way Alpaca's
-    equities are. `submit_order`/`get_order`/`cancel_order` all raise
-    `NotImplementedError` -- IG's order model (a short-lived deal
-    reference confirmed into a permanent position, no ongoing
-    order-status endpoint) doesn't fit `BrokerOrder`/`OrderStatus`
-    without its own design round.
-- **Does not:** support limit/stop order types on Alpaca -- market
+    equities are. `submit_order()` (`DECISIONS.md`, ADR-0029) places a
+    market order and resolves it **synchronously**: `POST
+    /positions/otc` returns a `dealReference`, immediately confirmed via
+    `GET /confirms/{dealReference}` into a final `BrokerOrder` --
+    `FILLED` on `dealStatus == "ACCEPTED"`, `REJECTED` on `"REJECTED"`,
+    an unrecognized status raises `BrokerConnectionError`. Order
+    `currencyCode` is read from the selected account's own `currency`
+    field (via a shared `_get_selected_account()` helper also used by
+    `get_account()`), never guessed or hardcoded. `get_order`/
+    `cancel_order` still raise `NotImplementedError` -- there is no live
+    endpoint to re-query a resolved market order's status, and nothing
+    left to cancel once `submit_order()` has returned.
+- **Does not:** support limit/stop order types on Alpaca or IG -- market
   orders only. Doesn't support order submission/status/cancellation on
-  Interactive Brokers or IG at all yet -- both need their own design
-  rounds (IB: contract id lookup, reply/confirmation; IG: the
-  deal-reference/confirm model not fitting `BrokerOrder`/`OrderStatus`).
-  IB is on hold regardless since it geo-restricts account access for
-  this deployment. `AlpacaBroker.get_account()` is confirmed against
-  Alpaca's real paper API; everything else across all three brokers
-  remains tested only against a fake HTTP session, the same posture
-  `src/data` already takes toward `YFinanceProvider` (there's no
-  `test_yfinance_provider.py` either).
+  Interactive Brokers at all yet -- needs its own design round (contract
+  id lookup, reply/confirmation) and is on hold regardless since IB
+  geo-restricts account access for this deployment. IG has no
+  `get_order`/`cancel_order` by design (see `ig.py`, above) -- not a gap
+  to be filled later, but a structural consequence of IG's order model.
+  `AlpacaBroker.get_account()` is confirmed against Alpaca's real paper
+  API; everything else across all three brokers remains tested only
+  against a fake HTTP session, the same posture `src/data` already
+  takes toward `YFinanceProvider` (there's no `test_yfinance_provider.py`
+  either).
 - **Depends on:** `src/risk` (for `AccountState`). Extension Cost
   (ADR-0014): connectivity slice was 1 (`src/cli/checks.py`); order
   submission and order cancellation were each 0; the second broker
   (`IBKRBroker`) was 1 (`src/broker/__init__.py`, exports); the third
-  broker (`IGBroker`) was also 1 (same file) -- all contained within or
-  immediately around `src/broker` itself.
+  broker (`IGBroker`) was also 1 (same file); IG order submission was 0
+  -- all contained within or immediately around `src/broker` itself.
 
 ### `src/reconciliation`
 

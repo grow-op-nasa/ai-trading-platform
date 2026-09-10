@@ -1485,3 +1485,64 @@ for the same logical operation are all explicitly deferred, not
 rejected. `IGBroker` is untested against IG's real API -- only against
 a fake session -- the same accepted gap every other concrete broker in
 this codebase carries.
+
+---
+
+## ADR-0029: IG order submission -- resolves synchronously, no polling or cancellation
+
+**Status:** Accepted -- Sprint 5
+
+**Context:** ADR-0028 deferred order submission because IG's real
+order-placement flow doesn't fit `BrokerOrder`/`OrderStatus` the way
+Alpaca's does: `POST /positions/otc` returns a short-lived
+`dealReference`, confirmed once via `GET /confirms/{dealReference}`
+into `ACCEPTED`/`REJECTED` and a permanent `dealId` -- but IG has no
+endpoint to re-query that `dealId` for status later, because a filled
+market order simply becomes a position rather than a persistent order
+object with an evolving lifecycle. Two questions needed settling before
+building `submit_order()` at all. (1) Given there's no live "check
+status later" endpoint, should `get_order()` approximate one anyway
+(e.g. via `GET /positions/{dealId}`, checking whether a position still
+exists), or stay `NotImplementedError`? (2) IG's order body requires a
+`currencyCode` that `OrderRequest` has no field for -- where should
+that value come from?
+
+**Decision:** (1) `get_order()` and `cancel_order()` both **stay
+`NotImplementedError`**, with an updated message explaining why: a
+position-existence check can't reliably distinguish "this position
+closed because the order filled and was later closed" from "this deal
+was rejected and never became a position" -- approximating a status
+here would mean guessing at a distinction IG's API doesn't actually let
+this code tell apart, which is worse than admitting the gap plainly.
+Cancellation has no meaningful target either, since by the time
+`submit_order()` returns, the order has already fully resolved one way
+or the other. `submit_order()` instead does the entire submit-and-
+confirm round trip itself and returns the **final** `BrokerOrder`
+directly -- `FILLED` (with `filled_quantity`/`filled_avg_price` read
+from the confirmation's `size`/`level`) when `dealStatus == "ACCEPTED"`,
+`REJECTED` when `"REJECTED"` -- so a caller never actually needs to
+poll afterward the way they would for Alpaca. An unrecognized
+`dealStatus` raises `BrokerConnectionError` rather than guessing,
+matching `_parse_order`'s posture in `alpaca.py`. (2) `currencyCode` is
+read from the **selected account's own `currency` field** (already
+available from the same `GET /accounts` call `get_account()` uses), not
+a hardcoded default or a new constructor parameter -- account
+resolution was refactored into a shared `_get_selected_account()`
+helper so both `get_account()` and `submit_order()` go through the same
+one path rather than duplicating the "fetch accounts, pick one" logic.
+
+**Consequences:** Extension Cost (ADR-0014) for this addition: 0 files
+changed outside `ig.py`/`test_ig.py` -- entirely contained within the
+broker that already owns this capability. `OrderRequest.symbol` must
+already be an IG "epic" (e.g. `"CS.D.EURUSD.MINI.IP"`) when calling
+`IGBroker.submit_order()`, exactly the caveat ADR-0028 already flagged.
+`submit_order()` makes two real network calls per order (place, then
+confirm) plus one more to resolve the account's currency if it hasn't
+been resolved this call -- three round trips for one order, a real cost
+of IG's data model that Alpaca's single-call `POST /v2/orders` doesn't
+have. Session-token refresh, IG limit/stop order types, and
+reconciling `IGBroker` fills against `PaperBroker` via
+`src/reconciliation` all remain explicitly deferred, not rejected.
+`submit_order()` is untested against IG's real API -- only against a
+fake session -- the same accepted gap every other concrete broker in
+this codebase carries.

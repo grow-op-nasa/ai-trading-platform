@@ -15,7 +15,7 @@ import pytest
 from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
 from src.broker.ig import IG_DEMO_BASE_URL, IG_LIVE_BASE_URL, IGBroker
-from src.broker.models import OrderRequest, OrderSide
+from src.broker.models import OrderRequest, OrderSide, OrderStatus
 from src.risk.models import AccountState
 
 
@@ -310,16 +310,192 @@ def test_get_account_raises_authentication_error_when_session_expires_mid_use():
 
 
 # ---------------------------------------------------------------------------
-# Order management -- deliberately not implemented this round
+# submit_order -- success path (resolves synchronously)
 # ---------------------------------------------------------------------------
 
 
-def test_submit_order_raises_not_implemented():
-    broker = make_broker(FakeSession())
-    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.BUY, quantity=1)
+def _accounts_response(currency: str = "USD") -> FakeResponse:
+    return FakeResponse(
+        200,
+        {
+            "accounts": [
+                {
+                    "accountId": "A1",
+                    "preferred": True,
+                    "currency": currency,
+                    "balance": {"balance": 50_000.0, "deposit": 0.0},
+                }
+            ]
+        },
+    )
 
-    with pytest.raises(NotImplementedError):
+
+def _confirmation_response(
+    deal_status: str = "ACCEPTED",
+    status: str = "OPEN",
+    direction: str = "BUY",
+    size: float = 10.0,
+    level: float | None = 150.0,
+    deal_id: str = "deal-123",
+) -> FakeResponse:
+    return FakeResponse(
+        200,
+        {
+            "dealId": deal_id,
+            "dealReference": "ref-123",
+            "dealStatus": deal_status,
+            "status": status,
+            "epic": "CS.D.EURUSD.MINI.IP",
+            "direction": direction,
+            "size": size,
+            "level": level,
+        },
+    )
+
+
+def test_submit_order_sends_expected_body_with_account_currency():
+    session = FakeSession(
+        responses=[
+            login_response(),
+            _accounts_response(currency="GBP"),
+            FakeResponse(200, {"dealReference": "ref-123"}),
+            _confirmation_response(),
+        ]
+    )
+    broker = make_broker(session)
+    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.BUY, quantity=10)
+
+    broker.submit_order(request)
+
+    login_call, accounts_call, submit_call, confirm_call = session.calls
+    assert submit_call[0] == "post"
+    assert submit_call[1].endswith("/positions/otc")
+    assert confirm_call[0] == "get"
+    assert confirm_call[1].endswith("/confirms/ref-123")
+
+
+def test_submit_order_returns_filled_broker_order_on_accepted():
+    session = FakeSession(
+        responses=[
+            login_response(),
+            _accounts_response(),
+            FakeResponse(200, {"dealReference": "ref-123"}),
+            _confirmation_response(deal_status="ACCEPTED", size=10.0, level=150.0),
+        ]
+    )
+    broker = make_broker(session)
+    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.BUY, quantity=10)
+
+    order = broker.submit_order(request)
+
+    assert order.broker_order_id == "deal-123"
+    assert order.symbol == "CS.D.EURUSD.MINI.IP"
+    assert order.side is OrderSide.BUY
+    assert order.status is OrderStatus.FILLED
+    assert order.filled_quantity == pytest.approx(10.0)
+    assert order.filled_avg_price == pytest.approx(150.0)
+
+
+def test_submit_order_returns_rejected_broker_order_on_rejected():
+    session = FakeSession(
+        responses=[
+            login_response(),
+            _accounts_response(),
+            FakeResponse(200, {"dealReference": "ref-123"}),
+            _confirmation_response(deal_status="REJECTED", level=None),
+        ]
+    )
+    broker = make_broker(session)
+    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.BUY, quantity=10)
+
+    order = broker.submit_order(request)
+
+    assert order.status is OrderStatus.REJECTED
+    assert order.filled_quantity == pytest.approx(0.0)
+    assert order.filled_avg_price is None
+
+
+def test_submit_order_maps_sell_side_correctly():
+    session = FakeSession(
+        responses=[
+            login_response(),
+            _accounts_response(),
+            FakeResponse(200, {"dealReference": "ref-123"}),
+            _confirmation_response(direction="SELL"),
+        ]
+    )
+    broker = make_broker(session)
+    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.SELL, quantity=10)
+
+    order = broker.submit_order(request)
+
+    assert order.side is OrderSide.SELL
+
+
+def test_submit_order_raises_connection_error_on_unrecognized_deal_status():
+    session = FakeSession(
+        responses=[
+            login_response(),
+            _accounts_response(),
+            FakeResponse(200, {"dealReference": "ref-123"}),
+            _confirmation_response(deal_status="MYSTERY"),
+        ]
+    )
+    broker = make_broker(session)
+    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.BUY, quantity=10)
+
+    with pytest.raises(BrokerConnectionError):
         broker.submit_order(request)
+
+
+# ---------------------------------------------------------------------------
+# submit_order -- error paths
+# ---------------------------------------------------------------------------
+
+
+def test_submit_order_raises_connection_error_when_no_accounts_for_currency():
+    session = FakeSession(responses=[login_response(), FakeResponse(200, {"accounts": []})])
+    broker = make_broker(session)
+    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.BUY, quantity=10)
+
+    with pytest.raises(BrokerConnectionError):
+        broker.submit_order(request)
+
+
+def test_submit_order_raises_authentication_error_on_401():
+    session = FakeSession(
+        responses=[login_response(), _accounts_response(), FakeResponse(401, text="unauthorized")]
+    )
+    broker = make_broker(session)
+    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.BUY, quantity=10)
+
+    with pytest.raises(BrokerAuthenticationError):
+        broker.submit_order(request)
+
+
+def test_submit_order_raises_connection_error_on_other_http_failure():
+    session = FakeSession(
+        responses=[login_response(), _accounts_response(), FakeResponse(500, text="server error")]
+    )
+    broker = make_broker(session)
+    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.BUY, quantity=10)
+
+    with pytest.raises(BrokerConnectionError):
+        broker.submit_order(request)
+
+
+def test_submit_order_raises_connection_error_on_network_failure():
+    session = FakeSession(raises=requests.exceptions.ConnectionError("no route to host"))
+    broker = make_broker(session)
+    request = OrderRequest(symbol="CS.D.EURUSD.MINI.IP", side=OrderSide.BUY, quantity=10)
+
+    with pytest.raises(BrokerConnectionError):
+        broker.submit_order(request)
+
+
+# ---------------------------------------------------------------------------
+# get_order / cancel_order -- deliberately not implemented
+# ---------------------------------------------------------------------------
 
 
 def test_get_order_raises_not_implemented():

@@ -24,16 +24,20 @@ explicit way Alpaca's `ALPACA_PAPER_BASE_URL`/`ALPACA_LIVE_BASE_URL`
 do -- unlike IB, where paper vs. live is determined by which account is
 logged into the gateway, not a URL.
 
-Scope this round is **connectivity and account state only**, the same
-posture `AlpacaBroker` and `IBKRBroker` both started with:
-`submit_order`/`get_order`/`cancel_order` raise `NotImplementedError`.
-IG's real order model doesn't fit `BrokerOrder`/`OrderStatus` without
-its own design pass -- placing a market order returns a short-lived
-`dealReference`, confirmed once via `GET /confirms/{dealReference}` to
-learn `ACCEPTED`/`REJECTED` and obtain a permanent `dealId`, but there
-is no ongoing "check order status" endpoint the way Alpaca/IB have,
-since a filled market order simply becomes a position rather than a
-persistent order object with a lifecycle.
+`submit_order` (ADR-0029) places a market order and resolves it
+**synchronously**: `POST /positions/otc` returns a short-lived
+`dealReference`, which is immediately confirmed via
+`GET /confirms/{dealReference}` into `ACCEPTED`/`REJECTED` plus a
+permanent `dealId` -- so the `BrokerOrder` `submit_order()` returns is
+already final (`FILLED` or `REJECTED`), not a pending state a caller
+needs to check on later. `get_order`/`cancel_order` stay
+`NotImplementedError` deliberately: there is no live endpoint to
+re-query an IG market order's status after the fact (a filled order
+simply becomes a position, not a persistent order object), and nothing
+about a resolved market order can be canceled. Pretending otherwise --
+e.g. approximating status via a position lookup -- would guess at a
+distinction (closed-because-filled vs. never-existed) IG's API doesn't
+actually let this code tell apart.
 """
 
 from __future__ import annotations
@@ -45,7 +49,7 @@ import requests
 
 from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
-from src.broker.models import BrokerOrder, OrderRequest
+from src.broker.models import BrokerOrder, OrderRequest, OrderSide, OrderStatus
 from src.risk.models import AccountState
 
 IG_DEMO_BASE_URL = "https://demo-api.ig.com/gateway/deal"
@@ -54,10 +58,10 @@ IG_LIVE_BASE_URL = "https://api.ig.com/gateway/deal"
 _REQUEST_TIMEOUT_SECONDS = 10
 
 _NOT_IMPLEMENTED_MESSAGE = (
-    "IGBroker does not yet support {method}() -- IG's order model (a "
-    "short-lived deal reference confirmed into a permanent position, with "
-    "no ongoing order-status endpoint) doesn't fit BrokerOrder/OrderStatus "
-    "without its own design round. See DECISIONS.md, ADR-0028."
+    "IGBroker does not support {method}() for market orders -- "
+    "submit_order() already resolves synchronously (ACCEPTED+OPEN or "
+    "REJECTED) via IG's deal confirmation, so there is no later status to "
+    "poll for and nothing left to cancel. See DECISIONS.md, ADR-0029."
 )
 
 
@@ -77,9 +81,7 @@ class _Response(Protocol):
 
 class _Session(Protocol):
     """The minimal shape this module needs from an HTTP client --
-    `requests` itself satisfies this, and tests can inject a fake. Only
-    `.get()`/`.post()` are needed today -- order submission isn't
-    implemented yet.
+    `requests` itself satisfies this, and tests can inject a fake.
     """
 
     def get(self, url: str, headers: dict, timeout: float) -> _Response: ...
@@ -133,20 +135,57 @@ class IGBroker(BrokerConnection):
         self._security_token: str | None = None
 
     def get_account(self) -> AccountState:
-        data = self._request("get", "/accounts", version="1")
-        accounts = data.get("accounts") or []
-        if not accounts:
-            raise BrokerConnectionError("IG reported no accounts for this session")
-        return _parse_account(self._select_account(accounts))
+        return _parse_account(self._get_selected_account())
 
     def submit_order(self, request: OrderRequest) -> BrokerOrder:
-        raise NotImplementedError(_NOT_IMPLEMENTED_MESSAGE.format(method="submit_order"))
+        currency_code = self._get_selected_account().get("currency")
+        if not currency_code:
+            raise BrokerConnectionError("IG account has no currency set")
+
+        body = {
+            "currencyCode": currency_code,
+            "direction": request.side.value,
+            "epic": request.symbol,
+            "expiry": "-",
+            "forceOpen": True,
+            "guaranteedStop": False,
+            "level": None,
+            "limitDistance": None,
+            "limitLevel": None,
+            "orderType": "MARKET",
+            "quoteId": None,
+            "size": request.quantity,
+            "stopDistance": None,
+            "stopLevel": None,
+            "trailingStop": False,
+            "trailingStopIncrement": None,
+        }
+        submitted = self._request("post", "/positions/otc", version="2", json=body)
+        deal_reference = submitted["dealReference"]
+        confirmation = self._request("get", f"/confirms/{deal_reference}", version="1")
+        return _parse_confirmation(confirmation)
 
     def get_order(self, broker_order_id: str) -> BrokerOrder:
         raise NotImplementedError(_NOT_IMPLEMENTED_MESSAGE.format(method="get_order"))
 
     def cancel_order(self, broker_order_id: str) -> None:
         raise NotImplementedError(_NOT_IMPLEMENTED_MESSAGE.format(method="cancel_order"))
+
+    def _get_selected_account(self) -> dict:
+        """Fetch this session's accounts and pick which one to use.
+
+        Shared by `get_account()` (to build the `AccountState`) and
+        `submit_order()` (to read the account's own currency for the
+        order body) -- one account-resolution path, not two.
+
+        Raises:
+            BrokerConnectionError: the session has no accounts at all.
+        """
+        data = self._request("get", "/accounts", version="1")
+        accounts = data.get("accounts") or []
+        if not accounts:
+            raise BrokerConnectionError("IG reported no accounts for this session")
+        return self._select_account(accounts)
 
     def _select_account(self, accounts: list[dict]) -> dict:
         """Pick which of the logged-in session's accounts to use.
@@ -262,3 +301,44 @@ def _parse_account(account: dict) -> AccountState:
     equity = float(balance["balance"])
     open_exposure = abs(float(balance.get("deposit") or 0.0))
     return AccountState(equity=equity, open_exposure=open_exposure)
+
+
+def _parse_confirmation(data: dict) -> BrokerOrder:
+    """Convert an IG `/confirms/{dealReference}` response into a
+    `BrokerOrder`.
+
+    A market order resolves synchronously here: `dealStatus ==
+    "ACCEPTED"` means the position opened and the order is fully
+    `FILLED` at the confirmed `level`; `"REJECTED"` means it never
+    filled at all. There is no partial-fill or pending state to
+    represent for a market order confirmed this way.
+
+    Raises:
+        BrokerConnectionError: IG reported a `dealStatus` we don't
+            recognize. We'd rather fail loudly than guess wrong about
+            whether the order filled.
+    """
+    deal_status = data["dealStatus"]
+    size = float(data.get("size") or 0.0)
+
+    if deal_status == "REJECTED":
+        status = OrderStatus.REJECTED
+        filled_quantity = 0.0
+        filled_avg_price = None
+    elif deal_status == "ACCEPTED":
+        status = OrderStatus.FILLED
+        filled_quantity = size
+        level = data.get("level")
+        filled_avg_price = float(level) if level is not None else None
+    else:
+        raise BrokerConnectionError(f"IG returned an unrecognized deal status: {deal_status!r}")
+
+    return BrokerOrder(
+        broker_order_id=data.get("dealId") or data["dealReference"],
+        symbol=data["epic"],
+        side=OrderSide.BUY if data["direction"] == "BUY" else OrderSide.SELL,
+        quantity=size,
+        status=status,
+        filled_quantity=filled_quantity,
+        filled_avg_price=filled_avg_price,
+    )

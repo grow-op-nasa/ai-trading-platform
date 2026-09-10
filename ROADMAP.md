@@ -274,9 +274,14 @@ once there's a second real caller that needs one.
   `get_account()` only this round -- IG's deal-reference/confirm order
   model doesn't fit `BrokerOrder`/`OrderStatus` without its own design
   pass. See `DECISIONS.md`, ADR-0028.
-- ⬜ IG order submission/status -- the piece ADR-0028 deliberately
-  deferred, given IG's deal-reference/confirm model not fitting
-  `BrokerOrder`/`OrderStatus` cleanly.
+- ✅ IG order submission -- `IGBroker.submit_order()` places a market
+  order and resolves it **synchronously** (`POST /positions/otc` then
+  `GET /confirms/{dealReference}`), returning a final `FILLED`/
+  `REJECTED` `BrokerOrder` directly. `get_order`/`cancel_order` stay
+  `NotImplementedError` -- there's no live status to poll for and
+  nothing left to cancel once a market order has resolved. Order
+  currency is read from the account itself, never guessed. See
+  `DECISIONS.md`, ADR-0029.
 - ⬜ Tiger Brokers/Tiger Trade as a fourth broker -- another real,
   usable account (real equities, RSA-signed request auth) the user
   could exercise; not started.

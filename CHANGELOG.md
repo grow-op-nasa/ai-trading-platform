@@ -11,6 +11,85 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 5 (in progress) -- 2026-09-10, Broker Connectivity
+
+### Added
+
+- `src/broker/` -- `BrokerConnection` + `AlpacaBroker` (`DECISIONS.md`,
+  ADR-0023), touching 1 existing file (Extension Cost: 1:
+  `src/cli/checks.py`):
+  - `base.py` -- `BrokerConnection(ABC)`, analogous to `src/data`'s
+    `DataProvider`: one abstract method, `get_account() ->
+    src.risk.AccountState` -- reuses the existing account-state
+    currency `PositionSizer` already consumes from `PaperBroker`,
+    rather than inventing a parallel "BrokerAccount" model.
+  - `alpaca.py` -- `AlpacaBroker(BrokerConnection)`. Reads
+    `ALPACA_API_KEY`/`ALPACA_API_SECRET` from constructor arguments or
+    environment variables (same convention as `ANTHROPIC_API_KEY`);
+    raises `BrokerAuthenticationError` immediately if either is
+    missing, before any network call. Defaults to Alpaca's **paper**
+    endpoint (`ALPACA_PAPER_BASE_URL`) -- the live endpoint requires an
+    explicit override, never a default. `get_account()` calls
+    `GET /v2/account` via an injectable HTTP session (defaults to
+    `requests`), maps 401/403 to `BrokerAuthenticationError`, any other
+    non-200 or network failure to `BrokerConnectionError`, and parses a
+    successful response into an `AccountState` (`open_exposure` = sum
+    of absolute long + short market value).
+  - `exceptions.py` -- `BrokerError`, `BrokerAuthenticationError`,
+    `BrokerConnectionError`.
+  - Order submission against a real broker is deliberately **not**
+    included this round -- a real order's asynchronous lifecycle
+    (pending/partial/rejected) doesn't fit `src/execution`'s
+    synchronous, instant-fill `Order`/`Fill` model (ADR-0022); designing
+    that properly is a separate, later step.
+- `tests/test_broker.py` -- 14 tests, all against an injected fake HTTP
+  session (no real network, no real Alpaca account, matching the
+  existing "unit-test the interface, leave the live vendor to a future
+  integration suite" posture toward `YFinanceProvider`): credential
+  validation (missing, argument-supplied, environment-supplied, only
+  one of the two present), paper-endpoint default and explicit live
+  override, successful parsing (equity, long+short exposure summed,
+  missing fields default to zero), credentials sent as headers, and
+  error mapping (401/403 -> auth error, other HTTP failure -> connection
+  error, network exception -> connection error).
+
+### Changed
+
+- `src/cli/checks.py` -- `check_broker_connection` upgraded from an
+  unconditional `NOT_IMPLEMENTED` to a real check: still
+  `NOT_IMPLEMENTED` when `ALPACA_API_KEY`/`ALPACA_API_SECRET` aren't
+  set, otherwise a live `OK`/`FAIL` via `AlpacaBroker().get_account()`.
+  Same shape of change as ADR-0020's `check_api_keys` upgrade.
+- `tests/test_cli_doctor.py` -- replaced
+  `test_broker_connection_is_not_implemented` with three tests: not
+  implemented when credentials are absent, `OK` when a faked
+  `AlpacaBroker` succeeds, `FAIL` when it raises.
+
+### Decided
+
+- Alpaca over Interactive Brokers for the first integration -- a REST
+  API with no local software required and a built-in paper-trading
+  environment, matching the platform's "deliberately simple first"
+  posture. See `DECISIONS.md`, ADR-0023.
+- Built and tested now against a fake HTTP session, without a real
+  account -- real credentials can be added later via environment
+  variables with zero code changes.
+- Scoped to connectivity + account state only this round; order
+  submission is deferred to its own round rather than forcing it into
+  `src/execution`'s existing synchronous fill model where it doesn't
+  actually fit.
+- Defaults to Alpaca's paper-trading endpoint; the live, real-money
+  endpoint requires an explicit override, never a default.
+
+### Verified
+
+- New suite verified in sandbox: 14/14 `test_broker.py` tests pass;
+  `test_cli_doctor.py` at 28/29 (only the pre-existing sandbox-only
+  Python-version failure remains). Full project suite: 211/213 in
+  sandbox (2 known environment-only failures, consistent with every
+  prior session). Pending final confirmation via real `pytest` on the
+  dev machine.
+
 ## Sprint 4 -- 2026-09-10, End-to-End Proof (feature-complete)
 
 ### Added (End-to-End Proof)
@@ -33,12 +112,9 @@ warning sign that the architecture's been violated.
 
 ### Verified (End-to-End Proof)
 
-- New suite verified in sandbox: 5/5
-  `test_integration_paper_trading.py` tests pass. Full project suite:
-  195/197 in sandbox (2 known environment-only failures, consistent
-  with every prior session). Pending final confirmation via real
-  `pytest` on the dev machine. This closes out Sprint 4's remaining
-  ROADMAP item -- Sprint 4 is now feature-complete.
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **197
+  passed**, 0 failed. This closes out Sprint 4's remaining ROADMAP item
+  -- Sprint 4 is now feature-complete and fully confirmed.
 
 ## Sprint 4, Paper Execution -- 2026-09-10
 

@@ -209,13 +209,59 @@ def test_experiments_db_fails_when_registry_raises(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# checks.py -- not-yet-built capabilities
+# checks.py -- Broker Connection
 # ---------------------------------------------------------------------------
 
-def test_broker_connection_is_not_implemented():
+def test_broker_connection_not_implemented_when_credentials_missing(monkeypatch):
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_API_SECRET", raising=False)
+
     result = checks.check_broker_connection()
+
     assert result.status is CheckStatus.NOT_IMPLEMENTED
-    assert "Sprint 5" in result.detail
+    assert "ALPACA_API_KEY" in result.detail
+
+
+def test_broker_connection_ok_when_alpaca_reachable(monkeypatch):
+    from src.risk.models import AccountState
+
+    monkeypatch.setenv("ALPACA_API_KEY", "key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "secret")
+
+    class _FakeBroker:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def get_account(self) -> AccountState:
+            return AccountState(equity=50_000.0, open_exposure=0.0)
+
+    monkeypatch.setattr(checks, "AlpacaBroker", _FakeBroker)
+
+    result = checks.check_broker_connection()
+
+    assert result.status is CheckStatus.OK
+    assert "50000.00" in result.detail
+
+
+def test_broker_connection_fails_when_alpaca_raises(monkeypatch):
+    from src.broker.exceptions import BrokerAuthenticationError
+
+    monkeypatch.setenv("ALPACA_API_KEY", "key")
+    monkeypatch.setenv("ALPACA_API_SECRET", "secret")
+
+    class _RaisingBroker:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def get_account(self):
+            raise BrokerAuthenticationError("bad credentials")
+
+    monkeypatch.setattr(checks, "AlpacaBroker", _RaisingBroker)
+
+    result = checks.check_broker_connection()
+
+    assert result.status is CheckStatus.FAIL
+    assert "bad credentials" in result.detail
 
 
 def test_api_keys_ok_when_anthropic_key_set(monkeypatch):

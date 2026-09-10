@@ -1047,3 +1047,75 @@ worth right now," not just "what did it realize so far." Real broker
 connectivity, limit orders, partial fills, slippage, commission, and
 multi-position-per-symbol averaging are all explicitly deferred, not
 rejected -- tracked in `ROADMAP.md`/`PROJECT_STATE.md`.
+
+---
+
+## ADR-0023: Broker connectivity -- Alpaca, connectivity + account state only, paper by default
+
+**Status:** Accepted -- Sprint 5
+
+**Context:** Sprint 5 asked for `src/broker`: the platform's first real
+broker/exchange integration, behind an interface analogous to
+`DataProvider` so the specific broker stays swappable (`ROADMAP.md`).
+Three questions needed settling first. (1) Which broker: Alpaca (a REST
+API with no local software and a built-in paper-trading environment)
+or Interactive Brokers (broader market access, but requires running
+TWS/IB Gateway locally and a heavier API)? (2) Credentials: build
+against a real account now, or build and test the integration without
+one, adding real credentials later? (3) Scope: should this first pass
+also submit real orders, or stop at connectivity and account state?
+That last question mattered because `src/execution`'s existing
+`Order`/`Fill` model (ADR-0022) assumes a synchronous, instantly-and-
+completely-filled order -- true for a paper-trading simulation, but not
+how a real broker actually works (an order can sit pending, fill
+partially, or be rejected asynchronously).
+
+**Decision:** Alpaca was chosen, matching the platform's "deliberately
+simple first" posture elsewhere. The integration is built and tested
+now against an injected fake HTTP session -- no real Alpaca account
+exists yet -- the same "unit-test the parsing and error-handling logic,
+leave the live vendor to a future integration suite" posture
+`tests/test_market_data.py` already takes toward `YFinanceProvider`
+(there is no `test_yfinance_provider.py` either). Real credentials can
+be added later via `ALPACA_API_KEY`/`ALPACA_API_SECRET` environment
+variables with zero code changes, the same convention `ANTHROPIC_API_KEY`
+already established (ADR-0020). Scope is **connectivity and account
+state only**: `BrokerConnection` (`src/broker/base.py`) has exactly one
+abstract method, `get_account() -> AccountState` -- reusing
+`src.risk.AccountState` directly rather than inventing a parallel
+"BrokerAccount" model, since that's the same currency `PositionSizer`
+already consumes from `PaperBroker`. Order submission against a real
+broker is deliberately deferred to a separate, later round: designing
+an order/fill model that honestly represents a real broker's
+asynchronous lifecycle (pending, partial, rejected) is a big enough
+design surface on its own that it shouldn't be rushed into this pass
+just to reuse `src/execution`'s existing synchronous shape where it
+doesn't actually fit. `AlpacaBroker` defaults to Alpaca's **paper**
+endpoint (`ALPACA_PAPER_BASE_URL`) -- connecting to the live, real-money
+endpoint (`ALPACA_LIVE_BASE_URL`) requires an explicit, deliberate
+override, never a default, since this platform is a research and
+paper-trading tool. Missing or partial credentials raise
+`BrokerAuthenticationError` immediately in `__init__`, before any
+network call is attempted, matching the eager-validation pattern
+`RiskLimits`/`AccountState`/`Signal` already use in their own
+`__post_init__`s. `atp doctor`'s "Broker Connection" check
+(`DECISIONS.md`, ADR-0013) was upgraded from an unconditional
+`NOT_IMPLEMENTED` to a real check gated on configuration: still
+`NOT_IMPLEMENTED` when `ALPACA_API_KEY`/`ALPACA_API_SECRET` aren't set
+(there's genuinely nothing to connect to), otherwise a live
+`OK`/`FAIL` via `AlpacaBroker().get_account()`.
+
+**Consequences:** Extension Cost (ADR-0014) for this module: 1 file
+changed outside the new `src/broker/` package -- `src/cli/checks.py`
+(`check_broker_connection` rewritten; same shape of change as
+ADR-0020's `check_api_keys` upgrade). Nothing in `src/risk`,
+`src/execution`, `src/signals`, or `src/backtesting` was touched.
+`AlpacaBroker.get_account()` is untested against Alpaca's real API --
+only against a fake session -- so the first real network call will
+still be the true test of whether Alpaca's actual response shape
+matches what `_parse_account()` expects; that's an accepted gap, not
+an oversight, consistent with how `YFinanceProvider` has never been
+directly unit-tested either. Order submission, Interactive Brokers (or
+any second broker), and reconciling `PaperBroker`'s simulated fills
+against a real broker's actual fills are all explicitly deferred, not
+rejected.

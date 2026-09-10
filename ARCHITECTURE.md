@@ -26,7 +26,7 @@ graph TD
     research[research: ResearchReporter]
     risk[risk: PositionSizer]
     execution[execution: PaperBroker]
-    broker[broker: not yet built]
+    broker[broker: BrokerConnection + AlpacaBroker]
     analytics[analytics: not yet built]
     ai[ai: not yet built]
     dashboard[dashboard: not yet built]
@@ -53,6 +53,7 @@ graph TD
     signals --> execution
     risk --> execution
     execution --> broker
+    risk --> broker
     strategies --> analytics
     data --> dashboard
     ai --> strategies
@@ -60,6 +61,7 @@ graph TD
     data --> cli
     utils --> cli
     experiments --> cli
+    broker --> cli
 ```
 
 `attribution` is not the same thing as the planned `analytics` (Sprint 6,
@@ -77,16 +79,23 @@ and recommendation (a research artifact for a person to read), while
 trading decision on its own behalf (ADR-0017) -- `research` explicitly
 never will, since its output is prose for a person, not a `Signal`.
 
-`risk --> execution` now reflects a real dependency: `PaperBroker`
-consumes `PositionSizer`'s `SizingDecision` directly to size an opening
-order (`DECISIONS.md`, ADR-0022), closing the loop ADR-0021 left open.
+`risk --> execution` reflects a real dependency: `PaperBroker` consumes
+`PositionSizer`'s `SizingDecision` directly to size an opening order
+(`DECISIONS.md`, ADR-0022), closing the loop ADR-0021 left open.
 Neither `risk` nor `execution` depend on, or get called by,
 `backtesting` -- `Backtester` still sizes every trade as a single unit
-(ADR-0011), unchanged; `PositionSizer` and `PaperBroker` are so far
-verified against each other directly, not through a real backtest or
-strategy run. `execution --> broker` is still aspirational: it
-documents where a live fill would come from once Sprint 5 exists, not
-a dependency `PaperBroker` has today -- it simulates fills itself.
+(ADR-0011), unchanged. `risk --> broker` is also real: `AlpacaBroker`
+returns `src.risk.AccountState` directly from `get_account()`, the same
+currency `PaperBroker.account_state` already produces (`DECISIONS.md`,
+ADR-0023) -- a live broker and the paper broker are interchangeable
+account-state sources from `PositionSizer`'s point of view. `execution
+--> broker` is still aspirational, though: `broker` doesn't call
+`execution` or vice versa today -- they're sibling account-state
+sources, not a dependency chain, until a future orchestration layer
+picks one and drives `PositionSizer` from it. `broker --> cli`
+reflects `atp doctor`'s Broker Connection check calling `AlpacaBroker`
+directly, the same way it already calls into `data`/`utils`/
+`experiments`.
 
 `cli` is drawn separately from the main pipeline on purpose: it's a
 diagnostic tool that reaches into several capabilities to check their
@@ -490,12 +499,56 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
   every price is supplied by the caller). Does not support more than
   one open position per symbol at a time -- opening a second raises
   rather than averaging into it. Does not model limit orders, partial
-  fills, slippage, or commission. Is not wired into `Backtester` or a
-  real strategy loop yet.
+  fills, slippage, or commission. Is not wired into `Backtester` --
+  `tests/test_integration_paper_trading.py` proves it composes with a
+  real strategy's signals, but only as a test, not as production
+  wiring.
 - **Depends on:** `src/signals` (for `Signal`/`SignalDirection`),
   `src/risk` (for `AccountState`/`SizingDecision`). Extension Cost
   (ADR-0014): 0 -- purely additive, nothing in `src/risk`,
   `src/signals`, `src/backtesting`, or `src/strategies` was changed.
+
+### `src/broker`
+
+**Purpose:** connect to a real broker/exchange -- today, just enough
+to authenticate and read account state, mirroring the same currency
+`PaperBroker` already produces. Sprint 5 (`DECISIONS.md`, ADR-0023).
+
+- **Inputs:** API credentials (`ALPACA_API_KEY`/`ALPACA_API_SECRET`, as
+  constructor arguments or environment variables).
+- **Outputs:** `get_account() -> src.risk.AccountState`.
+- **Key files:**
+  - `base.py` -- `BrokerConnection(ABC)`, analogous to `src/data`'s
+    `DataProvider`: one abstract method, `get_account()`. Nothing
+    outside `src/broker` should import a specific broker directly --
+    depend on this interface so swapping brokers never touches
+    strategies, risk, or execution.
+  - `alpaca.py` -- `AlpacaBroker(BrokerConnection)`. Raises
+    `BrokerAuthenticationError` immediately in `__init__` if
+    credentials are missing, before any network call. Defaults to
+    Alpaca's **paper** endpoint (`ALPACA_PAPER_BASE_URL`) -- the live
+    endpoint (`ALPACA_LIVE_BASE_URL`) requires an explicit override,
+    never a default. `get_account()` calls `GET /v2/account` through an
+    injectable HTTP session (defaults to `requests`), maps 401/403 to
+    `BrokerAuthenticationError` and any other failure to
+    `BrokerConnectionError`, and parses a successful response into an
+    `AccountState` (`open_exposure` = absolute long + short market
+    value).
+  - `exceptions.py` -- `BrokerError`, `BrokerAuthenticationError`,
+    `BrokerConnectionError`.
+- **Does not:** submit orders -- a real broker's asynchronous order
+  lifecycle (pending, partial fill, rejection) doesn't fit
+  `src/execution`'s synchronous, instant-fill `Order`/`Fill` model, so
+  that's deliberately a separate, later step. Has only one concrete
+  implementation (Alpaca) -- Interactive Brokers or another venue would
+  prove the interface is actually swappable, not just designed to be.
+  Is untested against Alpaca's real API -- only against a fake HTTP
+  session, the same posture `src/data` already takes toward
+  `YFinanceProvider` (there's no `test_yfinance_provider.py` either).
+- **Depends on:** `src/risk` (for `AccountState`). Extension Cost
+  (ADR-0014): 1 -- `src/cli/checks.py` (`check_broker_connection`
+  upgraded from `NOT_IMPLEMENTED` to a real, configuration-gated
+  check).
 
 ### `src/experiments`
 
@@ -553,9 +606,10 @@ guess. See `DECISIONS.md`, ADR-0013.
     real SQLite file and queries it), API Keys (reports whether
     `ANTHROPIC_API_KEY` is set, for `src/research`'s optional
     `ClaudeNarrativeRenderer` -- always `OK` either way, since its
-    absence doesn't degrade the platform; see ADR-0020). Broker
-    Connection reports `NOT_IMPLEMENTED` -- `src/broker` doesn't exist
-    yet (Sprint 5) -- rather than being omitted or faked as passing.
+    absence doesn't degrade the platform; see ADR-0020), Broker
+    Connection (reports `NOT_IMPLEMENTED` until
+    `ALPACA_API_KEY`/`ALPACA_API_SECRET` are set, then a real, live
+    `OK`/`FAIL` via `AlpacaBroker().get_account()`; see ADR-0023).
   - `doctor.py` -- runs every registered check, formats the report,
     computes the exit code. A check that raises is treated as that
     check failing, not as `atp doctor` crashing.
@@ -563,14 +617,15 @@ guess. See `DECISIONS.md`, ADR-0013.
 - **Does not:** wire up a real global `atp` shell command yet -- that
   needs the packaging work tracked in `DECISIONS.md` ADR-0004, still
   deferred to pre-1.0. Does not attempt to fix anything it finds broken.
-- **Depends on:** `src/config`, `src/data`, `src/utils`, `src/experiments`
-  -- it reaches into each capability's public API to check it, the same
-  way any other consumer would.
+- **Depends on:** `src/config`, `src/data`, `src/utils`, `src/experiments`,
+  `src/broker` -- it reaches into each capability's public API to check
+  it, the same way any other consumer would.
 
-### `src/broker`, `src/analytics`, `src/ai`, `src/dashboard`
+### `src/analytics`, `src/ai`, `src/dashboard`
 
-(`src/research`, `src/risk`, and `src/execution` are now built -- see
-above -- and no longer belong in this "not yet implemented" list.)
+(`src/research`, `src/risk`, `src/execution`, and `src/broker` are now
+built -- see above -- and no longer belong in this "not yet
+implemented" list.)
 
 Not yet implemented -- each currently exists only as an empty package
 with a docstring stating its intended purpose (see `src/__init__.py`

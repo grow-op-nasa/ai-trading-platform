@@ -13,6 +13,8 @@ import sys
 
 import pandas as pd
 
+from src.broker.alpaca import AlpacaBroker
+from src.broker.exceptions import BrokerError
 from src.cli.registry import CheckResult, CheckStatus, register_check
 from src.config import settings
 from src.data.exceptions import DataProviderError
@@ -125,16 +127,25 @@ def check_experiments_db() -> CheckResult:
 
 @register_check("Broker Connection")
 def check_broker_connection() -> CheckResult:
-    """`src/broker/` doesn't exist yet -- broker connectivity is
-    Sprint 5. Reported as NOT_IMPLEMENTED rather than skipped so the
-    doctor's output is an honest, complete list of everything the
-    system will eventually need to be healthy, not just what exists
-    today."""
-    return CheckResult(
-        "Broker Connection",
-        CheckStatus.NOT_IMPLEMENTED,
-        "src/broker/ not built yet (Sprint 5)",
-    )
+    """Real once `ALPACA_API_KEY`/`ALPACA_API_SECRET` are configured;
+    `NOT_IMPLEMENTED` honestly until then -- `src/broker/` exists
+    (Sprint 5), but there's genuinely nothing to connect to without
+    credentials. See `DECISIONS.md`, ADR-0013, ADR-0023."""
+    if not os.environ.get("ALPACA_API_KEY") or not os.environ.get("ALPACA_API_SECRET"):
+        return CheckResult(
+            "Broker Connection",
+            CheckStatus.NOT_IMPLEMENTED,
+            "ALPACA_API_KEY / ALPACA_API_SECRET not set",
+        )
+    try:
+        account = AlpacaBroker().get_account()
+        return CheckResult(
+            "Broker Connection", CheckStatus.OK, f"equity: {account.equity:.2f}"
+        )
+    except BrokerError as exc:
+        return CheckResult("Broker Connection", CheckStatus.FAIL, str(exc))
+    except Exception as exc:
+        return CheckResult("Broker Connection", CheckStatus.FAIL, f"unexpected error: {exc}")
 
 
 @register_check("API Keys")

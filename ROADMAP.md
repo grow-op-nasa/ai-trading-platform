@@ -173,7 +173,7 @@ above is about the platform's *capability* to run and explain a
 strategy, not about having shipped a specific one -- see Sprint 4,
 below, where it's now built.
 
-## Sprint 4 -- Risk & Execution (in progress)
+## Sprint 4 -- Risk & Execution ✅ Complete
 
 - ✅ First permanent strategy: `EMACrossStrategy`
   (`src/strategies/ema_cross.py`) -- long while EMA(fast) > EMA(slow),
@@ -216,12 +216,26 @@ is a judgment call, not a fixed scope -- e.g. a reusable orchestration
 layer (a `PaperTradingLoop` or similar) only becomes worth building
 once there's a second real caller that needs one.
 
-## Sprint 5 -- Broker Connectivity (planned)
+## Sprint 5 -- Broker Connectivity (in progress)
 
-- `src/broker/`: first real broker/exchange integration (candidates:
-  Alpaca for equities, Interactive Brokers for broader access). Behind
-  an interface analogous to `DataProvider`, so the specific broker is
-  swappable the same way the data vendor is.
+- ✅ `src/broker/`: `BrokerConnection` (analogous to `DataProvider`) +
+  `AlpacaBroker` -- `get_account() -> src.risk.AccountState`, reusing
+  the platform's existing account-state currency. Defaults to Alpaca's
+  **paper** endpoint; the live endpoint needs an explicit override.
+  Built and tested against a fake HTTP session -- no real Alpaca
+  account yet; real credentials plug in later via
+  `ALPACA_API_KEY`/`ALPACA_API_SECRET` with zero code changes. `atp
+  doctor`'s Broker Connection check is now real, gated on those being
+  configured. See `DECISIONS.md`, ADR-0023.
+- ⬜ Order submission against a real broker -- deliberately deferred:
+  a real order's asynchronous lifecycle (pending/partial/rejected)
+  doesn't fit `src/execution`'s synchronous, instant-fill `Order`/
+  `Fill` model (ADR-0022), so designing that properly is its own round,
+  not an extension of this one.
+- ⬜ A second broker (e.g. Interactive Brokers) -- proves
+  `BrokerConnection` is actually swappable, not just designed to be.
+- ⬜ Reconciling `PaperBroker`'s simulated fills against a real
+  broker's actual fills, once order submission exists.
 
 ## Sprint 6 -- Analytics & Dashboard (planned)
 

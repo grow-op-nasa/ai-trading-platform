@@ -50,6 +50,12 @@ class FakeSession:
             raise self._raises
         return self._response
 
+    def delete(self, url: str, headers: dict, timeout: float) -> FakeResponse:
+        self.calls.append(("delete", url, headers, timeout))
+        if self._raises is not None:
+            raise self._raises
+        return self._response
+
 
 # ---------------------------------------------------------------------------
 # Credential validation
@@ -389,3 +395,52 @@ def test_get_order_raises_connection_error_on_network_failure():
 
     with pytest.raises(BrokerConnectionError):
         broker.get_order("order-123")
+
+
+# ---------------------------------------------------------------------------
+# cancel_order
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_order_sends_delete_to_expected_url():
+    session = FakeSession(response=FakeResponse(204))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    broker.cancel_order("order-123")
+
+    method, url, _, _ = session.calls[0]
+    assert method == "delete"
+    assert url.endswith("/v2/orders/order-123")
+
+
+def test_cancel_order_returns_none_on_success():
+    session = FakeSession(response=FakeResponse(204))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    result = broker.cancel_order("order-123")
+
+    assert result is None
+
+
+def test_cancel_order_raises_authentication_error_on_401():
+    session = FakeSession(response=FakeResponse(401, text="unauthorized"))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    with pytest.raises(BrokerAuthenticationError):
+        broker.cancel_order("order-123")
+
+
+def test_cancel_order_raises_connection_error_on_other_http_failure():
+    session = FakeSession(response=FakeResponse(422, text="order is no longer cancelable"))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    with pytest.raises(BrokerConnectionError):
+        broker.cancel_order("order-123")
+
+
+def test_cancel_order_raises_connection_error_on_network_failure():
+    session = FakeSession(raises=requests.exceptions.ConnectionError("no route to host"))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    with pytest.raises(BrokerConnectionError):
+        broker.cancel_order("order-123")

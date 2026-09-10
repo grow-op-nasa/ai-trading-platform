@@ -19,8 +19,11 @@ arguments aren't given -- the same convention `src/research`'s
 in `__init__`, before any network call is attempted.
 
 Order submission (`submit_order`/`get_order`, ADR-0024) is market-order
-only, matching `PaperBroker`'s own simplicity, and stops at submit +
-status check -- no cancellation yet.
+only, matching `PaperBroker`'s own simplicity. `cancel_order`
+(ADR-0025) requests cancellation and returns `None` -- it confirms the
+broker *accepted* the request, not that the order actually ended up
+canceled, since a real cancellation is asynchronous. Call `get_order()`
+afterward to see the resulting status.
 """
 
 from __future__ import annotations
@@ -80,6 +83,8 @@ class _Session(Protocol):
 
     def post(self, url: str, headers: dict, json: dict, timeout: float) -> _Response: ...
 
+    def delete(self, url: str, headers: dict, timeout: float) -> _Response: ...
+
 
 class AlpacaBroker(BrokerConnection):
     """Connects to Alpaca's REST API.
@@ -132,13 +137,18 @@ class AlpacaBroker(BrokerConnection):
     def get_order(self, broker_order_id: str) -> BrokerOrder:
         return _parse_order(self._request("get", f"/v2/orders/{broker_order_id}"))
 
-    def _request(self, method: str, path: str, **kwargs) -> dict:
+    def cancel_order(self, broker_order_id: str) -> None:
+        self._request("delete", f"/v2/orders/{broker_order_id}", parse_json=False)
+
+    def _request(self, method: str, path: str, parse_json: bool = True, **kwargs) -> dict | None:
         """Shared HTTP call + error handling for every Alpaca endpoint.
 
         Consolidates what used to live only inside `get_account()`:
         network failures and non-2xx responses both become one of our
         own `BrokerError` subclasses, never a raw `requests` exception
-        or an unchecked status code.
+        or an unchecked status code. `parse_json=False` skips the
+        `.json()` call for endpoints like cancel, which return `204 No
+        Content` with no body to parse.
         """
         call = getattr(self._session, method)
         try:
@@ -155,12 +165,12 @@ class AlpacaBroker(BrokerConnection):
             raise BrokerAuthenticationError(
                 f"Alpaca rejected the provided credentials (HTTP {response.status_code})"
             )
-        if response.status_code not in (200, 201):
+        if response.status_code not in (200, 201, 204):
             raise BrokerConnectionError(
                 f"Alpaca returned HTTP {response.status_code}: {response.text}"
             )
 
-        return response.json()
+        return response.json() if parse_json else None
 
     def _headers(self) -> dict:
         return {"APCA-API-KEY-ID": self._api_key, "APCA-API-SECRET-KEY": self._api_secret}

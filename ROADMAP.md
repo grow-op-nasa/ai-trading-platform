@@ -235,12 +235,19 @@ once there's a second real caller that needs one.
   `get_order()` round out `BrokerConnection`; `AlpacaBroker` implements
   both. Market orders only, submit + status check only -- order
   cancellation is not yet built.
-- ⬜ Order cancellation -- the one piece of order management ADR-0024
-  deliberately left out this round.
+- ✅ Order cancellation -- `BrokerConnection.cancel_order(id) -> None`,
+  rounding out order management to submit + status + cancel.
+  `AlpacaBroker.cancel_order()` calls Alpaca's `DELETE /v2/orders/{id}`
+  and returns `None` on success -- confirms only that the broker
+  accepted the cancellation, not that the order actually ended up
+  canceled, since real cancellation is asynchronous. Callers wanting
+  the actual outcome call `get_order()` afterward. See `DECISIONS.md`,
+  ADR-0025.
 - ⬜ A second broker (e.g. Interactive Brokers) -- proves
   `BrokerConnection` is actually swappable, not just designed to be.
 - ⬜ Reconciling `PaperBroker`'s simulated fills against a real
-  broker's actual fills, now that order submission exists.
+  broker's actual fills, now that order submission and cancellation
+  both exist.
 
 ## Sprint 6 -- Analytics & Dashboard (planned)
 

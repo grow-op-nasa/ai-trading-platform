@@ -8,12 +8,11 @@ anything else tomorrow) implements this one interface. Nothing outside
 should depend on `BrokerConnection` so that swapping brokers never
 requires touching strategies, risk sizing, or execution.
 
-Connectivity/account state (`DECISIONS.md`, ADR-0023) and order
-submission (ADR-0024) are both in scope now. Order management stops at
-submit + check status -- no cancellation yet, and `OrderRequest`/
-`BrokerOrder` (`models.py`) are deliberately independent of
-`src/execution`'s `Order`/`Fill`, since a real order's asynchronous
-lifecycle (pending, partial fill, rejection) doesn't fit
+Connectivity/account state (`DECISIONS.md`, ADR-0023), order submission
+(ADR-0024), and order cancellation (ADR-0025) are all in scope now.
+`OrderRequest`/`BrokerOrder` (`models.py`) are deliberately independent
+of `src/execution`'s `Order`/`Fill`, since a real order's asynchronous
+lifecycle (pending, partial fill, rejection, cancellation) doesn't fit
 `PaperBroker`'s synchronous, instant-fill model.
 """
 
@@ -68,5 +67,24 @@ class BrokerConnection(ABC):
             BrokerAuthenticationError: credentials were rejected.
             BrokerConnectionError: the broker couldn't be reached, or
                 no order exists with that id.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def cancel_order(self, broker_order_id: str) -> None:
+        """Request cancellation of a previously submitted order.
+
+        Returns `None` on success -- this confirms the broker *accepted*
+        the cancellation request, not that the order actually ended up
+        canceled. A real cancellation is asynchronous: the order may
+        already have filled, or may fill in the brief window before the
+        cancellation takes effect. Call `get_order()` afterward to see
+        the resulting status.
+
+        Raises:
+            BrokerAuthenticationError: credentials were rejected.
+            BrokerConnectionError: the broker couldn't be reached, no
+                order exists with that id, or the order is no longer in
+                a cancelable state (e.g. already filled).
         """
         raise NotImplementedError

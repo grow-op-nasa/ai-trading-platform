@@ -11,10 +11,13 @@ Connectivity + account state shipped first (ADR-0023). Order
 submission (`submit_order`/`get_order`) followed in ADR-0024, using its
 own `OrderRequest`/`BrokerOrder` shapes (`models.py`) rather than
 `src/execution`'s `Order`/`Fill` -- a real order's asynchronous
-lifecycle (pending, partial fill, rejection) doesn't fit
+lifecycle (pending, partial fill, rejection, cancellation) doesn't fit
 `PaperBroker`'s synchronous, instant-fill model, and importing across
-that boundary would run the dependency the wrong direction. Order
-management stops at submit + status check -- no cancellation yet.
+that boundary would run the dependency the wrong direction.
+`cancel_order` (ADR-0025) rounds out order management: it returns
+`None`, confirming the broker accepted the cancellation request, not
+that the order actually ended up canceled -- call `get_order()`
+afterward for the resulting status.
 """
 
 from src.broker.alpaca import ALPACA_LIVE_BASE_URL, ALPACA_PAPER_BASE_URL, AlpacaBroker

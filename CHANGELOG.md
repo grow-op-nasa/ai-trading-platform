@@ -134,6 +134,38 @@ warning sign that the architecture's been violated.
 - Confirmed via real `pytest` on the dev machine (Python 3.14.6): **228
   passed**, 0 failed.
 
+### Added (Order Cancellation)
+
+- `src/broker/base.py` -- `BrokerConnection.cancel_order(broker_order_id:
+  str) -> None` (`DECISIONS.md`, ADR-0025), rounding out order
+  management to submit + status + cancel.
+- `src/broker/alpaca.py` -- `AlpacaBroker.cancel_order()` calls
+  `DELETE /v2/orders/{id}`. Returns `None` -- confirms the broker
+  *accepted* the cancellation, not that the order actually ended up
+  canceled (cancellation is asynchronous; the order may already have
+  filled). Callers wanting the actual outcome call `get_order()`
+  afterward. `_Session` Protocol gained `.delete()`; the shared
+  `_request()` helper gained a `parse_json=False` option to accept
+  Alpaca's `204 No Content` response without trying to parse a body.
+- `tests/test_broker.py` -- extended from 29 to 34 tests: `FakeSession`
+  gained `.delete()`; new tests cover the expected URL/method, a
+  `None` return on success, and error mapping (401/403 -> auth error,
+  other HTTP failure (e.g. 422 for a non-cancelable order) -> connection
+  error, network exception -> connection error).
+- Extension Cost: 0 file(s) changed outside `src/broker/`.
+
+### Decided (Order Cancellation)
+
+- `cancel_order` returns `None`, not a `BrokerOrder` -- a status
+  fetched immediately after cancellation would imply more certainty
+  than a real, asynchronous cancellation can honestly provide. See
+  `DECISIONS.md`, ADR-0025.
+
+### Verified (Order Cancellation)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **233
+  passed**, 0 failed.
+
 ## Sprint 4 -- 2026-09-10, End-to-End Proof (feature-complete)
 
 ### Added (End-to-End Proof)

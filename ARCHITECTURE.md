@@ -511,15 +511,17 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
 ### `src/broker`
 
 **Purpose:** connect to a real broker/exchange -- authenticate, read
-account state, and submit/check the status of market orders. Sprint 5
+account state, and submit/check/cancel market orders. Sprint 5
 (`DECISIONS.md`, ADR-0023 connectivity/account state, ADR-0024 order
-submission).
+submission, ADR-0025 order cancellation).
 
 - **Inputs:** API credentials (`ALPACA_API_KEY`/`ALPACA_API_SECRET`, as
   constructor arguments or environment variables); `OrderRequest`
-  (`symbol`, `side`, `quantity`) for order submission.
+  (`symbol`, `side`, `quantity`) for order submission; a
+  `broker_order_id` for status checks and cancellation.
 - **Outputs:** `get_account() -> src.risk.AccountState`,
-  `submit_order(request) -> BrokerOrder`, `get_order(id) -> BrokerOrder`.
+  `submit_order(request) -> BrokerOrder`, `get_order(id) -> BrokerOrder`,
+  `cancel_order(id) -> None`.
 - **Key files:**
   - `models.py` -- `OrderSide`, `OrderStatus`, `OrderRequest`,
     `BrokerOrder`. Deliberately independent of
@@ -527,37 +529,42 @@ submission).
     rather than importing across the `execution --> broker` dependency
     direction (see the dependency diagram below).
   - `base.py` -- `BrokerConnection(ABC)`, analogous to `src/data`'s
-    `DataProvider`: `get_account()`, `submit_order()`, `get_order()`.
-    Nothing outside `src/broker` should import a specific broker
-    directly -- depend on this interface so swapping brokers never
-    touches strategies, risk, or execution.
+    `DataProvider`: `get_account()`, `submit_order()`, `get_order()`,
+    `cancel_order()`. Nothing outside `src/broker` should import a
+    specific broker directly -- depend on this interface so swapping
+    brokers never touches strategies, risk, or execution.
   - `alpaca.py` -- `AlpacaBroker(BrokerConnection)`. Raises
     `BrokerAuthenticationError` immediately in `__init__` if
     credentials are missing, before any network call. Defaults to
     Alpaca's **paper** endpoint (`ALPACA_PAPER_BASE_URL`) -- the live
     endpoint (`ALPACA_LIVE_BASE_URL`) requires an explicit override,
-    never a default. `get_account()`, `submit_order()`, and
-    `get_order()` all share a `_request()` helper that calls Alpaca
-    through an injectable HTTP session (defaults to `requests`), maps
-    401/403 to `BrokerAuthenticationError` and any other failure to
-    `BrokerConnectionError`. `get_account()` parses a successful
-    response into an `AccountState` (`open_exposure` = absolute long +
-    short market value); `submit_order()`/`get_order()` parse into a
-    `BrokerOrder`, mapping Alpaca's raw status strings onto
+    never a default. All four methods share a `_request()` helper that
+    calls Alpaca through an injectable HTTP session (defaults to
+    `requests`), maps 401/403 to `BrokerAuthenticationError` and any
+    other failure to `BrokerConnectionError`. `get_account()` parses a
+    successful response into an `AccountState` (`open_exposure` =
+    absolute long + short market value); `submit_order()`/`get_order()`
+    parse into a `BrokerOrder`, mapping Alpaca's raw status strings onto
     `OrderStatus` via an explicit table -- an unrecognized status raises
-    `BrokerConnectionError` rather than guessing.
+    `BrokerConnectionError` rather than guessing. `cancel_order()` calls
+    `DELETE /v2/orders/{id}` (`204 No Content` -- `_request()` accepts a
+    `parse_json=False` option for this) and returns `None`, confirming
+    only that the broker accepted the cancellation, not that the order
+    actually ended up canceled -- callers call `get_order()` afterward
+    for the real outcome.
   - `exceptions.py` -- `BrokerError`, `BrokerAuthenticationError`,
     `BrokerConnectionError`.
-- **Does not:** cancel orders -- submit + status check is the full
-  scope of order management so far. Has only one concrete
-  implementation (Alpaca) -- Interactive Brokers or another venue would
-  prove the interface is actually swappable, not just designed to be.
-  Is untested against Alpaca's real API -- only against a fake HTTP
-  session, the same posture `src/data` already takes toward
-  `YFinanceProvider` (there's no `test_yfinance_provider.py` either).
+- **Does not:** support limit/stop order types -- market orders only.
+  Has only one concrete implementation (Alpaca) -- Interactive Brokers
+  or another venue would prove the interface is actually swappable, not
+  just designed to be. Is untested against Alpaca's real API -- only
+  against a fake HTTP session, the same posture `src/data` already
+  takes toward `YFinanceProvider` (there's no `test_yfinance_provider.py`
+  either).
 - **Depends on:** `src/risk` (for `AccountState`). Extension Cost
   (ADR-0014): connectivity slice was 1 (`src/cli/checks.py`); order
-  submission was 0 -- entirely contained within `src/broker` itself.
+  submission and order cancellation were each 0 -- entirely contained
+  within `src/broker` itself.
 
 ### `src/experiments`
 

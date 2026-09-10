@@ -1184,3 +1184,55 @@ backwards. Order cancellation, limit/stop order types, and reconciling
 explicitly deferred, not rejected. `submit_order`/`get_order` are
 untested against Alpaca's real API -- only against a fake session --
 the same accepted gap ADR-0023 already established for `get_account()`.
+
+---
+
+## ADR-0025: Order cancellation -- fire-and-confirm, not fire-and-know
+
+**Status:** Accepted -- Sprint 5
+
+**Context:** ADR-0024 shipped `submit_order`/`get_order` but explicitly
+left cancellation out, to keep that round's scope contained. Adding
+`cancel_order` raised one real design question: what should it return?
+Alpaca's `DELETE /v2/orders/{id}` responds with `204 No Content` on
+success -- an empty body, not an order record -- because cancellation
+is asynchronous. The broker accepting the cancellation request doesn't
+mean the order is actually canceled yet: it may already have filled, or
+may fill in the brief window before the cancellation takes effect. Two
+options were considered: return `None` from `cancel_order`, requiring a
+separate `get_order()` call to learn the actual outcome; or have
+`cancel_order` call `get_order()` internally and return the resulting
+`BrokerOrder`, giving callers a status in one call. The second option is
+more convenient but risks implying a certainty the platform doesn't
+have -- the status returned would just be whatever `get_order()` saw a
+moment after cancellation, not a guarantee of the final outcome.
+
+**Decision:** `cancel_order(broker_order_id) -> None`. A successful
+call confirms only that the broker *accepted* the cancellation request,
+matching what Alpaca's `204` response actually tells us -- nothing
+more. `AlpacaBroker.cancel_order()` calls `DELETE /v2/orders/{id}`
+through the existing `_request()` helper, extended with a
+`parse_json=False` option so it can accept a `204` empty-body response
+without trying to call `.json()` on it (the `_Session` Protocol gained
+a `.delete()` method to match). A caller that wants to know whether the
+order actually ended up canceled, partially filled, or filled anyway
+calls `get_order()` afterward, using tools that already exist rather
+than a new bespoke path. `cancel_order` maps errors the same way
+`submit_order`/`get_order` do: 401/403 -> `BrokerAuthenticationError`,
+any other non-2xx (including a `422` for an order that's no longer in a
+cancelable state, e.g. already filled) -> `BrokerConnectionError`, a
+network exception -> `BrokerConnectionError`.
+
+**Consequences:** Extension Cost (ADR-0014) for this addition: 0 files
+changed outside `src/broker/` -- `base.py` gained one abstract method,
+`alpaca.py`'s `_Session`/`_request()` were extended in place, no new
+file, no change to `models.py` (cancellation needed no new data shape).
+`BrokerConnection`'s three methods now cover the full lifecycle this
+platform commits to supporting: submit, check status, cancel -- nothing
+built on top of it needs to guess whether a cancellation "worked" from
+a return value that couldn't honestly promise that anyway. Limit/stop
+order types, a second broker, and reconciling `PaperBroker`'s simulated
+fills against real Alpaca fills remain explicitly deferred, not
+rejected. `cancel_order` is untested against Alpaca's real API -- only
+against a fake session -- the same accepted gap every other
+`AlpacaBroker` method already carries.

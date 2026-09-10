@@ -166,6 +166,55 @@ warning sign that the architecture's been violated.
 - Confirmed via real `pytest` on the dev machine (Python 3.14.6): **233
   passed**, 0 failed.
 
+### Added (Second Broker -- Interactive Brokers)
+
+- `src/broker/ibkr.py` (new) -- `IBKRBroker(BrokerConnection)`
+  (`DECISIONS.md`, ADR-0026), the platform's second concrete broker --
+  proof `BrokerConnection` is actually swappable. Built against IB's
+  **Client Portal Web API** (REST-based, fits the existing injectable
+  `_Session` pattern), not the socket-based TWS API. Takes no
+  credential arguments -- IB's individual/retail auth is a browser
+  session against a locally running Client Portal Gateway, not a simple
+  key/secret pair; a call raises `BrokerAuthenticationError` if the
+  gateway reports the session isn't authenticated. No separate
+  paper/live endpoint (unlike Alpaca) -- that's determined by which
+  account is logged into the gateway. `get_account()` resolves the
+  account via `GET /iserver/accounts` (`selectedAccount`, falling back
+  to the first listed account) then reads `netliquidation`/
+  `grosspositionvalue` from `GET /portfolio/{accountId}/summary` into an
+  `AccountState`. `submit_order`/`get_order`/`cancel_order` all raise
+  `NotImplementedError` this round -- IB's order flow (conid lookup,
+  reply/confirmation handling) is deferred to its own round.
+- `src/broker/__init__.py` -- exports `IBKRBroker`,
+  `IBKR_GATEWAY_BASE_URL`.
+- `tests/test_ibkr.py` (new, 15 tests) -- against an injected fake HTTP
+  session, no real gateway or account: interface conformance
+  (`isinstance(broker, BrokerConnection)`), base URL default/override,
+  no-credentials-required construction, `get_account` success
+  (`selectedAccount` resolution, first-of-list fallback, missing
+  `grosspositionvalue` defaults to zero), error paths (no accounts ->
+  connection error, 401/403 -> auth error, other HTTP failure ->
+  connection error, network exception -> connection error), and
+  `submit_order`/`get_order`/`cancel_order` all raising
+  `NotImplementedError`.
+- Extension Cost: 1 file changed outside the new `ibkr.py`/
+  `test_ibkr.py` -- `src/broker/__init__.py` (exports).
+
+### Decided (Second Broker -- Interactive Brokers)
+
+- Client Portal Web API over the TWS API -- REST-based, fits the
+  existing `_Session` pattern without a new socket transport model.
+- No credential validation in the constructor -- nothing to validate;
+  IB's session lives in the Client Portal Gateway itself.
+- `submit_order`/`get_order`/`cancel_order` raise `NotImplementedError`,
+  not a `BrokerError` -- a known implementation gap, not a broker-side
+  failure. See `DECISIONS.md`, ADR-0026.
+
+### Verified (Second Broker -- Interactive Brokers)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **248
+  passed**, 0 failed.
+
 ## Sprint 4 -- 2026-09-10, End-to-End Proof (feature-complete)
 
 ### Added (End-to-End Proof)

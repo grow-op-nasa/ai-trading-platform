@@ -14,7 +14,13 @@ the order actually ended up canceled), all using broker-native
 on `ALPACA_API_KEY`/`ALPACA_API_SECRET` being configured. Sprints 3 and
 4 are both complete and confirmed; Sprint 5's connectivity slice is
 confirmed at 213/213, order submission at 228/228, and order
-cancellation at 233/233, all via real `pytest` on the dev machine._
+cancellation at 233/233, all via real `pytest` on the dev machine.
+`IBKRBroker` (`src/broker/ibkr.py`) is now the platform's second
+concrete broker -- proof `BrokerConnection` is actually swappable --
+built against IB's Client Portal Web API, `get_account()` only this
+round (`submit_order`/`get_order`/`cancel_order` raise
+`NotImplementedError`); confirmed at 248/248 via real `pytest` on the
+dev machine._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -199,15 +205,32 @@ For why things were built the way they were, see `DECISIONS.md`.
   (the order may already have filled). Callers wanting the actual
   outcome call `get_order()` afterward. Extension Cost: 0 files changed
   outside `src/broker/`. See `DECISIONS.md`, ADR-0025.
+- ✅ Second Broker -- Interactive Brokers (`src/broker/ibkr.py`) --
+  Sprint 5. `IBKRBroker(BrokerConnection)` is the platform's second
+  concrete broker -- proof the interface is actually swappable, built
+  against IB's Client Portal Web API (REST-based, same injectable
+  `_Session` pattern as `AlpacaBroker`) rather than the socket-based TWS
+  API. Takes no credential arguments -- IB's retail auth is a browser
+  session against a locally running Client Portal Gateway, not a simple
+  key/secret pair. No separate paper/live endpoint (unlike Alpaca) --
+  determined by which account is logged into the gateway.
+  `get_account()` resolves the account via `GET /iserver/accounts` then
+  reads `netliquidation`/`grosspositionvalue` from `GET /portfolio/
+  {accountId}/summary`. `submit_order`/`get_order`/`cancel_order` all
+  raise `NotImplementedError` this round -- IB's order flow (conid
+  lookup, reply/confirmation handling) needs its own design pass.
+  Extension Cost: 1 file changed outside the new `ibkr.py`/
+  `test_ibkr.py` (`src/broker/__init__.py`, exports). See
+  `DECISIONS.md`, ADR-0026.
 
 ## Current Module
 
 **Sprints 3 and 4 are complete and confirmed. Sprint 5 is in
 progress**: `src/broker/` connectivity, order submission, and order
-cancellation are all complete and confirmed -- 233/233 tests pass via
-real `pytest` on the dev machine (Python 3.14.6). `BrokerConnection`
-now covers the full order lifecycle this platform commits to: submit,
-check status, cancel.
+cancellation for Alpaca, plus `IBKRBroker` (the platform's second
+broker, `get_account()` only) are all complete and confirmed --
+248/248 tests pass via real `pytest` on the dev machine (Python
+3.14.6).
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2, 3, 4, or 5): no data validation beyond
@@ -218,13 +241,12 @@ suite against the live yfinance API.
 ## Next Task
 
 Once you have real Alpaca **Trader API** paper-trading keys, set
-`ALPACA_API_KEY`/`ALPACA_API_SECRET` as environment variables --
-`python -m src.cli doctor` and live `submit_order()`/`get_order()`/
-`cancel_order()` calls will then exercise the real connection for the
-first time, the first real-world test of `AlpacaBroker`'s parsing
-assumptions. After that, Sprint 5 continues toward a second broker
-(Interactive Brokers) or reconciling `PaperBroker`'s simulated fills
-against real Alpaca fills. See `ROADMAP.md`.
+`ALPACA_API_KEY`/`ALPACA_API_SECRET` as environment variables to
+exercise Alpaca for real; once you have IB Client Portal Gateway
+access, point `IBKRBroker` at it (no code changes needed) to exercise
+IB for real. After that, Sprint 5 continues toward IB order submission
+or reconciling `PaperBroker`'s simulated fills against real broker
+fills. See `ROADMAP.md`.
 
 ## Known Issues
 
@@ -286,10 +308,15 @@ against real Alpaca fills. See `ROADMAP.md`.
   and `cancel_order()` alike. The first real network call (once
   credentials exist) is also the first real-world check of whether the
   parsing assumptions in `_parse_account()`/`_parse_order()` hold.
-  Interactive Brokers (or any second broker), and reconciling
-  `PaperBroker`'s simulated fills against a real broker's actual fills,
-  are both deferred, not rejected -- see `DECISIONS.md`, ADR-0023,
-  ADR-0024, ADR-0025.
+  `IBKRBroker` is likewise untested against a real Client Portal
+  Gateway, and only implements `get_account()` -- `submit_order`/
+  `get_order`/`cancel_order` raise `NotImplementedError` until IB's
+  order flow (conid lookup, reply/confirmation handling) gets its own
+  design pass. Session freshness for IB (the gateway's session needs
+  periodic "tickle" calls and re-authentication) isn't modeled at all
+  yet. Reconciling `PaperBroker`'s simulated fills against a real
+  broker's actual fills remains deferred, not rejected -- see
+  `DECISIONS.md`, ADR-0023, ADR-0024, ADR-0025, ADR-0026.
 - Package layout (`src/` vs. `src/ai_trading_platform/`) and flat
   config constants vs. a typed `Settings` object -- both deferred to
   pre-1.0, tracked as ADR-0004 and ADR-0005.
@@ -297,11 +324,11 @@ against real Alpaca fills. See `ROADMAP.md`.
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 233 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 248 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
                           # + 29 cli/doctor + 10 signals + 11 strategy_sdk + 8 attribution
                           # + 15 research + 11 ema_cross_strategy + 16 risk + 18 execution
-                          # + 5 integration_paper_trading + 34 broker)
+                          # + 5 integration_paper_trading + 34 broker + 15 ibkr)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until

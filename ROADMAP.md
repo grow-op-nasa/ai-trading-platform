@@ -243,11 +243,22 @@ once there's a second real caller that needs one.
   canceled, since real cancellation is asynchronous. Callers wanting
   the actual outcome call `get_order()` afterward. See `DECISIONS.md`,
   ADR-0025.
-- ⬜ A second broker (e.g. Interactive Brokers) -- proves
-  `BrokerConnection` is actually swappable, not just designed to be.
+- ✅ A second broker (Interactive Brokers) -- `IBKRBroker` proves
+  `BrokerConnection` is actually swappable: a real second
+  implementation, different transport (Client Portal Web API vs.
+  Alpaca's plain REST), different credential model (browser-session
+  gateway auth vs. API key/secret), no shared code with `AlpacaBroker`
+  beyond the interface and the common `BrokerError` hierarchy.
+  `get_account()` only this round -- `submit_order`/`get_order`/
+  `cancel_order` raise `NotImplementedError` until IB's order-placement
+  flow (contract id lookup, reply/confirmation handling) gets its own
+  design pass. See `DECISIONS.md`, ADR-0026.
+- ⬜ Interactive Brokers order submission/status/cancel -- the piece
+  ADR-0026 deliberately deferred, given IB's added complexity (conid
+  lookup, reply/confirmation).
 - ⬜ Reconciling `PaperBroker`'s simulated fills against a real
   broker's actual fills, now that order submission and cancellation
-  both exist.
+  exist for Alpaca.
 
 ## Sprint 6 -- Analytics & Dashboard (planned)
 

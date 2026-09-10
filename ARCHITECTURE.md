@@ -511,14 +511,15 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
 ### `src/broker`
 
 **Purpose:** connect to a real broker/exchange -- authenticate, read
-account state, and submit/check/cancel market orders. Sprint 5
-(`DECISIONS.md`, ADR-0023 connectivity/account state, ADR-0024 order
-submission, ADR-0025 order cancellation).
+account state, and (for Alpaca) submit/check/cancel market orders.
+Sprint 5 (`DECISIONS.md`, ADR-0023 connectivity/account state, ADR-0024
+order submission, ADR-0025 order cancellation, ADR-0026 second broker).
 
 - **Inputs:** API credentials (`ALPACA_API_KEY`/`ALPACA_API_SECRET`, as
-  constructor arguments or environment variables); `OrderRequest`
-  (`symbol`, `side`, `quantity`) for order submission; a
-  `broker_order_id` for status checks and cancellation.
+  constructor arguments or environment variables, for `AlpacaBroker`
+  only -- `IBKRBroker` takes none); `OrderRequest` (`symbol`, `side`,
+  `quantity`) for order submission; a `broker_order_id` for status
+  checks and cancellation.
 - **Outputs:** `get_account() -> src.risk.AccountState`,
   `submit_order(request) -> BrokerOrder`, `get_order(id) -> BrokerOrder`,
   `cancel_order(id) -> None`.
@@ -552,19 +553,39 @@ submission, ADR-0025 order cancellation).
     only that the broker accepted the cancellation, not that the order
     actually ended up canceled -- callers call `get_order()` afterward
     for the real outcome.
+  - `ibkr.py` -- `IBKRBroker(BrokerConnection)`, the platform's second
+    concrete broker (`DECISIONS.md`, ADR-0026), against IB's **Client
+    Portal Web API** (REST-based -- reuses the same injectable
+    `_Session` pattern, not the socket-based TWS API). Takes no
+    credential arguments: IB's individual/retail auth is a browser
+    session against a locally running Client Portal Gateway, not a
+    header-based key/secret pair, so there's nothing to validate at
+    construction time -- a call raises `BrokerAuthenticationError` if
+    the gateway reports the session isn't authenticated. No separate
+    paper/live endpoint the way Alpaca has -- for IB that's determined
+    by which account is logged into the gateway, not a URL this code
+    picks. `get_account()` resolves the account via `GET
+    /iserver/accounts` (`selectedAccount`, or the first listed account)
+    then reads `netliquidation`/`grosspositionvalue` from `GET
+    /portfolio/{accountId}/summary`. `submit_order`/`get_order`/
+    `cancel_order` all raise `NotImplementedError` -- deliberately not a
+    `BrokerError`, since this is a known gap in what this module
+    supports today, not a broker-side failure.
   - `exceptions.py` -- `BrokerError`, `BrokerAuthenticationError`,
     `BrokerConnectionError`.
-- **Does not:** support limit/stop order types -- market orders only.
-  Has only one concrete implementation (Alpaca) -- Interactive Brokers
-  or another venue would prove the interface is actually swappable, not
-  just designed to be. Is untested against Alpaca's real API -- only
+- **Does not:** support limit/stop order types on Alpaca -- market
+  orders only. Doesn't support order submission/status/cancellation on
+  Interactive Brokers at all yet -- IB's order flow (contract id
+  lookup, reply/confirmation handling) needs its own design round.
+  Neither concrete broker is tested against its real API -- both only
   against a fake HTTP session, the same posture `src/data` already
   takes toward `YFinanceProvider` (there's no `test_yfinance_provider.py`
   either).
 - **Depends on:** `src/risk` (for `AccountState`). Extension Cost
   (ADR-0014): connectivity slice was 1 (`src/cli/checks.py`); order
-  submission and order cancellation were each 0 -- entirely contained
-  within `src/broker` itself.
+  submission and order cancellation were each 0; the second broker
+  (`IBKRBroker`) was 1 (`src/broker/__init__.py`, exports) -- all
+  contained within or immediately around `src/broker` itself.
 
 ### `src/experiments`
 

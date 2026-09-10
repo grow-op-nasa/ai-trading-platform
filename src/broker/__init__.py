@@ -18,11 +18,19 @@ that boundary would run the dependency the wrong direction.
 `None`, confirming the broker accepted the cancellation request, not
 that the order actually ended up canceled -- call `get_order()`
 afterward for the resulting status.
+
+`IBKRBroker` (ADR-0026) is the platform's second concrete broker --
+proof `BrokerConnection` is actually swappable, not just designed to
+be. It only implements `get_account()` so far; `submit_order`/
+`get_order`/`cancel_order` raise `NotImplementedError` until Interactive
+Brokers' order-placement flow (contract id lookup, reply/confirmation
+handling) gets its own design round.
 """
 
 from src.broker.alpaca import ALPACA_LIVE_BASE_URL, ALPACA_PAPER_BASE_URL, AlpacaBroker
 from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError, BrokerError
+from src.broker.ibkr import IBKR_GATEWAY_BASE_URL, IBKRBroker
 from src.broker.models import BrokerOrder, OrderRequest, OrderSide, OrderStatus
 
 __all__ = [
@@ -30,6 +38,8 @@ __all__ = [
     "AlpacaBroker",
     "ALPACA_PAPER_BASE_URL",
     "ALPACA_LIVE_BASE_URL",
+    "IBKRBroker",
+    "IBKR_GATEWAY_BASE_URL",
     "BrokerError",
     "BrokerAuthenticationError",
     "BrokerConnectionError",

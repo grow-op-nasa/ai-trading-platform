@@ -1236,3 +1236,87 @@ fills against real Alpaca fills remain explicitly deferred, not
 rejected. `cancel_order` is untested against Alpaca's real API -- only
 against a fake session -- the same accepted gap every other
 `AlpacaBroker` method already carries.
+
+---
+
+## ADR-0026: Second broker -- Interactive Brokers, Client Portal Web API, connectivity only
+
+**Status:** Accepted -- Sprint 5
+
+**Context:** `ROADMAP.md` has always listed a second broker as the
+real proof that `BrokerConnection` (ADR-0023) is actually swappable,
+not just designed to be -- one implementation alone doesn't rule out
+that the interface secretly assumes something Alpaca-specific.
+Interactive Brokers was the natural choice (broad market access, the
+other major retail-friendly API alongside Alpaca), but it required
+settling three things Alpaca's integration never had to face. (1)
+**Which API surface:** IB exposes a REST-based Client Portal Web API
+and a socket-based TWS API (via the `ibapi`/`ib_insync` libraries) --
+fundamentally different transport models. (2) **Credentials:** unlike
+Alpaca's simple `API_KEY`/`API_SECRET` header pair, an individual/retail
+IB account authenticates through IB's Client Portal Gateway -- a local
+Java process the user runs and logs into via a browser (username,
+password, 2FA) -- so there's no simple credential pair this code could
+validate at construction time the way `AlpacaBroker.__init__` does. (3)
+**Scope:** IB's real order-placement flow adds two pieces of complexity
+Alpaca's doesn't have -- orders reference a numeric contract id
+(`conid`) rather than a plain symbol string, and many orders come back
+with a "reply" (a risk/suitability warning) that must be explicitly
+confirmed via a second call before the order actually places. Building
+that properly in the same round as first proving the interface itself
+would conflate two different pieces of work.
+
+**Decision:** All three were settled toward the same "prove the seam,
+defer the hard part" posture ADR-0023 itself took. **API surface:** the
+Client Portal Web API -- REST-based, so `IBKRBroker` (`src/broker/
+ibkr.py`) fits the same injectable `_Session` Protocol pattern
+`AlpacaBroker` already established, rather than introducing a new
+socket-based transport model into the codebase for the TWS API.
+**Credentials:** `IBKRBroker.__init__(base_url=IBKR_GATEWAY_BASE_URL,
+session=None)` takes no credential arguments at all -- authentication
+is the Client Portal Gateway's own already-established browser session,
+which this code neither creates nor validates; a call simply raises
+`BrokerAuthenticationError` if the gateway reports the session isn't
+authenticated (401/403), the same error-mapping shape `AlpacaBroker`
+already uses. `IBKR_GATEWAY_BASE_URL` (`https://localhost:5000/v1/api`)
+is deliberately not split into a paper/live pair the way
+`ALPACA_PAPER_BASE_URL`/`ALPACA_LIVE_BASE_URL` are -- for IB, paper vs.
+live is determined by which account was used to log into the gateway,
+not by a URL this code chooses, and pretending otherwise would be
+dishonest about where that safety boundary actually lives. `get_account()`
+resolves which account to query via `GET /iserver/accounts`
+(`selectedAccount`, falling back to the first entry in `accounts`) --
+required, since every portfolio endpoint is scoped to one account id --
+then reads `netliquidation.amount` (equity, required) and
+`grosspositionvalue.amount` (open exposure, optional, defaults to
+`0.0`) from `GET /portfolio/{accountId}/summary` into an `AccountState`.
+**Scope:** `submit_order`/`get_order`/`cancel_order` all raise
+`NotImplementedError`, deliberately *not* a `BrokerError` subclass --
+this is a known, static gap in what this module supports today, not a
+broker-side connectivity or auth failure a caller should retry or
+handle the way it would handle `BrokerConnectionError`. `atp doctor`'s
+Broker Connection check (`src/cli/checks.py`) is left Alpaca-specific
+this round -- extending it to check multiple configured brokers is a
+natural future step, not built here since it wasn't the point of this
+round.
+
+**Consequences:** Extension Cost (ADR-0014) for this addition: 1 file
+changed outside the new `ibkr.py`/`test_ibkr.py` files --
+`src/broker/__init__.py` (exports added). `BrokerConnection` is now
+proven satisfiable by two independently-implemented brokers with
+different transport models, different credential models, and no shared
+base class beyond the interface itself and the common
+`BrokerError`/`BrokerAuthenticationError`/`BrokerConnectionError`
+hierarchy -- exactly the "swap the broker without touching strategies,
+risk, or execution" property ADR-0023 designed for, now demonstrated
+rather than assumed. `IBKRBroker` cannot actually place, check, or
+cancel a real order yet -- a strategy or execution layer that tried to
+route live trading through it today would get a clear
+`NotImplementedError`, not a silent no-op or a wrong result. IB's order
+placement (conid lookup, reply/confirmation handling), session
+freshness (the Client Portal Gateway's session needs periodic "tickle"
+calls and re-authentication -- not modeled here at all), and
+reconciling `IBKRBroker` against `AlpacaBroker`'s behavior for the same
+logical operation are all explicitly deferred, not rejected. Like every
+other concrete broker in this codebase, `IBKRBroker` is untested
+against a real gateway -- only against a fake session.

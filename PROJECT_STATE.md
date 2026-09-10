@@ -4,12 +4,15 @@ _Last updated: 2026-09-10 -- Sprint 5 (in progress): `src/broker/`
 (`BrokerConnection` + `AlpacaBroker`) is the platform's first real
 broker integration -- `get_account()` returns a real
 `src.risk.AccountState`, defaults to Alpaca's paper endpoint, and is
-built/tested against a fake HTTP session (no real account yet). `atp
-doctor`'s Broker Connection check is now real, gated on
-`ALPACA_API_KEY`/`ALPACA_API_SECRET` being configured. Sprints 3 and 4
-are both complete and confirmed. Sprint 5 is verified in sandbox
-(211/213, the usual 2 environment-only failures); pending final
-confirmation via real `pytest`._
+built/tested against a fake HTTP session (no real account yet). Order
+submission (`submit_order`/`get_order`, market orders only, no
+cancellation) has now been added on top of connectivity, using
+broker-native `OrderRequest`/`BrokerOrder` models kept deliberately
+independent of `src/execution`. `atp doctor`'s Broker Connection check
+is real, gated on `ALPACA_API_KEY`/`ALPACA_API_SECRET` being
+configured. Sprints 3 and 4 are both complete and confirmed; Sprint 5's
+connectivity slice is confirmed at 213/213, and order submission is now
+confirmed at 228/228, both via real `pytest` on the dev machine._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -171,18 +174,28 @@ For why things were built the way they were, see `DECISIONS.md`.
   an explicit override), and maps 401/403 to `BrokerAuthenticationError`
   and any other failure to `BrokerConnectionError`. Built and tested
   against a fake HTTP session -- no real Alpaca account exists yet.
-  Order submission is deliberately out of scope this round -- a real
-  broker's asynchronous order lifecycle doesn't fit `src/execution`'s
-  synchronous `Order`/`Fill` model. Touches 1 existing file
-  (`src/cli/checks.py`, Extension Cost: 1). See `DECISIONS.md`,
-  ADR-0023.
+  Touches 1 existing file (`src/cli/checks.py`, Extension Cost: 1). See
+  `DECISIONS.md`, ADR-0023.
+- ✅ Order Submission (`src/broker/`) -- Sprint 5.
+  `OrderRequest`/`BrokerOrder`/`OrderStatus` (`src/broker/models.py`),
+  deliberately independent of `src.execution.models` to avoid a
+  backwards dependency (`ARCHITECTURE.md` draws `execution --> broker`,
+  not the reverse). `BrokerConnection.submit_order()`/`get_order()`
+  round out the interface; `AlpacaBroker` implements both against
+  `POST /v2/orders` / `GET /v2/orders/{id}`, sharing a new `_request()`
+  helper with `get_account()`. Alpaca's raw status strings map onto
+  `OrderStatus` via an explicit table; an unrecognized status raises
+  rather than guessing. Market orders only, submit + status check only
+  -- no cancellation this round. Extension Cost: 0 files changed outside
+  `src/broker/`. See `DECISIONS.md`, ADR-0024.
 
 ## Current Module
 
 **Sprints 3 and 4 are complete and confirmed. Sprint 5 is in
-progress**: `src/broker/` (`BrokerConnection`, `AlpacaBroker`) is
-code-complete, verified in sandbox (211/213, the usual 2
-environment-only failures), pending real-machine confirmation.
+progress**: `src/broker/` connectivity and order submission
+(`submit_order`/`get_order`) are both complete and confirmed --
+228/228 tests pass via real `pytest` on the dev machine (Python
+3.14.6).
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2, 3, 4, or 5): no data validation beyond
@@ -192,15 +205,13 @@ suite against the live yfinance API.
 
 ## Next Task
 
-Confirm the full 213-test suite passes via real `pytest` on the dev
-machine, then commit and push `src/broker/`. Once you have real Alpaca
-paper-trading API keys, set `ALPACA_API_KEY`/`ALPACA_API_SECRET` as
-environment variables and `python -m src.cli doctor` will exercise the
-real connection for the first time -- that live response is also the
-first real-world test of `AlpacaBroker._parse_account()`'s assumptions
-about Alpaca's response shape. After that, Sprint 5 continues toward
-order submission and, eventually, Interactive Brokers or another
-second venue. See `ROADMAP.md`.
+Once you have real Alpaca paper-trading API keys, set
+`ALPACA_API_KEY`/`ALPACA_API_SECRET` as environment variables --
+`python -m src.cli doctor` and a live `submit_order()`/`get_order()`
+call will then exercise the real connection for the first time, the
+first real-world test of `AlpacaBroker`'s parsing assumptions. After
+that, Sprint 5 continues toward order cancellation and, eventually,
+Interactive Brokers or another second venue. See `ROADMAP.md`.
 
 ## Known Issues
 
@@ -258,12 +269,14 @@ second venue. See `ROADMAP.md`.
   opening a second raises rather than averaging/scaling into it. Also
   deferred: limit orders, partial fills, slippage, commission.
 - `AlpacaBroker` is untested against Alpaca's real API -- only against
-  a fake session. The first real network call (once credentials exist)
-  is also the first real-world check of whether `_parse_account()`'s
-  assumptions about Alpaca's response shape hold. Order submission,
-  Interactive Brokers (or any second broker), and reconciling
-  `PaperBroker`'s simulated fills against a real broker's actual fills
-  are all deferred, not rejected -- see `DECISIONS.md`, ADR-0023.
+  a fake session, for `get_account()`, `submit_order()`, and
+  `get_order()` alike. The first real network call (once credentials
+  exist) is also the first real-world check of whether the parsing
+  assumptions in `_parse_account()`/`_parse_order()` hold. Order
+  cancellation, Interactive Brokers (or any second broker), and
+  reconciling `PaperBroker`'s simulated fills against a real broker's
+  actual fills are all deferred, not rejected -- see `DECISIONS.md`,
+  ADR-0023, ADR-0024.
 - Package layout (`src/` vs. `src/ai_trading_platform/`) and flat
   config constants vs. a typed `Settings` object -- both deferred to
   pre-1.0, tracked as ADR-0004 and ADR-0005.
@@ -271,11 +284,11 @@ second venue. See `ROADMAP.md`.
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 213 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 228 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
                           # + 29 cli/doctor + 10 signals + 11 strategy_sdk + 8 attribution
                           # + 15 research + 11 ema_cross_strategy + 16 risk + 18 execution
-                          # + 5 integration_paper_trading + 14 broker)
+                          # + 5 integration_paper_trading + 29 broker)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until

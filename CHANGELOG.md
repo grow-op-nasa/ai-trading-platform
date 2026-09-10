@@ -83,12 +83,56 @@ warning sign that the architecture's been violated.
 
 ### Verified
 
-- New suite verified in sandbox: 14/14 `test_broker.py` tests pass;
-  `test_cli_doctor.py` at 28/29 (only the pre-existing sandbox-only
-  Python-version failure remains). Full project suite: 211/213 in
-  sandbox (2 known environment-only failures, consistent with every
-  prior session). Pending final confirmation via real `pytest` on the
-  dev machine.
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **213
+  passed**, 0 failed.
+
+### Added (Order Submission)
+
+- `src/broker/models.py` (new) -- `OrderSide`, `OrderStatus`,
+  `OrderRequest`, `BrokerOrder` (`DECISIONS.md`, ADR-0024). Deliberately
+  independent of `src.execution.models` -- duplicates the two-value
+  `OrderSide` enum rather than importing across a boundary that
+  `ARCHITECTURE.md` draws running the other direction (`execution -->
+  broker`, aspirational).
+- `src/broker/base.py` -- `BrokerConnection` gains two abstract methods:
+  `submit_order(request: OrderRequest) -> BrokerOrder` and
+  `get_order(broker_order_id: str) -> BrokerOrder`.
+- `src/broker/alpaca.py` -- `AlpacaBroker.submit_order()` posts to
+  `POST /v2/orders` (market order, day time-in-force); `get_order()`
+  reads `GET /v2/orders/{id}`. Both share a new `_request()` helper with
+  `get_account()` (network exceptions, 401/403 -> auth error, other
+  non-2xx -> connection error, all previously inlined only in
+  `get_account()`). Alpaca's raw order status strings map to
+  `OrderStatus` via a new `_STATUS_MAP`; an unrecognized status raises
+  `BrokerConnectionError` rather than guessing. No cancellation this
+  round.
+- `src/broker/__init__.py` -- exports `BrokerOrder`, `OrderRequest`,
+  `OrderSide`, `OrderStatus`.
+- `tests/test_broker.py` -- extended from 14 to 29 tests: `OrderRequest`
+  validation (rejects non-positive quantity), `submit_order` request
+  body + parsed response, side mapping (buy/sell), `get_order` URL +
+  fill-info parsing, status-mapping coverage across representative
+  Alpaca statuses, unrecognized-status error, and submit/get error paths
+  mirroring `get_account`'s (401/403 -> auth error, other HTTP failure
+  -> connection error, network exception -> connection error).
+- Extension Cost: 0 file(s) changed outside `src/broker/` (all changes
+  contained within the package that already owns this capability).
+
+### Decided (Order Submission)
+
+- Kept `src/broker`'s order models independent of `src.execution`,
+  rather than reusing `Order`/`OrderSide` from there, to avoid locking
+  in a backwards dependency (broker depending on execution) the first
+  time it was convenient. See `DECISIONS.md`, ADR-0024.
+- Scope stops at submit + status check -- no order cancellation this
+  round.
+- An unrecognized Alpaca order status raises rather than silently
+  defaulting, matching `atp doctor`'s "never fake a pass" posture.
+
+### Verified (Order Submission)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **228
+  passed**, 0 failed.
 
 ## Sprint 4 -- 2026-09-10, End-to-End Proof (feature-complete)
 

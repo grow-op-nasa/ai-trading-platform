@@ -14,6 +14,7 @@ import pytest
 
 from src.broker.alpaca import ALPACA_LIVE_BASE_URL, ALPACA_PAPER_BASE_URL, AlpacaBroker
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
+from src.broker.models import BrokerOrder, OrderRequest, OrderSide, OrderStatus
 from src.risk.models import AccountState
 
 
@@ -28,16 +29,23 @@ class FakeResponse:
 
 
 class FakeSession:
-    """Records the call it received and returns a canned response (or
+    """Records the calls it received and returns a canned response (or
     raises a canned exception), standing in for `requests`."""
 
     def __init__(self, response: FakeResponse | None = None, raises: Exception | None = None):
-        self.calls: list[tuple[str, dict, float]] = []
+        self.calls: list[tuple[str, str, dict, float]] = []
         self._response = response
         self._raises = raises
 
     def get(self, url: str, headers: dict, timeout: float) -> FakeResponse:
-        self.calls.append((url, headers, timeout))
+        self.calls.append(("get", url, headers, timeout))
+        if self._raises is not None:
+            raise self._raises
+        return self._response
+
+    def post(self, url: str, headers: dict, json: dict, timeout: float) -> FakeResponse:
+        self.calls.append(("post", url, headers, timeout))
+        self.last_json_body = json
         if self._raises is not None:
             raise self._raises
         return self._response
@@ -140,7 +148,8 @@ def test_get_account_sends_credentials_as_headers():
 
     broker.get_account()
 
-    url, headers, _ = session.calls[0]
+    method, url, headers, _ = session.calls[0]
+    assert method == "get"
     assert url.endswith("/v2/account")
     assert headers["APCA-API-KEY-ID"] == "my-key"
     assert headers["APCA-API-SECRET-KEY"] == "my-secret"
@@ -181,3 +190,202 @@ def test_get_account_raises_connection_error_on_network_failure():
 
     with pytest.raises(BrokerConnectionError):
         broker.get_account()
+
+
+# ---------------------------------------------------------------------------
+# OrderRequest validation
+# ---------------------------------------------------------------------------
+
+
+def test_order_request_rejects_zero_quantity():
+    with pytest.raises(ValueError):
+        OrderRequest(symbol="AAPL", side=OrderSide.BUY, quantity=0)
+
+
+def test_order_request_rejects_negative_quantity():
+    with pytest.raises(ValueError):
+        OrderRequest(symbol="AAPL", side=OrderSide.BUY, quantity=-5)
+
+
+def test_order_request_accepts_positive_quantity():
+    request = OrderRequest(symbol="AAPL", side=OrderSide.BUY, quantity=10)
+    assert request.quantity == 10
+
+
+# ---------------------------------------------------------------------------
+# submit_order -- success path
+# ---------------------------------------------------------------------------
+
+
+def _alpaca_order_response(**overrides) -> dict:
+    data = {
+        "id": "order-123",
+        "symbol": "AAPL",
+        "side": "buy",
+        "qty": "10",
+        "status": "new",
+        "filled_qty": "0",
+        "filled_avg_price": None,
+    }
+    data.update(overrides)
+    return data
+
+
+def test_submit_order_sends_expected_request_body():
+    session = FakeSession(response=FakeResponse(200, _alpaca_order_response()))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+    request = OrderRequest(symbol="AAPL", side=OrderSide.BUY, quantity=10)
+
+    broker.submit_order(request)
+
+    method, url, _, _ = session.calls[0]
+    assert method == "post"
+    assert url.endswith("/v2/orders")
+    assert session.last_json_body == {
+        "symbol": "AAPL",
+        "qty": "10",
+        "side": "buy",
+        "type": "market",
+        "time_in_force": "day",
+    }
+
+
+def test_submit_order_sell_side_maps_to_lowercase_sell():
+    session = FakeSession(response=FakeResponse(200, _alpaca_order_response(side="sell")))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+    request = OrderRequest(symbol="AAPL", side=OrderSide.SELL, quantity=10)
+
+    broker.submit_order(request)
+
+    assert session.last_json_body["side"] == "sell"
+
+
+def test_submit_order_returns_parsed_broker_order():
+    session = FakeSession(response=FakeResponse(200, _alpaca_order_response()))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+    request = OrderRequest(symbol="AAPL", side=OrderSide.BUY, quantity=10)
+
+    order = broker.submit_order(request)
+
+    assert isinstance(order, BrokerOrder)
+    assert order.broker_order_id == "order-123"
+    assert order.symbol == "AAPL"
+    assert order.side is OrderSide.BUY
+    assert order.quantity == pytest.approx(10.0)
+    assert order.status is OrderStatus.PENDING
+    assert order.filled_quantity == pytest.approx(0.0)
+    assert order.filled_avg_price is None
+
+
+# ---------------------------------------------------------------------------
+# get_order -- success path
+# ---------------------------------------------------------------------------
+
+
+def test_get_order_requests_expected_url():
+    session = FakeSession(response=FakeResponse(200, _alpaca_order_response()))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    broker.get_order("order-123")
+
+    method, url, _, _ = session.calls[0]
+    assert method == "get"
+    assert url.endswith("/v2/orders/order-123")
+
+
+def test_get_order_returns_parsed_broker_order_with_fill_info():
+    session = FakeSession(
+        response=FakeResponse(
+            200,
+            _alpaca_order_response(
+                status="filled", filled_qty="10", filled_avg_price="150.25"
+            ),
+        )
+    )
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    order = broker.get_order("order-123")
+
+    assert order.status is OrderStatus.FILLED
+    assert order.filled_quantity == pytest.approx(10.0)
+    assert order.filled_avg_price == pytest.approx(150.25)
+
+
+# ---------------------------------------------------------------------------
+# Order status mapping
+# ---------------------------------------------------------------------------
+
+
+def test_status_mapping_covers_representative_alpaca_statuses():
+    cases = {
+        "new": OrderStatus.PENDING,
+        "accepted": OrderStatus.PENDING,
+        "partially_filled": OrderStatus.PARTIALLY_FILLED,
+        "filled": OrderStatus.FILLED,
+        "rejected": OrderStatus.REJECTED,
+        "canceled": OrderStatus.CANCELED,
+        "expired": OrderStatus.CANCELED,
+    }
+    for raw_status, expected in cases.items():
+        session = FakeSession(response=FakeResponse(200, _alpaca_order_response(status=raw_status)))
+        broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+        order = broker.get_order("order-123")
+
+        assert order.status is expected, f"expected {raw_status!r} -> {expected}"
+
+
+def test_get_order_raises_connection_error_on_unrecognized_status():
+    session = FakeSession(response=FakeResponse(200, _alpaca_order_response(status="mystery")))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    with pytest.raises(BrokerConnectionError):
+        broker.get_order("order-123")
+
+
+# ---------------------------------------------------------------------------
+# submit_order / get_order -- error paths (mirroring get_account's)
+# ---------------------------------------------------------------------------
+
+
+def test_submit_order_raises_authentication_error_on_401():
+    session = FakeSession(response=FakeResponse(401, text="unauthorized"))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+    request = OrderRequest(symbol="AAPL", side=OrderSide.BUY, quantity=10)
+
+    with pytest.raises(BrokerAuthenticationError):
+        broker.submit_order(request)
+
+
+def test_submit_order_raises_connection_error_on_other_http_failure():
+    session = FakeSession(response=FakeResponse(422, text="unprocessable"))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+    request = OrderRequest(symbol="AAPL", side=OrderSide.BUY, quantity=10)
+
+    with pytest.raises(BrokerConnectionError):
+        broker.submit_order(request)
+
+
+def test_submit_order_raises_connection_error_on_network_failure():
+    session = FakeSession(raises=requests.exceptions.ConnectionError("no route to host"))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+    request = OrderRequest(symbol="AAPL", side=OrderSide.BUY, quantity=10)
+
+    with pytest.raises(BrokerConnectionError):
+        broker.submit_order(request)
+
+
+def test_get_order_raises_authentication_error_on_403():
+    session = FakeSession(response=FakeResponse(403, text="forbidden"))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    with pytest.raises(BrokerAuthenticationError):
+        broker.get_order("order-123")
+
+
+def test_get_order_raises_connection_error_on_network_failure():
+    session = FakeSession(raises=requests.exceptions.ConnectionError("no route to host"))
+    broker = AlpacaBroker(api_key="key", api_secret="secret", session=session)
+
+    with pytest.raises(BrokerConnectionError):
+        broker.get_order("order-123")

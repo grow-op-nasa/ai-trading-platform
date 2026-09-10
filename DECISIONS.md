@@ -1119,3 +1119,68 @@ directly unit-tested either. Order submission, Interactive Brokers (or
 any second broker), and reconciling `PaperBroker`'s simulated fills
 against a real broker's actual fills are all explicitly deferred, not
 rejected.
+
+---
+
+## ADR-0024: Order submission -- broker-native models, submit + status only, no cancel
+
+**Status:** Accepted -- Sprint 5
+
+**Context:** ADR-0023 shipped `src/broker` connectivity/account-state
+only, deliberately deferring order submission because a real order's
+asynchronous lifecycle (pending, partial fill, rejection) doesn't fit
+`src/execution`'s synchronous, instant-fill `Order`/`Fill` model
+(ADR-0022). Building order submission raised the exact question
+ADR-0023 flagged: what shape should a submitted order take, and where
+should that shape live? The most direct option was reusing
+`src.execution.models.Order`/`OrderSide` directly in `src/broker` --
+less code, one `OrderSide` enum instead of two. That was rejected: it
+would create a real import dependency running opposite to this
+codebase's intended direction. `ARCHITECTURE.md`'s dependency diagram
+already draws `execution --> broker` as an aspirational future edge --
+broker connectivity is meant to be the more foundational capability a
+future execution layer builds on, not the other way around. Importing
+`src.execution` from `src.broker` today would lock in the wrong
+direction the first time it was convenient, silently, without ever
+being decided. This reasoning was arrived at during implementation
+(not asked for directly) and is disclosed here per this project's norm
+of never making a consequential architectural choice quietly.
+
+**Decision:** Add `src/broker/models.py` with its own `OrderSide`
+(`BUY`/`SELL`), `OrderStatus` (`PENDING`/`PARTIALLY_FILLED`/`FILLED`/
+`REJECTED`/`CANCELED`), `OrderRequest` (`symbol`, `side`, `quantity` --
+market order only, no limit price, matching `PaperBroker`'s own
+simplicity; raises `ValueError` on non-positive `quantity`), and
+`BrokerOrder` (the broker's own record: `broker_order_id`, `symbol`,
+`side`, `quantity`, `status`, `filled_quantity`, `filled_avg_price`) --
+all deliberately independent of `src.execution.models`, duplicating the
+tiny two-value `OrderSide` enum rather than importing across that
+boundary. `BrokerConnection` (`src/broker/base.py`) gains two abstract
+methods: `submit_order(request) -> BrokerOrder` and
+`get_order(broker_order_id) -> BrokerOrder`. Scope stops at submit +
+status check -- **no cancellation** this round. `AlpacaBroker`
+implements both against `POST /v2/orders` and `GET /v2/orders/{id}`,
+sharing a new `_request()` helper with `get_account()` (network
+exceptions and 401/403/non-2xx handling, previously inlined only in
+`get_account()`, now consolidated in one place). Alpaca's raw order
+`status` strings are mapped to `OrderStatus` via a module-level
+`_STATUS_MAP`; an unrecognized status **raises** `BrokerConnectionError`
+rather than silently defaulting to some guessed status -- the same
+"never fake a pass" posture `atp doctor` (ADR-0013) already takes,
+applied here to not fake knowing whether an order filled.
+
+**Consequences:** Extension Cost (ADR-0014) for this addition: 0 files
+changed outside `src/broker/` for the models/interface/implementation
+themselves -- `base.py` and `alpaca.py` were extended, `models.py` is a
+new file, and `__init__.py`'s exports grew, all within the package that
+already owns this capability; nothing in `src/execution`, `src/risk`,
+or `src/signals` was touched. A future execution layer that actually
+wants to route orders through `AlpacaBroker` will need to translate
+between `src.execution.models.Order` and `src.broker.models.OrderRequest`
+at that boundary -- a small, explicit translation cost, paid once, in
+exchange for keeping today's dependency direction honest rather than
+backwards. Order cancellation, limit/stop order types, and reconciling
+`PaperBroker`'s simulated fills against real Alpaca fills remain
+explicitly deferred, not rejected. `submit_order`/`get_order` are
+untested against Alpaca's real API -- only against a fake session --
+the same accepted gap ADR-0023 already established for `get_account()`.

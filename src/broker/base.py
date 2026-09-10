@@ -8,17 +8,20 @@ anything else tomorrow) implements this one interface. Nothing outside
 should depend on `BrokerConnection` so that swapping brokers never
 requires touching strategies, risk sizing, or execution.
 
-Deliberately scoped to connectivity and account state only this round
-(`DECISIONS.md`, ADR-0023) -- order submission against a real broker is
-a separate, later step, since a real order's lifecycle (pending,
-partial fill, rejection) doesn't fit `src/execution`'s existing
-synchronous, instant-fill `Order`/`Fill` model.
+Connectivity/account state (`DECISIONS.md`, ADR-0023) and order
+submission (ADR-0024) are both in scope now. Order management stops at
+submit + check status -- no cancellation yet, and `OrderRequest`/
+`BrokerOrder` (`models.py`) are deliberately independent of
+`src/execution`'s `Order`/`Fill`, since a real order's asynchronous
+lifecycle (pending, partial fill, rejection) doesn't fit
+`PaperBroker`'s synchronous, instant-fill model.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from src.broker.models import BrokerOrder, OrderRequest
 from src.risk.models import AccountState
 
 
@@ -38,5 +41,32 @@ class BrokerConnection(ABC):
         Raises:
             BrokerAuthenticationError: credentials were rejected.
             BrokerConnectionError: the broker couldn't be reached at all.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def submit_order(self, request: OrderRequest) -> BrokerOrder:
+        """Submit a market order.
+
+        Returns immediately with whatever status the broker reports
+        back -- usually still pending, not yet filled. Call
+        `get_order()` later to check on it.
+
+        Raises:
+            BrokerAuthenticationError: credentials were rejected.
+            BrokerConnectionError: the broker couldn't be reached, or
+                rejected the request for a reason other than
+                authentication.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_order(self, broker_order_id: str) -> BrokerOrder:
+        """Fetch the current status of a previously submitted order.
+
+        Raises:
+            BrokerAuthenticationError: credentials were rejected.
+            BrokerConnectionError: the broker couldn't be reached, or
+                no order exists with that id.
         """
         raise NotImplementedError

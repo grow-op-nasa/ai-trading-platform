@@ -227,15 +227,20 @@ once there's a second real caller that needs one.
   `ALPACA_API_KEY`/`ALPACA_API_SECRET` with zero code changes. `atp
   doctor`'s Broker Connection check is now real, gated on those being
   configured. See `DECISIONS.md`, ADR-0023.
-- ⬜ Order submission against a real broker -- deliberately deferred:
-  a real order's asynchronous lifecycle (pending/partial/rejected)
-  doesn't fit `src/execution`'s synchronous, instant-fill `Order`/
-  `Fill` model (ADR-0022), so designing that properly is its own round,
-  not an extension of this one.
+- ✅ Order submission against a real broker -- `OrderRequest`/
+  `BrokerOrder`/`OrderStatus` (`src/broker/models.py`), kept
+  deliberately independent of `src/execution`'s `Order`/`Fill` model
+  rather than importing it (would run the intended dependency direction
+  backwards -- see `DECISIONS.md`, ADR-0024). `submit_order()`/
+  `get_order()` round out `BrokerConnection`; `AlpacaBroker` implements
+  both. Market orders only, submit + status check only -- order
+  cancellation is not yet built.
+- ⬜ Order cancellation -- the one piece of order management ADR-0024
+  deliberately left out this round.
 - ⬜ A second broker (e.g. Interactive Brokers) -- proves
   `BrokerConnection` is actually swappable, not just designed to be.
 - ⬜ Reconciling `PaperBroker`'s simulated fills against a real
-  broker's actual fills, once order submission exists.
+  broker's actual fills, now that order submission exists.
 
 ## Sprint 6 -- Analytics & Dashboard (planned)
 

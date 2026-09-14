@@ -347,6 +347,58 @@ warning sign that the architecture's been violated.
 - Confirmed via real `pytest` on the dev machine (Python 3.14.6): **290
   passed**, 0 failed.
 
+### Added (Fourth Broker -- Tiger Trade)
+
+- `src/broker/tiger.py` (new) -- `TigerBroker(BrokerConnection)`
+  (`DECISIONS.md`, ADR-0030), the platform's fourth concrete broker, and
+  the first built by wrapping an official vendor SDK (`tigeropen`)
+  instead of talking `requests` directly -- Tiger's auth requires
+  RSA-signing every request (PKCS#1 private key), too risky to
+  hand-roll against raw HTTP. The injectable seam is the SDK's
+  `TradeClient` object (`_TradeClient` Protocol: `get_assets(segment,
+  market_value) -> list`), not an HTTP session. `tigeropen` is imported
+  lazily, only inside `_build_client()`, and is deliberately **not**
+  added to `requirements.txt`, mirroring ADR-0020's `anthropic`
+  precedent. Credentials (`tiger_id`/`private_key_path`/`account`,
+  env-var fallback `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT`)
+  are a fourth distinct auth shape in this codebase. No separate paper/
+  live URL -- like `IBKRBroker`, the `account` value itself decides.
+  `get_account()` calls `get_assets(segment=False, market_value=True)`,
+  wraps any exception into `BrokerConnectionError` (a documented,
+  provisional limitation), and maps `summary.net_liquidation` ->
+  equity, `summary.gross_position_value` (defaulting to `0.0`) -> open
+  exposure -- the most direct account mapping of any broker so far.
+  `submit_order`/`get_order`/`cancel_order` all raise
+  `NotImplementedError` -- connectivity and account state only this
+  round, even though Tiger's API looks like it supports a real order
+  lifecycle more cleanly than IG's does.
+- `src/broker/__init__.py` -- exports `TigerBroker`; docstring updated.
+- `tests/test_tiger.py` (new, 15 tests) -- against an injected fake
+  `_TradeClient`, never `tigeropen` itself: interface conformance,
+  credential validation (missing tiger_id/private_key_path/account,
+  env-var fallback, argument precedence over environment), default
+  `sandbox_debug`, `get_account()` success (net_liquidation/
+  gross_position_value parsing, missing gross_position_value defaults
+  to zero, first-portfolio-used-when-multiple), no-portfolios error,
+  arbitrary client exception wrapped into `BrokerConnectionError`, and
+  `submit_order`/`get_order`/`cancel_order` all raising
+  `NotImplementedError`.
+- Extension Cost: 1 file changed outside the new `tiger.py`/
+  `test_tiger.py` (`src/broker/__init__.py`, exports + docstring).
+
+### Decided (Fourth Broker -- Tiger Trade)
+
+- Wrap the official `tigeropen` SDK rather than hand-roll RSA request
+  signing.
+- Tiger Trade (real equities) over Tiger CFD for this round.
+- Connectivity + account state only -- Tiger's order lifecycle gets its
+  own design round later. See `DECISIONS.md`, ADR-0030.
+
+### Verified (Fourth Broker -- Tiger Trade)
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6): **305
+  passed**, 0 failed.
+
 ## Sprint 4 -- 2026-09-10, End-to-End Proof (feature-complete)
 
 ### Added (End-to-End Proof)

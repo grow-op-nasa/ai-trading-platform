@@ -282,9 +282,16 @@ once there's a second real caller that needs one.
   nothing left to cancel once a market order has resolved. Order
   currency is read from the account itself, never guessed. See
   `DECISIONS.md`, ADR-0029.
-- ⬜ Tiger Brokers/Tiger Trade as a fourth broker -- another real,
-  usable account (real equities, RSA-signed request auth) the user
-  could exercise; not started.
+- ✅ Tiger Brokers/Tiger Trade as a fourth broker -- another real,
+  usable account (real equities). `TigerBroker` wraps the official
+  `tigeropen` SDK rather than hand-rolling RSA-signed request auth --
+  the first broker in this codebase built on a vendor SDK.
+  `get_account()` only this round -- `submit_order`/`get_order`/
+  `cancel_order` raise `NotImplementedError` until Tiger's order
+  lifecycle gets its own design pass. See `DECISIONS.md`, ADR-0030.
+- ⬜ Tiger Trade order submission/status/cancel -- the piece ADR-0030
+  deliberately deferred, even though Tiger's API looks better suited to
+  a real order lifecycle than IG's does; not started.
 
 ## Sprint 6 -- Analytics & Dashboard (planned)
 

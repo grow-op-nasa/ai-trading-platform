@@ -35,7 +35,19 @@ with a real account. Session-based auth (API key + username + password
 this round -- IG's own order model (a short-lived deal reference
 confirmed into a permanent position, no ongoing order-status endpoint)
 doesn't fit `BrokerOrder`/`OrderStatus` without its own design round
-either.
+either. IG order submission (ADR-0029) resolves synchronously against
+`/positions/otc` + `/confirms/{dealReference}`; `get_order`/
+`cancel_order` stay `NotImplementedError` by design, not as a gap --
+IG has no endpoint to re-query a resolved market order.
+
+`TigerBroker` (ADR-0030) is the platform's fourth concrete broker, and
+the first built by wrapping an official vendor SDK (`tigeropen`)
+instead of talking `requests` directly -- Tiger's auth requires
+RSA-signing every request, too risky to hand-roll. Connectivity +
+account state only this round, the same posture every broker here has
+started with; `submit_order`/`get_order`/`cancel_order` raise
+`NotImplementedError` until Tiger's order lifecycle gets its own
+design round.
 """
 
 from src.broker.alpaca import ALPACA_LIVE_BASE_URL, ALPACA_PAPER_BASE_URL, AlpacaBroker
@@ -44,6 +56,7 @@ from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionErr
 from src.broker.ibkr import IBKR_GATEWAY_BASE_URL, IBKRBroker
 from src.broker.ig import IG_DEMO_BASE_URL, IG_LIVE_BASE_URL, IGBroker
 from src.broker.models import BrokerOrder, OrderRequest, OrderSide, OrderStatus
+from src.broker.tiger import TigerBroker
 
 __all__ = [
     "BrokerConnection",
@@ -55,6 +68,7 @@ __all__ = [
     "IGBroker",
     "IG_DEMO_BASE_URL",
     "IG_LIVE_BASE_URL",
+    "TigerBroker",
     "BrokerError",
     "BrokerAuthenticationError",
     "BrokerConnectionError",

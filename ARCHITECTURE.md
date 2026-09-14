@@ -26,7 +26,7 @@ graph TD
     research[research: ResearchReporter]
     risk[risk: PositionSizer]
     execution[execution: PaperBroker]
-    broker[broker: BrokerConnection + AlpacaBroker + IBKRBroker + IGBroker]
+    broker[broker: BrokerConnection + AlpacaBroker + IBKRBroker + IGBroker + TigerBroker]
     reconciliation[reconciliation: reconcile_fill]
     analytics[analytics: not yet built]
     ai[ai: not yet built]
@@ -606,24 +606,49 @@ ADR-0029 IG order submission).
     `cancel_order` still raise `NotImplementedError` -- there is no live
     endpoint to re-query a resolved market order's status, and nothing
     left to cancel once `submit_order()` has returned.
+  - `tiger.py` -- `TigerBroker(BrokerConnection)`, the platform's fourth
+    concrete broker (`DECISIONS.md`, ADR-0030), the first built by
+    wrapping an official vendor SDK (`tigeropen`) instead of talking
+    `requests` directly -- Tiger's auth requires RSA-signing every
+    request (PKCS#1 private key). The injectable seam is the SDK's
+    `TradeClient` object (`_TradeClient` Protocol), not an HTTP session
+    the way `alpaca.py`/`ibkr.py`/`ig.py` all use. `tigeropen` is
+    imported lazily, only inside `_build_client()`, and is deliberately
+    not added to `requirements.txt` (mirrors the `anthropic` precedent
+    in `src/research`, ADR-0020). A fourth distinct credential shape:
+    `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` (env-var fallback
+    like every other broker). No separate paper/live endpoint -- like
+    IB, determined by which `account` value is configured, not a URL.
+    `get_account()` calls `get_assets(segment=False, market_value=True)`,
+    maps `summary.net_liquidation` -> equity, `summary.gross_position_value`
+    (defaulting to `0.0`) -> open exposure, and wraps any client
+    exception into `BrokerConnectionError` (a documented, provisional
+    limitation -- Tiger's own exception taxonomy wasn't verified in
+    depth this round). `submit_order`/`get_order`/`cancel_order` all
+    raise `NotImplementedError` -- connectivity and account state only
+    this round.
 - **Does not:** support limit/stop order types on Alpaca or IG -- market
   orders only. Doesn't support order submission/status/cancellation on
-  Interactive Brokers at all yet -- needs its own design round (contract
-  id lookup, reply/confirmation) and is on hold regardless since IB
-  geo-restricts account access for this deployment. IG has no
-  `get_order`/`cancel_order` by design (see `ig.py`, above) -- not a gap
-  to be filled later, but a structural consequence of IG's order model.
-  `AlpacaBroker.get_account()` is confirmed against Alpaca's real paper
-  API; everything else across all three brokers remains tested only
-  against a fake HTTP session, the same posture `src/data` already
-  takes toward `YFinanceProvider` (there's no `test_yfinance_provider.py`
-  either).
+  Interactive Brokers or Tiger Trade at all yet -- IB's needs its own
+  design round (contract id lookup, reply/confirmation) and is on hold
+  regardless since IB geo-restricts account access for this deployment;
+  Tiger's is deliberately deferred pending its own design round, even
+  though Tiger's API looks better suited to a real order lifecycle than
+  IG's does. IG has no `get_order`/`cancel_order` by design (see
+  `ig.py`, above) -- not a gap to be filled later, but a structural
+  consequence of IG's order model. `AlpacaBroker.get_account()` is
+  confirmed against Alpaca's real paper API; everything else across all
+  four brokers remains tested only against a fake HTTP session or fake
+  SDK client, the same posture `src/data` already takes toward
+  `YFinanceProvider` (there's no `test_yfinance_provider.py` either).
 - **Depends on:** `src/risk` (for `AccountState`). Extension Cost
   (ADR-0014): connectivity slice was 1 (`src/cli/checks.py`); order
   submission and order cancellation were each 0; the second broker
   (`IBKRBroker`) was 1 (`src/broker/__init__.py`, exports); the third
-  broker (`IGBroker`) was also 1 (same file); IG order submission was 0
-  -- all contained within or immediately around `src/broker` itself.
+  broker (`IGBroker`) was also 1 (same file); IG order submission was 0;
+  the fourth broker (`TigerBroker`) was also 1 (same file, exports +
+  docstring) -- all contained within or immediately around `src/broker`
+  itself.
 
 ### `src/reconciliation`
 

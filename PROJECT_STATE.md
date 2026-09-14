@@ -1,27 +1,32 @@
 # Project State
 
-_Last updated: 2026-09-10 -- Sprint 5 (in progress). Three concrete
+_Last updated: 2026-09-10 -- Sprint 5 (in progress). Four concrete
 brokers now implement `BrokerConnection`: **`AlpacaBroker`** (full
 lifecycle -- `get_account`/`submit_order`/`get_order`/`cancel_order`;
 real `ALPACA_API_KEY`/`ALPACA_API_SECRET` are configured and
 `get_account()` is confirmed against Alpaca's real paper account),
 **`IBKRBroker`** (`get_account()` only; IB's Client Portal Web API --
 **confirmed geo-restricted for this deployment**, OFAC/Section 311, so
-it remains an architecture proof without a usable real account), and
+it remains an architecture proof without a usable real account),
 **`IGBroker`** (IG's REST API, session-token auth -- a real, usable
 second broker for this platform's user, since IG doesn't geo-block;
 `get_account()` plus `submit_order()`, which resolves synchronously
 into a final `FILLED`/`REJECTED` `BrokerOrder` -- `get_order()`/
 `cancel_order()` stay `NotImplementedError` since IG has no live status
 endpoint to poll and nothing left to cancel once a market order
-resolves). `src/reconciliation/` (new) compares `PaperBroker`'s
-simulated fills against real broker fills (`reconcile_fill()`),
-deliberately depending on both `src/execution` and `src/broker`.
-Confirmed via real `pytest` on the dev machine: connectivity 213/213,
-order submission 228/228, order cancellation 233/233, `IBKRBroker`
-248/248, fill reconciliation + `IGBroker` connectivity together at
-282/282, and IG order submission at 290/290. Sprints 3 and 4 are both
-complete and confirmed._
+resolves), and **`TigerBroker`** (Tiger Trade, wraps the official
+`tigeropen` SDK rather than hand-rolled RSA request signing -- a real,
+usable third broker for this platform's user; `get_account()` only this
+round, `submit_order`/`get_order`/`cancel_order` all
+`NotImplementedError`). `src/reconciliation/` (new) compares
+`PaperBroker`'s simulated fills against real broker fills
+(`reconcile_fill()`), deliberately depending on both `src/execution`
+and `src/broker`. Confirmed via real `pytest` on the dev machine:
+connectivity 213/213, order submission 228/228, order cancellation
+233/233, `IBKRBroker` 248/248, fill reconciliation + `IGBroker`
+connectivity together at 282/282, IG order submission at 290/290, and
+`TigerBroker` at 305/305. Sprints 3 and 4 are both complete and
+confirmed._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -269,15 +274,37 @@ For why things were built the way they were, see `DECISIONS.md`.
   resolved market order, and nothing left to cancel by the time
   `submit_order()` returns. Extension Cost: 0 files changed outside
   `ig.py`/`test_ig.py`. See `DECISIONS.md`, ADR-0029.
+- ✅ Fourth Broker -- Tiger Trade (`src/broker/tiger.py`) -- Sprint 5.
+  `TigerBroker` is the platform's fourth concrete broker, and the first
+  built by wrapping an official vendor SDK (`tigeropen`) instead of
+  talking `requests` directly -- Tiger's auth requires RSA-signing every
+  request (PKCS#1 private key), too risky to hand-roll. The injectable
+  seam is the SDK's `TradeClient` object, not an HTTP session.
+  `tigeropen` is imported lazily and deliberately not added to
+  `requirements.txt` (mirrors ADR-0020's `anthropic` precedent).
+  Credentials (`tiger_id`/`private_key_path`/`account`, env-var fallback
+  `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT`) are a fourth
+  distinct auth shape. No separate paper/live URL -- like `IBKRBroker`,
+  the `account` value itself decides. `get_account()` maps
+  `summary.net_liquidation` -> equity, `summary.gross_position_value`
+  (defaulting to `0.0`) -> open exposure -- the most direct account
+  mapping of any broker so far -- and wraps any client exception into
+  `BrokerConnectionError` (a documented, provisional limitation).
+  `submit_order`/`get_order`/`cancel_order` all raise
+  `NotImplementedError` -- connectivity and account state only this
+  round. Extension Cost: 1 file changed outside the new `tiger.py`/
+  `test_tiger.py` (`src/broker/__init__.py`, exports + docstring). See
+  `DECISIONS.md`, ADR-0030.
 
 ## Current Module
 
 **Sprints 3 and 4 are complete and confirmed. Sprint 5 is in
 progress**: `src/broker/` connectivity, order submission, and order
-cancellation for Alpaca, `IBKRBroker`, `src/reconciliation/`, and
-`IGBroker` (connectivity + synchronous order submission) are all
-complete and confirmed -- 290/290 tests pass via real `pytest` on the
-dev machine (Python 3.14.6).
+cancellation for Alpaca, `IBKRBroker`, `src/reconciliation/`, `IGBroker`
+(connectivity + synchronous order submission), and `TigerBroker`
+(connectivity + account state) are all complete and confirmed --
+305/305 tests pass via real `pytest` on the dev machine (Python
+3.14.6).
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2, 3, 4, or 5): no data validation beyond
@@ -287,16 +314,15 @@ suite against the live yfinance API.
 
 ## Next Task
 
-Set `IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD` as environment variables to
-exercise `IGBroker` against your real IG demo/live account for the
-first time -- both `get_account()` and, with a real epic symbol,
-`submit_order()`. Separately, exercising Alpaca's `submit_order`/
-`get_order`/`cancel_order` against the real paper account (a real,
-harmless paper-money order), then feeding the resulting `BrokerOrder`
-and a `PaperBroker`-simulated `Fill` into `reconcile_fill()`, would give
-the first live reconciliation. Tiger Trade (real stocks, RSA-signed
-auth via the official `tigeropen` SDK) is the natural next broker to
-build, per `ROADMAP.md`.
+Setting `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
+`TigerBroker.get_account()` against a real Tiger paper account; setting
+`IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD` to exercise `IGBroker` against
+a real IG account (`get_account()` and, with a real epic symbol,
+`submit_order()`); and exercising Alpaca's `submit_order`/`get_order`/
+`cancel_order` against the real paper account, then feeding the
+resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
+`reconcile_fill()` for the first live reconciliation -- are all
+available next steps, none yet explicitly requested.
 
 ## Known Issues
 
@@ -377,12 +403,12 @@ build, per `ROADMAP.md`.
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 290 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 305 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
                           # + 29 cli/doctor + 10 signals + 11 strategy_sdk + 8 attribution
                           # + 15 research + 11 ema_cross_strategy + 16 risk + 18 execution
                           # + 5 integration_paper_trading + 34 broker + 15 ibkr
-                          # + 11 reconciliation + 31 ig)
+                          # + 11 reconciliation + 31 ig + 15 tiger)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until

@@ -1546,3 +1546,84 @@ reconciling `IGBroker` fills against `PaperBroker` via
 `submit_order()` is untested against IG's real API -- only against a
 fake session -- the same accepted gap every other concrete broker in
 this codebase carries.
+
+---
+
+## ADR-0030: Fourth broker -- Tiger Trade, wraps the official `tigeropen` SDK
+
+**Status:** Accepted -- Sprint 5
+
+**Context:** The user's third real, usable account is with Tiger
+Brokers -- Tiger Trade (real US/HK/SG equities) and Tiger CFD are both
+available; Tiger Trade was chosen for this round as the closer match to
+Alpaca's asset class than IG's CFD/spread-bet products. Tiger's auth is
+a genuinely new shape in this codebase: every request must be
+cryptographically signed with an RSA private key (PKCS#1), not just a
+static header (Alpaca), an already-established browser session (IB), or
+a login-for-tokens flow (IG). Two questions needed settling before
+building anything. (1) **Auth implementation:** hand-roll the RSA
+request-signing scheme against raw HTTP, matching every prior broker's
+`requests`-based `_Session` Protocol pattern, or wrap Tiger's own
+official `tigeropen` Python SDK, which already implements signing
+correctly? Hand-rolling carries real risk here -- a subtly wrong
+signature is the kind of bug that only surfaces against a real account,
+not in a unit test. (2) **Scope:** Tiger's API appears to support a
+real order-status and cancellation lifecycle (`get_order`/`get_orders`/
+`cancel_order`) more cleanly than IG's does -- should order submission
+be built this round, given that?
+
+**Decision:** (1) `TigerBroker` wraps `tigeropen`'s `TradeClient`
+rather than hand-rolling signing -- the first broker in this codebase
+built on a vendor SDK instead of talking `requests` directly. The
+injectable seam is the SDK client object itself (`_TradeClient`
+Protocol, requiring only `get_assets(segment, market_value) -> list`),
+not an HTTP session -- every test in `tests/test_tiger.py` injects a
+fake `_TradeClient` and never imports or requires `tigeropen` to be
+installed. `tigeropen` itself is imported lazily, only inside
+`_build_client()`, and is deliberately **not** added to
+`requirements.txt`, mirroring ADR-0020's precedent for the optional
+`anthropic` dependency in `src/research`. Credentials (`tiger_id`,
+`private_key_path`, `account`) fall back to `TIGER_ID`/
+`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` environment variables, the same
+convention every other broker uses, and raise
+`BrokerAuthenticationError` immediately if any is missing. There is no
+separate paper/live URL -- like `IBKRBroker`, the `account` value itself
+determines paper vs. live. A `sandbox_debug` flag defaults to `False`,
+since Tiger's own documentation recommends testing against a real paper
+account over its sandbox environment. `get_account()` wraps **any**
+exception from `get_assets()` into `BrokerConnectionError` -- an
+accepted, provisional limitation, since Tiger's own exception taxonomy
+wasn't verified in depth this round, so it isn't yet distinguishing
+auth failures from connectivity failures the way `_request()` does for
+Alpaca/IBKR's HTTP status codes. `equity` maps from
+`summary.net_liquidation`; `open_exposure` maps from
+`summary.gross_position_value` (defaulting to `0.0` when absent) -- the
+most direct account mapping of any broker integrated so far, since
+Tiger exposes gross position value as its own field, unlike IG's
+margin-based `deposit` approximation. (2) Scope stays **connectivity
+and account state only**, the same posture every broker in this
+codebase has started with: `submit_order`/`get_order`/`cancel_order`
+all raise `NotImplementedError`, even though Tiger's API looks better
+suited to a real order lifecycle than IG's -- proving the SDK-wrapper
+approach and account-state mapping first is this round's job, not
+building order management on top of an unproven foundation.
+
+**Consequences:** Extension Cost (ADR-0014) for this addition: 2 files
+changed outside the new `tiger.py`/`test_tiger.py` -- `src/broker/
+__init__.py` (exports, docstring). `BrokerConnection` now has a fourth
+independent implementation with a fourth distinct credential/auth model
+(static headers, established browser session, login-for-tokens, and now
+RSA-signed requests via a vendor SDK), and the first proof that this
+codebase's broker abstraction survives being backed by someone else's
+SDK client rather than a `requests` session it fully controls. The
+broad exception-to-`BrokerConnectionError` wrapping in `get_account()`
+is a known, documented gap -- a future round that verifies `tigeropen`'s
+real exception types could narrow this to distinguish auth failures
+from connectivity failures, the same distinction `_request()` already
+makes for Alpaca and IBKR. Tiger order submission/status/cancellation,
+sandbox-vs-real-paper-account testing, and reconciling `TigerBroker`
+fills against `PaperBroker` via `src/reconciliation` are all explicitly
+deferred, not rejected. `TigerBroker` is untested against Tiger's real
+API or the real `tigeropen` SDK -- only against a fake `_TradeClient` --
+the same accepted gap every other concrete broker in this codebase
+carries.

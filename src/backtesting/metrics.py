@@ -12,14 +12,68 @@ import pandas as pd
 
 from src.backtesting.models import Trade
 
+# The historical default before ADR-0038: correct for genuine daily
+# (one-bar-per-trading-day) data, and still the fallback when a return
+# series is too short to infer a bar frequency from at all. Never
+# applied unconditionally to every timeframe anymore -- see
+# `infer_periods_per_year()`.
+DEFAULT_PERIODS_PER_YEAR = 252
+
+_TRADING_DAYS_PER_YEAR = 252
+
+
+def infer_periods_per_year(index: pd.DatetimeIndex) -> int | None:
+    """Estimate how many bars a year of `index`'s own spacing implies.
+
+    `DECISIONS.md`, ADR-0038: annualizing every backtest's Sharpe ratio
+    with a flat 252 (trading days/year) silently assumed one candle
+    equals one trading day -- correct for daily bars, wrong by orders
+    of magnitude for intraday ones (a 1-minute return annualized as if
+    it were a full trading day's return wildly overstates Sharpe).
+    Estimates bars-per-day from the *median* gap between consecutive
+    timestamps (robust to the occasional weekend/holiday gap in daily
+    data), then scales by `_TRADING_DAYS_PER_YEAR` -- for daily bars
+    (median gap = 1 day) this reduces to exactly the historical 252
+    default; for intraday bars it scales up accordingly.
+
+    Deliberately calendar-time-based, not exchange-session-aware: it
+    does not know NYSE hours, holidays, or that crypto trades 24/7, so
+    intraday estimates are an order-of-magnitude-correct approximation,
+    not a precise one. Modeling actual trading-session length is real
+    future work (`ROADMAP.md`), not required to stop annualization from
+    being silently wrong for non-daily bars.
+
+    Returns:
+        `None` if `index` has fewer than 2 timestamps, or their median
+        gap is non-positive (degenerate input) -- callers should fall
+        back to `DEFAULT_PERIODS_PER_YEAR` in that case, the same way
+        `calculate_metrics`/`sharpe_ratio` do.
+    """
+    if len(index) < 2:
+        return None
+    median_gap = pd.Series(index).diff().median()
+    if pd.isna(median_gap) or median_gap <= pd.Timedelta(0):
+        return None
+    bars_per_day = pd.Timedelta(days=1) / median_gap
+    periods_per_year = round(bars_per_day * _TRADING_DAYS_PER_YEAR)
+    return max(periods_per_year, 1)
+
 
 def calculate_metrics(
     trades: list[Trade],
     equity_curve: pd.Series,
     initial_cash: float,
-    periods_per_year: int = 252,
+    periods_per_year: int | None = None,
 ) -> dict:
     """Compute the standard metrics set for a completed backtest.
+
+    Args:
+        periods_per_year: annualization factor for `sharpe`. Defaults to
+            `None`, which infers it from `equity_curve`'s own timestamp
+            spacing (`infer_periods_per_year`) -- correct for whatever
+            timeframe the backtest actually ran at, daily or intraday,
+            rather than silently assuming daily bars (`DECISIONS.md`,
+            ADR-0038). Pass an explicit value to override.
 
     Returns a dict with keys: `total_trades`, `win_rate`, `sharpe`,
     `total_return_pct`, `max_drawdown_pct`. `win_rate` and `sharpe` are
@@ -57,8 +111,20 @@ def calculate_metrics(
     }
 
 
-def sharpe_ratio(period_returns: pd.Series, periods_per_year: int = 252) -> float | None:
+def sharpe_ratio(
+    period_returns: pd.Series, periods_per_year: int | None = None
+) -> float | None:
     """Annualized Sharpe ratio (assumes zero risk-free rate).
+
+    Args:
+        periods_per_year: defaults to `None`, which infers the
+            annualization factor from `period_returns`'s own
+            `DatetimeIndex` (`infer_periods_per_year`), falling back to
+            `DEFAULT_PERIODS_PER_YEAR` (252) when that isn't possible
+            (e.g. too few observations, or a non-`DatetimeIndex`).
+            `DECISIONS.md`, ADR-0038: a flat, unconditional 252 here
+            silently assumed daily bars regardless of what timeframe
+            actually produced `period_returns`.
 
     Returns None if there are fewer than 2 return observations or the
     return series has zero variance (undefined Sharpe), rather than
@@ -69,6 +135,14 @@ def sharpe_ratio(period_returns: pd.Series, periods_per_year: int = 252) -> floa
     std = period_returns.std(ddof=0)
     if std == 0:
         return None
+    if periods_per_year is None:
+        index = period_returns.index
+        inferred = (
+            infer_periods_per_year(index)
+            if isinstance(index, pd.DatetimeIndex)
+            else None
+        )
+        periods_per_year = inferred if inferred is not None else DEFAULT_PERIODS_PER_YEAR
     return float((period_returns.mean() / std) * (periods_per_year ** 0.5))
 
 

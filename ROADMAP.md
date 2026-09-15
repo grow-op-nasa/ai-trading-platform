@@ -449,6 +449,72 @@ elsewhere in this file or explicitly out of scope for now.
 
 Both items that were blocking Sprint 6's close are now resolved.
 
+## Pre-Sprint 7 -- Timeframe-Agnostic Architecture Corrections ✅ Complete
+
+A targeted correction pass, not a redesign, requested ahead of Sprint 7:
+confirm the research/strategy architecture supports daily/swing,
+intraday, and minute-scale trading using the same conceptual
+Strategy/Backtester/ExperimentSpec interfaces, and fix only the
+assumptions that genuinely prevented it. Explicitly not building an HFT
+platform this round -- no tick feeds, order-book simulation, exchange
+co-location, or sub-millisecond execution infrastructure. See
+`DECISIONS.md`, ADR-0038.
+
+- ✅ **Reviewed and confirmed already timeframe-agnostic** (no change
+  needed): `Signal.timestamp`/`Trade.entry_time`/`exit_time`/
+  `ExperimentSpec.dataset_start`/`dataset_end` are all full-precision
+  `pd.Timestamp`, never truncated to a calendar date; the
+  `Strategy`/`BaseStrategy` contracts never assume one signal per day or
+  per candle; `Backtester`'s trade extraction, position series, and
+  equity curve already treat candles as an ordered row sequence, not
+  "one row = one trading day"; `CacheManager`'s CSV round-trip preserves
+  full timestamp precision (empirically verified); `YFinanceProvider`
+  never truncates time-of-day. ADR-0006 (timezone consistency, still
+  deferred) was left exactly as deferred -- no second, competing
+  timezone system was introduced.
+- ✅ **Fixed: hidden daily assumption in Sharpe annualization.**
+  `src/backtesting/metrics.py`'s `calculate_metrics()`/`sharpe_ratio()`
+  annualized every backtest with a hardcoded, unconditional `252`
+  regardless of actual bar size -- correct for daily bars, silently
+  wrong by orders of magnitude for intraday ones. New
+  `infer_periods_per_year()` estimates the annualization factor from the
+  data's own median timestamp spacing; daily-bar behavior is unchanged
+  (infers to exactly 252), intraday behavior is now
+  order-of-magnitude-correct rather than silently wrong. An explicit
+  override remains available on both the function and `Backtester`.
+- ✅ **Fixed: timeframe as a first-class, typed experiment concept.**
+  `ExperimentSpec.interval` was a bare `str` a caller could misspell,
+  and `scripts/run_experiment.py`'s `main()` recorded a hardcoded
+  `interval="1d"` independently of whatever `MarketDataService`
+  actually fetched (which defaults to intraday). `interval` is now a
+  typed `Interval` (`src/data/base.py`, the platform's pre-existing
+  timeframe enum -- reused, not duplicated); `scripts/run_experiment.py`
+  gained a `--interval` CLI flag threaded through to both the fetch and
+  the recorded spec, so the two can never silently disagree.
+- ✅ **Contract tests**: `tests/test_timeframe_agnostic.py` (6 tests) --
+  the identical `EMACrossStrategy` code and pipeline wiring run against
+  daily and 1-minute fixtures unmodified; two signals six minutes apart
+  within one trading session both survive as a single precisely-timed
+  trade (no artificial one-signal-per-session limit); a 5.5-minute
+  intraday hold attributes to exactly `pd.Timedelta(minutes=5,
+  seconds=30)`, not zero or a date-level bucket; `infer_periods_per_year()`
+  returns 252 for daily spacing (unchanged) and two orders of magnitude
+  higher for 1-minute spacing; `ExperimentSpec.interval` is confirmed a
+  typed `Interval` that round-trips through the registry and rejects an
+  unrecognized string.
+
+**Explicitly not built this round:** live intraday or second-scale
+trading of any kind; tick feeds; order-book simulation; exchange
+co-location; high-frequency execution; sub-millisecond latency
+infrastructure; sophisticated market microstructure models; a
+session-aware (exchange-hours-precise) annualization refinement for
+`infer_periods_per_year()` (it is a calendar-time approximation,
+order-of-magnitude-correct for intraday, not exchange-session-precise);
+any change to broker interfaces (`src/broker` was reviewed and found to
+need none). **This is architectural readiness, not new functionality**
+-- no real intraday data has been run through `scripts/run_experiment.py`
+against a live provider yet, only through synthetic fixtures.
+
 ## Sprint 7 -- Analytics & Dashboard (planned)
 
 - `src/analytics/`: backtest performance metrics (Sharpe, drawdown,
@@ -504,3 +570,25 @@ Both items that were blocking Sprint 6's close are now resolved.
   driven by the same signals, not as part of `Backtester.run()` itself.
   Wiring these together is real future work, deliberately not done in
   Sprint 6 (out of scope: "sophisticated risk models").
+- **Session-aware Sharpe annualization**: `infer_periods_per_year()`
+  (Pre-Sprint 7, `DECISIONS.md` ADR-0038) is a calendar-time
+  approximation -- it doesn't know NYSE trading hours, market holidays,
+  or that some markets trade 24/7, so intraday annualization is
+  order-of-magnitude-correct, not exchange-session-precise. A future,
+  more precise version is real future work, not required to stop
+  annualization from being silently wrong the way the old flat `252`
+  default was for non-daily bars.
+- **Advanced execution/data layer for second-scale strategies**: the
+  product requirement behind ADR-0038 explicitly names potential future
+  second-scale strategies, gated on "a future advanced execution/data
+  layer" -- tick feeds, order-book simulation, exchange co-location,
+  high-frequency execution, and sub-millisecond latency infrastructure
+  are all explicitly not built and not scheduled. ADR-0038's job was
+  only to confirm the research/strategy architecture doesn't
+  architecturally prevent that layer from being added later, not to
+  build it.
+- **Real intraday data exercised end to end**: `tests/test_timeframe_agnostic.py`
+  proves the pipeline against synthetic daily/1-minute fixtures;
+  `scripts/run_experiment.py --interval 1m` has not yet been run against
+  a live provider. Worth doing once there's an actual intraday research
+  question to answer, not scheduled on its own.

@@ -47,6 +47,7 @@ graph TD
     signals --> experiments
     strategies --> experiments
     risk --> experiments
+    data --> experiments
     utils --> strategies
     utils --> experiments
     backtesting --> attribution
@@ -151,6 +152,36 @@ together without a cycle).
 parent of the whole system. That's deliberate: an AI-generated signal
 should be swappable for a rule-based one without touching risk,
 execution, or the dashboard.
+
+`data --> experiments` is new in Pre-Sprint 7 (`DECISIONS.md`,
+ADR-0038): `ExperimentSpec.interval` is now typed as `src.data.base
+.Interval` rather than a bare string, so `src/experiments` depends on
+`src/data` for that one type the same way it already depends on
+`src/strategies`/`src/risk` for theirs. `src/data` gained no dependency
+on `src/experiments` in return.
+
+**Timeframe-agnostic by design (`DECISIONS.md`, ADR-0038):** the
+research and strategy layers -- `data`, `signals`, `strategies`,
+`backtesting`, `experiments`, `attribution` -- do not assume daily
+bars. The same `Strategy`/`Backtester`/`ExperimentSpec` interfaces
+support `SPY/1d`, `SPY/1m`, and anything in between, using full
+`pd.Timestamp` precision throughout (no candle timestamp is ever
+truncated to a calendar date) and a `Signal`/`Trade` model with no
+one-decision-per-day limit. This is architectural readiness for
+daily/swing, intraday, and minute-scale research today, with room for a
+future advanced execution/data layer to support second-scale strategies
+without a rewrite -- **it is not** an implemented live-trading
+capability at any of those timescales: there is no tick feed,
+order-book simulation, exchange co-location, or sub-millisecond
+execution infrastructure, and none is planned as part of this
+correction. See ADR-0038 for exactly what was found already correct,
+what was fixed, and what remains explicitly future work.
+
+**Explicit capability statement, so this is never overstated:**
+minute-level intraday research/trading is the current architectural
+target. Tick-level and second-level execution infrastructure is not
+implemented. High-frequency trading (HFT) remains explicit future
+work, not a supported capability today.
 
 ## Module reference
 
@@ -432,7 +463,23 @@ ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
     `entry_signal_id`/`exit_signal_id: UUID`, not by embedding the
     `Signal` objects -- see ADR-0015/ADR-0016), `BacktestResult`.
   - `metrics.py` -- `calculate_metrics()`, `sharpe_ratio()`,
-    `max_drawdown()`, each independently testable.
+    `max_drawdown()`, `infer_periods_per_year()` (Pre-Sprint 7,
+    `DECISIONS.md` ADR-0038), each independently testable.
+    `infer_periods_per_year(index)` estimates a Sharpe annualization
+    factor from a `DatetimeIndex`'s own median timestamp spacing --
+    daily bars infer to the historical `252` default unchanged;
+    intraday bars scale up accordingly, correcting what used to be a
+    flat, unconditional `252` regardless of actual bar size.
+    `calculate_metrics()`/`sharpe_ratio()`'s `periods_per_year` defaults
+    to `None` (infer) with an explicit override still accepted.
+
+  Timeframe-agnostic by construction (ADR-0038): nothing in `engine.py`
+  or `metrics.py` treats a row as "one trading day" -- trade extraction,
+  the position series, the equity curve, and now Sharpe annualization
+  all derive from `candles`' own timestamps, so the identical
+  `Backtester` runs daily, hourly, or 1-minute candles unmodified.
+  `Backtester.__init__` accepts an optional `periods_per_year` override
+  for callers that want to bypass inference.
 
   `Signal` gaining a required `symbol` field (`DECISIONS.md`, ADR-0033)
   required zero changes here -- `Backtester` passes `Signal` objects
@@ -943,33 +990,43 @@ reproducibility seam.
 - **Depends on:** `src/signals` (for `Signal`/`SignalDirection`);
   as of Sprint 6, also `src/strategies` and `src/risk` (both only via
   `ExperimentSpec`'s own type -- see "The experiment specification"
-  below).
+  below); as of Pre-Sprint 7, also `src/data` (for the `Interval` type
+  -- see below).
 
 **The experiment specification** (`src/experiments/spec.py`, Sprint 6,
-`DECISIONS.md` ADR-0035): `ExperimentSpec` is an immutable dataclass
-capturing `strategy_name`, `strategy_version`, `strategy_params`,
-`symbol`, `interval`, `dataset_start`/`dataset_end` (from the actual
-candles used, not the requested range), `dataset_source`,
-`dataset_fingerprint`, `risk_config`, and a currently-always-empty
-`backtest_config` placeholder (`Backtester.run()` takes no
-configuration today, ADR-0011). `ExperimentSpec.capture(strategy,
-candles, risk_limits, symbol=..., interval=..., dataset_source=...)`
-builds one from a strategy instance and the candles it ran against --
-`strategy_version` comes from `src.strategies.identity.strategy_version`,
-`dataset_fingerprint` from `src.utils.hashing.dataframe_fingerprint`,
-and `strategy_params` from the strategy's own `params` property
-(`BaseStrategy`, above) unless overridden. `reconstruct_strategy()`
-looks the class back up via `src.strategies.registry.get_strategy_class`
-and constructs it with `symbol=self.symbol, **self.strategy_params` --
-the "reconstructed from its stored definition" requirement.
-`verify_strategy_version()` and `verify_dataset(candles)` each return
-`bool`, not raise -- a `False` (implementation or data has drifted
-since capture) is an expected, meaningful answer, not an error. Depends
-on `src/strategies` (for `Strategy`, `strategy_version`,
-`get_strategy_class`), `src/risk` (for `RiskLimits`'s type), and
-`src/utils` (for `dataframe_fingerprint`) -- all upstream, so this
-introduces no cycle; neither `src/strategies` nor `src/risk` gained any
-dependency on `src/experiments` in return.
+`DECISIONS.md` ADR-0035; timeframe typed in Pre-Sprint 7, ADR-0038):
+`ExperimentSpec` is an immutable dataclass capturing `strategy_name`,
+`strategy_version`, `strategy_params`, `symbol`, `interval` (a typed
+`Interval` -- `src/data/base.py`'s pre-existing timeframe enum, not a
+bare string; `__post_init__` normalizes a plain string input like
+`"1m"` automatically, raising `ValueError` on an unrecognized value),
+`dataset_start`/`dataset_end` (from the actual candles used, not the
+requested range), `dataset_source`, `dataset_fingerprint`,
+`risk_config`, and a currently-always-empty `backtest_config`
+placeholder (`Backtester.run()` takes no configuration today,
+ADR-0011). `ExperimentSpec.capture(strategy, candles, risk_limits,
+symbol=..., interval=..., dataset_source=...)` builds one from a
+strategy instance and the candles it ran against -- `interval` accepts
+`Interval | str` for convenience; `strategy_version` comes from
+`src.strategies.identity.strategy_version`, `dataset_fingerprint` from
+`src.utils.hashing.dataframe_fingerprint`, and `strategy_params` from
+the strategy's own `params` property (`BaseStrategy`, above) unless
+overridden. `reconstruct_strategy()` looks the class back up via
+`src.strategies.registry.get_strategy_class` and constructs it with
+`symbol=self.symbol, **self.strategy_params` -- the "reconstructed from
+its stored definition" requirement. `verify_strategy_version()` and
+`verify_dataset(candles)` each return `bool`, not raise -- a `False`
+(implementation or data has drifted since capture) is an expected,
+meaningful answer, not an error. Depends on `src/strategies` (for
+`Strategy`, `strategy_version`, `get_strategy_class`), `src/risk` (for
+`RiskLimits`'s type), `src/data` (for `Interval`), and `src/utils` (for
+`dataframe_fingerprint`) -- all upstream, so this introduces no cycle;
+none of `src/strategies`, `src/risk`, or `src/data` gained any
+dependency on `src/experiments` in return. `ExperimentRegistry.save_spec()`/
+`_row_to_spec()` (`registry.py`) store/restore `spec.interval.value`/
+`Interval(row["interval"])` so the typed value survives a SQLite
+round-trip intact -- `SPY/1d` and `SPY/1m` are distinct, unambiguous
+experiments, never conflated by an untyped or mistyped interval string.
 
 ### `src/cli`
 
@@ -1038,19 +1095,28 @@ platform's modules together end to end for a person to actually run,
 without the platform committing to that wiring as a stable interface.
 
 - **Key files:**
-  - `run_experiment.py` (Sprint 6, ADR-0037) -- wires one experiment
-    through the entire pipeline: Strategy -> Backtest -> Risk ->
-    Execution -> Attribution -> Research Report -> Experiment Registry
-    (including `ExperimentSpec`). `run_experiment(strategy_name, symbol,
-    candles, ...)` is a plain, network-free function -- directly unit
-    tested (`tests/test_run_experiment_script.py`) against both
+  - `run_experiment.py` (Sprint 6, ADR-0037; timeframe-agnostic since
+    Pre-Sprint 7, ADR-0038) -- wires one experiment through the entire
+    pipeline: Strategy -> Backtest -> Risk -> Execution -> Attribution
+    -> Research Report -> Experiment Registry (including
+    `ExperimentSpec`). `run_experiment(strategy_name, symbol, candles,
+    interval=..., ...)` is a plain, network-free function -- directly
+    unit tested (`tests/test_run_experiment_script.py`) against both
     registered strategies. `main()` is a thin argparse CLI wrapper and
     the only code path that touches the network
     (`MarketDataService().get_history(...)`, imported lazily inside
-    `main()` itself). Run as `python scripts/run_experiment.py --symbol
-    SPY --strategy ema_cross`.
+    `main()` itself). `--interval` (default `"1d"`, choices constrained
+    to `Interval`'s own values) is threaded through to *both* the actual
+    candle fetch and the recorded `ExperimentSpec`, so the two can never
+    silently disagree -- a real gap ADR-0038 found and closed (`main()`
+    previously fetched via `MarketDataService`'s own intraday-capable
+    default while unconditionally recording `interval="1d"` regardless).
+    Run as `python scripts/run_experiment.py --symbol SPY --strategy
+    ema_cross --interval 1m --period 5d` for a minute-scale run, or omit
+    `--interval` for the daily default.
 - **Depends on:** every pipeline capability it wires together --
   `src/strategies`, `src/backtesting`, `src/risk`, `src/execution`,
-  `src/attribution`, `src/research`, `src/experiments`, and (only inside
-  `main()`) `src/data`. Nothing in `src/` depends on `scripts/` --
-  dependency direction is strictly one-way, the same as `tests/`.
+  `src/attribution`, `src/research`, `src/experiments`, `src/data` (for
+  `Interval`, and inside `main()` for `MarketDataService`). Nothing in
+  `src/` depends on `scripts/` -- dependency direction is strictly
+  one-way, the same as `tests/`.

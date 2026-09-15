@@ -21,6 +21,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from src.data.base import Interval
 from src.experiments.registry import ExperimentRegistry
 from src.risk.models import RiskLimits
 from scripts.run_experiment import ExperimentRunResult, _parse_args, run_experiment
@@ -64,6 +65,10 @@ def test_run_experiment_with_ema_cross(tmp_path):
     assert run_result.result.trades  # sanity check: this fixture must produce trades
     assert run_result.spec.strategy_name == "ema_cross"
     assert run_result.spec.symbol == "SPY"
+    # interval defaults to "1d" (a plain string) and comes back as the
+    # typed Interval -- ExperimentSpec's own normalization, not
+    # something run_experiment() has to do itself (DECISIONS.md, ADR-0038).
+    assert run_result.spec.interval == Interval.DAY_1
     assert run_result.attribution.total_trades == len(run_result.result.trades)
     assert run_result.report.findings is not None
 
@@ -141,17 +146,30 @@ def test_parse_args_defaults():
     assert args.symbol == "SPY"
     assert args.strategy == "ema_cross"
     assert args.period == "2y"
+    assert args.interval == "1d"
     assert args.allocation == 0.10
 
 
 def test_parse_args_explicit_values():
     args = _parse_args(
-        ["--symbol", "QQQ", "--strategy", "rsi_mean_reversion", "--period", "6mo", "--allocation", "0.2"]
+        [
+            "--symbol", "QQQ",
+            "--strategy", "rsi_mean_reversion",
+            "--period", "6mo",
+            "--interval", "1m",
+            "--allocation", "0.2",
+        ]
     )
     assert args.symbol == "QQQ"
     assert args.strategy == "rsi_mean_reversion"
     assert args.period == "6mo"
+    assert args.interval == "1m"
     assert args.allocation == 0.2
+
+
+def test_parse_args_rejects_unrecognized_interval():
+    with pytest.raises(SystemExit):
+        _parse_args(["--interval", "not_a_real_interval"])
 
 
 def test_parse_args_rejects_unregistered_strategy_choice():

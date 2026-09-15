@@ -11,6 +11,99 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Pre-Sprint 7 -- 2026-09-15, Timeframe-Agnostic Architecture Corrections
+
+A targeted correction pass, not a redesign, requested ahead of Sprint 7:
+confirm the research/strategy architecture built in Sprints 2-6
+genuinely supports daily, intraday, and minute-scale trading, and fix
+only the assumptions that actually prevented it. Not an HFT platform,
+and not building one this round -- no tick feeds, order-book
+simulation, or microstructure modeling. See `DECISIONS.md`, ADR-0038
+for the full architecture review and reasoning.
+
+### Added
+
+- `src/backtesting/metrics.py`: `infer_periods_per_year(index)` --
+  estimates a Sharpe annualization factor from a `DatetimeIndex`'s own
+  median timestamp spacing (252 for daily bars, scaled up accordingly
+  for intraday ones) instead of a hardcoded, timeframe-blind constant.
+- `Backtester.__init__(..., periods_per_year=None)` -- optional explicit
+  override; defaults to inferring from `candles` at `run()` time.
+- `scripts/run_experiment.py`: `--interval` CLI flag (choices
+  constrained to `Interval`'s own values), threaded through to both the
+  actual candle fetch and the recorded `ExperimentSpec` so the two can
+  never silently disagree.
+- `tests/test_timeframe_agnostic.py` (6 tests): the same
+  `EMACrossStrategy` code and pipeline wiring run against daily and
+  1-minute fixtures unmodified; two signals six minutes apart within
+  one trading session both survive as a single precisely-timed trade;
+  a 5.5-minute intraday hold attributes correctly (not zero, not
+  date-truncated); `infer_periods_per_year()` returns 252 for daily
+  spacing and two orders of magnitude higher for 1-minute spacing;
+  `ExperimentSpec.interval` is confirmed a typed `Interval` that
+  round-trips through the registry and rejects an unrecognized string.
+- `tests/test_intraday_acceptance.py` (9 tests): direct, literal
+  evidence against this correction's formal Acceptance Criteria (see
+  the sprint completion report), one test per criterion that needed a
+  dedicated check rather than being already covered elsewhere --
+  intraday timestamps to the second surviving data through a trade
+  unchanged (using the AC's own `09:42:13` example), two same-day
+  signals both retained with distinct ids (`09:42:13`/`09:47:51`), no
+  lookahead at 1-minute granularity, two experiments from different
+  strategy classes carrying different fingerprints once persisted and
+  reloaded from the registry, two experiments with an identical
+  symbol/timeframe/range/source descriptor but revised candle content
+  coexisting under different dataset hashes, a `typing.get_type_hints()`
+  check that `Signal`/`Trade`/`ExperimentSpec`'s timestamp fields are
+  `pd.Timestamp` (not `datetime.date`) and that signal generation has
+  no artificial one-per-day cap, a full 1-minute strategy-to-attribution
+  run, and a check that `ARCHITECTURE.md` states the minute-level-is-
+  current / HFT-is-future-work capability boundary in those words.
+
+### Changed
+
+- `ExperimentSpec.interval` is now a typed `Interval`
+  (`src/data/base.py`, the platform's pre-existing timeframe enum), not
+  a bare `str` -- `__post_init__` normalizes a plain string input (e.g.
+  `"1m"`) automatically, raising `ValueError` on an unrecognized value.
+  `capture()`'s `interval` parameter accepts `Interval | str` for the
+  same convenience. `ExperimentRegistry.save_spec()`/`get_spec()` store
+  and restore the typed value intact.
+- `calculate_metrics()`/`sharpe_ratio()` (`src/backtesting/metrics.py`):
+  `periods_per_year` default changed from a hardcoded `252` to `None`
+  (infer from the data); an explicit int is still accepted and always
+  wins. Daily-bar behavior is byte-for-byte unchanged (median 1-day
+  spacing infers to exactly 252); intraday behavior is corrected from
+  silently, drastically wrong to order-of-magnitude-correct.
+- `scripts/run_experiment.py`'s `main()` summary print no longer calls
+  `spec.dataset_start.date()` (which discarded time-of-day) -- prints
+  the full timestamp instead.
+
+### Verified
+
+- Reviewed and found already timeframe-agnostic, no change needed:
+  `Signal.timestamp`/`Trade.entry_time`/`exit_time`/
+  `ExperimentSpec.dataset_start`/`dataset_end` (all full-precision
+  `pd.Timestamp`); the `Strategy`/`BaseStrategy` contracts (no
+  one-signal-per-day assumption anywhere); `Backtester`'s trade
+  extraction, position series, and equity curve (already row-based, not
+  calendar-day-based); `CacheManager`'s CSV round-trip (empirically
+  confirmed: 1-minute `DatetimeIndex` survives with full precision);
+  `YFinanceProvider._normalize()` (strips timezone, never truncates
+  time-of-day). ADR-0006 (timezone consistency, still deferred) is
+  unaffected -- no second, competing timezone system was introduced.
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6,
+  pytest 9.1.1): **402 passed in 1.12s**, all green -- up from the
+  Sprint 6 baseline of 386 (392 after the initial architecture
+  corrections, 402 after adding `tests/test_intraday_acceptance.py`'s
+  formal Acceptance Criteria evidence). The
+  `test_python_version_passes_against_running_interpreter` failure seen
+  in the sandbox run was confirmed environment-only, as expected -- it
+  passes on the dev machine's pinned interpreter.
+- Formal Acceptance Criteria (AC-01 through AC-19) evidence: see the
+  sprint completion report delivered alongside this entry, citing the
+  exact test/file/assertion satisfying each criterion.
+
 ## Sprint 6 (complete) -- 2026-09-15, Research Pipeline & Experiment Integrity (part 2, close-out)
 
 Closes both items left open at the end of part 1 (`ROADMAP.md`'s

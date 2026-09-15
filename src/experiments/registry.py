@@ -48,6 +48,7 @@ from uuid import UUID
 
 import pandas as pd
 
+from src.data.base import Interval
 from src.experiments.models import Experiment
 from src.experiments.spec import ExperimentSpec
 from src.signals.models import Signal, SignalDirection
@@ -273,7 +274,7 @@ class ExperimentRegistry:
                     spec.strategy_version,
                     json.dumps(spec.strategy_params),
                     spec.symbol,
-                    spec.interval,
+                    spec.interval.value,
                     spec.dataset_start.isoformat(),
                     spec.dataset_end.isoformat(),
                     spec.dataset_source,
@@ -315,7 +316,7 @@ def _row_to_spec(row: sqlite3.Row) -> ExperimentSpec:
         strategy_version=row["strategy_version"],
         strategy_params=json.loads(row["strategy_params"]),
         symbol=row["symbol"],
-        interval=row["interval"],
+        interval=Interval(row["interval"]),
         dataset_start=pd.Timestamp(row["dataset_start"]),
         dataset_end=pd.Timestamp(row["dataset_end"]),
         dataset_source=row["dataset_source"],

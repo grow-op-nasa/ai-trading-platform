@@ -21,7 +21,9 @@ ADR-0035).
     stored.verify_strategy_version()                        # False if the code changed since
     stored.verify_dataset(fresh_candles)                     # False if the data changed since
 
-Two identity problems this closes, both described in ADR-0035:
+Three identity problems this closes, the first two described in
+ADR-0035, the third added by ADR-0038 (timeframe-agnostic architecture
+corrections):
 
 1. **Strategy identity.** "EMA Cross, fast=12, slow=26" run today and
    run again after `EMACrossStrategy`'s implementation changes six
@@ -35,6 +37,14 @@ Two identity problems this closes, both described in ADR-0035:
    is identical. `dataset_fingerprint` hashes the actual candle values
    used (`src.utils.hashing.dataframe_fingerprint`), not just the
    request that produced them.
+3. **Timeframe identity.** `SPY, 1d` and `SPY, 1m` are different
+   experiments even when everything else about the request is
+   identical -- `interval` is a required, typed `Interval` value
+   (`src/data/base.py`), not a bare string an author could typo or a
+   detail silently inferred from whatever `candles` happens to look
+   like. This is what makes the platform's research/strategy layer
+   genuinely timeframe-agnostic rather than implicitly daily-shaped
+   (`DECISIONS.md`, ADR-0038).
 
 Deliberately **not** a complete reproducibility system: no dataset
 snapshotting or storage, no strategy source-code archival, no git/
@@ -50,6 +60,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.data.base import Interval
 from src.risk.models import RiskLimits
 from src.strategies.base import Strategy
 from src.strategies.identity import strategy_version
@@ -75,7 +86,15 @@ class ExperimentSpec:
             (`BaseStrategy.params`, `DECISIONS.md` ADR-0035), or passed
             explicitly for strategies that don't expose one.
         symbol: the instrument this experiment ran against.
-        interval: the candle interval requested (e.g. `"1d"`).
+        interval: the candle timeframe this experiment ran at -- a typed
+            `Interval` (`src/data/base.py`, ADR-0038), not a bare
+            string. `capture()` and direct construction both accept a
+            plain string (e.g. `"1d"`, `"1m"`) for convenience;
+            `__post_init__` normalizes it to `Interval` immediately, so
+            every consumer of a constructed `ExperimentSpec` can rely on
+            `.interval` always being the enum, never a string an author
+            could misspell. `SPY/1d` and `SPY/1m` are different
+            experiments even when every other field matches.
         dataset_start: the timestamp of the first candle actually used
             (from the data itself, not the requested range -- these can
             differ, e.g. a range starting on a non-trading day).
@@ -92,15 +111,16 @@ class ExperimentSpec:
             one later doesn't require widening `ExperimentSpec`'s shape.
 
     Raises:
-        ValueError: any string field is empty, or `dataset_start` is
-            after `dataset_end`.
+        ValueError: any string field is empty, `interval` isn't a
+            recognized `Interval` value, or `dataset_start` is after
+            `dataset_end`.
     """
 
     strategy_name: str
     strategy_version: str
     strategy_params: dict[str, Any]
     symbol: str
-    interval: str
+    interval: Interval
     dataset_start: pd.Timestamp
     dataset_end: pd.Timestamp
     dataset_source: str
@@ -113,12 +133,17 @@ class ExperimentSpec:
             "strategy_name",
             "strategy_version",
             "symbol",
-            "interval",
             "dataset_source",
             "dataset_fingerprint",
         ):
             if not getattr(self, attr):
                 raise ValueError(f"{attr} must be non-empty")
+        # Normalize a plain string (e.g. "1d") to the typed Interval --
+        # frozen dataclass, so __setattr__ is bypassed deliberately
+        # (the standard pattern for post-init normalization on a frozen
+        # dataclass). Raises ValueError via Interval's own Enum lookup
+        # if the string isn't a recognized timeframe.
+        object.__setattr__(self, "interval", Interval(self.interval))
         if self.dataset_start > self.dataset_end:
             raise ValueError(
                 f"dataset_start ({self.dataset_start}) is after "
@@ -133,7 +158,7 @@ class ExperimentSpec:
         risk_limits: RiskLimits,
         *,
         symbol: str,
-        interval: str,
+        interval: Interval | str,
         dataset_source: str,
         backtest_config: dict[str, Any] | None = None,
         strategy_params: dict[str, Any] | None = None,
@@ -152,7 +177,12 @@ class ExperimentSpec:
             symbol: the instrument traded. Not read off `strategy`
                 itself -- only `BaseStrategy` subclasses expose a
                 `.symbol`, and this must work for any `Strategy`.
-            interval: the candle interval requested.
+            interval: the candle timeframe `candles` was requested at
+                (e.g. `Interval.MINUTE_1` or `"1m"`) -- the caller states
+                this explicitly; it is never inferred from `candles`
+                itself (`DECISIONS.md`, ADR-0038), since a DataFrame's
+                own index spacing can be ambiguous (a thin dataset, a
+                holiday gap) in a way the request that produced it isn't.
             dataset_source: where `candles` came from.
             backtest_config: reserved; defaults to `{}`.
             strategy_params: overrides `strategy.params` (from

@@ -1,6 +1,35 @@
 # Project State
 
-_Last updated: 2026-09-15 -- **Sprint 6 (Research Pipeline & Experiment
+_Last updated: 2026-09-15 -- **Pre-Sprint 7: the research/strategy
+architecture is now confirmed timeframe-agnostic** (`DECISIONS.md`,
+ADR-0038). The platform architecturally supports daily/swing, intraday,
+and minute-scale trading using the same conceptual Strategy/Backtester/
+ExperimentSpec interfaces -- SPY/1d and SPY/1m run through the identical
+`EMACrossStrategy` code unmodified. Two genuine gaps were found and
+fixed: `calculate_metrics()`/`sharpe_ratio()` (`src/backtesting/metrics.py`)
+annualized every backtest with a hardcoded `252` (trading days/year)
+regardless of actual bar size -- silently wrong for intraday data --
+now inferred from the candles' own timestamp spacing
+(`infer_periods_per_year()`), unchanged for daily bars; and
+`ExperimentSpec.interval` was an untyped, independently-hardcoded
+string -- now a typed `Interval` (`src/data/base.py`), with
+`scripts/run_experiment.py` gaining a `--interval` flag so the fetched
+data and the recorded experiment timeframe can never silently disagree.
+Everything else inspected -- `Signal`/`Trade`/`ExperimentSpec` timestamp
+precision, the `Strategy` contract, `Backtester`'s row-based execution
+model, `CacheManager`'s CSV round-trip, `YFinanceProvider`'s
+normalization -- was already timeframe-agnostic and required no change.
+**This is architectural readiness, not new functionality**: no live
+intraday trading, no tick feeds, no order-book simulation, and no
+second-scale/HFT execution were built or are implemented -- those
+remain explicitly future work. A formal Acceptance Criteria document
+(AC-01 through AC-19) was subsequently supplied and closed with 9
+dedicated tests (`tests/test_intraday_acceptance.py`) providing
+literal, per-criterion evidence -- see the sprint completion report.
+Confirmed via real `pytest` on the dev machine (Python 3.14.6):
+**402 passed in 1.12s**, all green._
+
+_**Sprint 6 (Research Pipeline & Experiment
 Integrity) is complete.** Part 2 closed both items left open at the end
 of part 1: `RSIMeanReversionStrategy` (`src/strategies/rsi_mean_reversion.py`,
 registered as `"rsi_mean_reversion"`) is the platform's second permanent
@@ -386,6 +415,38 @@ For why things were built the way they were, see `DECISIONS.md`.
   (Python 3.14.6): 329 passed, all green. See `DECISIONS.md`, ADR-0031
   through ADR-0034; `CHANGELOG.md`, "Pre-Sprint 6 -- Architecture
   Review Cleanup."
+- ✅ Pre-Sprint 7 -- Timeframe-Agnostic Architecture Corrections
+  (`DECISIONS.md`, ADR-0038). A review confirmed the research/strategy
+  architecture already supported daily and intraday timeframes almost
+  everywhere -- `Signal`/`Trade`/`ExperimentSpec` timestamps are all
+  full-precision `pd.Timestamp`, the `Strategy` contract never assumes
+  one signal per day, and `Backtester` already treats candles as an
+  ordered row sequence rather than "one row = one trading day" -- and
+  fixed the two genuine gaps found: `calculate_metrics()`/
+  `sharpe_ratio()` (`src/backtesting/metrics.py`) annualized Sharpe with
+  a hardcoded `252` regardless of actual bar size (now inferred from
+  the data's own timestamp spacing via `infer_periods_per_year()`,
+  unchanged for daily bars, corrected for intraday); and
+  `ExperimentSpec.interval` was an untyped string independently
+  hardcoded in `scripts/run_experiment.py` (now a typed `Interval`,
+  `src/data/base.py`, with a `--interval` CLI flag threading the same
+  value to both the fetch and the recorded spec). New
+  `tests/test_timeframe_agnostic.py` (6 tests) proves the identical
+  `EMACrossStrategy` code runs against daily and 1-minute fixtures
+  unmodified, two signals minutes apart within one session both survive
+  as a single precisely-timed trade, a 5.5-minute intraday hold
+  attributes correctly, and Sharpe annualization now scales with bar
+  frequency. **Architectural readiness, not new functionality**: no
+  live intraday trading, tick feeds, order-book simulation, or
+  second-scale/HFT execution were built -- those remain explicit future
+  work. Extension Cost: 4 existing files touched
+  (`src/backtesting/metrics.py`, `src/backtesting/engine.py`,
+  `src/experiments/spec.py`, `src/experiments/registry.py`) plus
+  `scripts/run_experiment.py`, plus `tests/test_intraday_acceptance.py`
+  (9 tests) providing literal, per-criterion evidence against the
+  formal Acceptance Criteria (AC-01 through AC-19) document. Confirmed
+  via real `pytest` on the dev machine: **402 passed in 1.12s**, all
+  green.
 - ✅ Sprint 6 part 2 -- Research Pipeline & Experiment Integrity
   close-out (`DECISIONS.md`, ADR-0037). `RSIMeanReversionStrategy`
   (`src/strategies/rsi_mean_reversion.py`), registered as
@@ -443,6 +504,20 @@ For why things were built the way they were, see `DECISIONS.md`.
 
 ## Current Module
 
+**Pre-Sprint 7: the research/strategy architecture is confirmed
+timeframe-agnostic.** `calculate_metrics()`/`sharpe_ratio()` no longer
+hardcode a daily annualization factor; `ExperimentSpec.interval` is now
+a typed `Interval`; `scripts/run_experiment.py`'s `--interval` flag
+keeps the fetched data and the recorded experiment timeframe in sync.
+Confirmed via real `pytest` on the dev machine (Python 3.14.6):
+**402 passed in 1.12s**, all green. This is architectural readiness
+for daily/swing, intraday, and minute-scale research -- no live
+intraday trading, tick feeds, or second-scale/HFT execution exist or
+were built. See `DECISIONS.md`, ADR-0038. A subsequent formal
+Acceptance Criteria document (AC-01 through AC-19) is closed with
+`tests/test_intraday_acceptance.py` (9 tests) -- see the sprint
+completion report for the full AC -> test mapping.
+
 **Sprints 3, 4 and 5 are complete and confirmed, and the Pre-Sprint 6
 architecture review cleanup is complete and confirmed.** `src/broker/`
 connectivity, order submission, and order cancellation for Alpaca,
@@ -473,9 +548,10 @@ suite against the live yfinance API.
 
 ## Next Task
 
-Sprint 6 is closed and confirmed (386 passed via real `pytest` on the
-dev machine). Begin Sprint 7 (Analytics & Dashboard). Separately
-available, none yet explicitly requested: setting
+Pre-Sprint 7's timeframe-agnostic corrections and formal Acceptance
+Criteria evidence are confirmed (402 passed in 1.12s, all green via
+real `pytest`) -- begin Sprint 7 (Analytics & Dashboard).
+Separately available, none yet explicitly requested: setting
 `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
 `TigerBroker.get_account()` against a real Tiger paper account; setting
 `IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD` to exercise `IGBroker` against
@@ -594,11 +670,23 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
   together) -- scope deliberately held stable during the Pre-Sprint 6
   cleanup rather than expanded speculatively. Noted as future evolution
   in `src/experiments/registry.py`'s docstring and `ROADMAP.md`.
+- `infer_periods_per_year()` (`DECISIONS.md`, ADR-0038) is a
+  calendar-time approximation, not an exchange-session-aware one -- it
+  doesn't know NYSE hours, market holidays, or that some markets trade
+  24/7, so intraday Sharpe annualization is order-of-magnitude-correct,
+  not precise. A future, session-aware version is real future work, not
+  required to stop annualization from being silently wrong the way the
+  flat `252` default was. Relatedly, no live intraday data has actually
+  been run through `scripts/run_experiment.py` against a real provider
+  yet -- only through synthetic daily/1-minute fixtures in
+  `tests/test_timeframe_agnostic.py` -- so intraday support is
+  confirmed architecturally, not yet exercised end to end against real
+  market data.
 
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 386 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 402 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 12 backtesting + 21 experiments
                           # + 29 cli/doctor + 13 signals + 13 strategy_sdk + 8 attribution
                           # + 17 research + 11 ema_cross_strategy + 17 risk + 19 execution
@@ -606,12 +694,21 @@ pytest                    # should show 386 passed (7 config + 15 market data + 
                           # + 11 reconciliation + 31 ig + 15 tiger + 9 architecture
                           # + 5 portfolio + 6 hashing + 9 strategy_registry
                           # + 12 experiment_spec + 3 pipeline_contract
-                          # + 14 rsi_mean_reversion_strategy + 7 run_experiment_script)
+                          # + 14 rsi_mean_reversion_strategy + 8 run_experiment_script
+                          # + 6 timeframe_agnostic + 9 intraday_acceptance)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until
                           # ALPACA_API_KEY/ALPACA_API_SECRET are set)
 ```
 
-Confirmed via real `pytest` on the dev machine (Python 3.14.6): 386
-passed in 0.92s, all green.
+Confirmed via real `pytest` on the dev machine (Python 3.14.6,
+pytest 9.1.1): **402 passed in 1.12s**, all green. (Sandbox run,
+stub-based runner, showed 401 passed / 1 known environment-only
+failure -- `test_python_version_passes_against_running_interpreter`
+fails only when the sandbox's Python version differs from the dev
+machine's pin; confirmed passing for real here, as expected.)
+
+_Historical: confirmed via real `pytest` on the dev machine (Python
+3.14.6) as of the prior (Sprint 6 part 2) entry: 386 passed in 0.92s,
+all green._

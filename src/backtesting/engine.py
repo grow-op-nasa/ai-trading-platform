@@ -25,6 +25,16 @@ attributed to that signal (see `_compute_equity_curve`), even though
 the signal's own bar close is used as its trade's entry/exit price --
 the same convention ADR-0011 established, just expressed over a sparse
 signal list instead of a dense column.
+
+Timeframe-agnostic by construction (`DECISIONS.md`, ADR-0038): every
+operation here -- trade extraction, the position series, the equity
+curve -- treats `candles` as an ordered sequence of rows with real
+timestamps, never as "one row = one trading day." The same `Backtester`
+runs daily bars, 1-minute bars, or anything in between without special
+cases; `_compute_equity_curve`'s Sharpe annualization infers its own
+bars-per-year from `candles`' actual timestamp spacing
+(`src.backtesting.metrics.infer_periods_per_year`) rather than assuming
+252 daily bars regardless of what `candles` actually contains.
 """
 
 from __future__ import annotations
@@ -51,10 +61,23 @@ class Backtester:
     Args:
         initial_cash: starting notional, used to express the equity
             curve and total return in dollar/percentage terms.
+        periods_per_year: annualization factor for the Sharpe ratio in
+            `result.metrics`. Defaults to `None`, which infers it from
+            `candles`' own timestamp spacing at `run()` time
+            (`src.backtesting.metrics.infer_periods_per_year`) -- daily
+            candles annualize as daily, 1-minute candles annualize as
+            1-minute, with no assumption baked in here about which one
+            `candles` will turn out to be (`DECISIONS.md`, ADR-0038).
+            Pass an explicit value only to override that inference.
     """
 
-    def __init__(self, initial_cash: float = DEFAULT_INITIAL_CASH) -> None:
+    def __init__(
+        self,
+        initial_cash: float = DEFAULT_INITIAL_CASH,
+        periods_per_year: int | None = None,
+    ) -> None:
         self._initial_cash = initial_cash
+        self._periods_per_year = periods_per_year
 
     def run(self, strategy: Strategy, candles: pd.DataFrame) -> BacktestResult:
         """Run `strategy` against `candles` and return the full result.
@@ -78,7 +101,9 @@ class Backtester:
         trades = self._extract_trades(candles, signals)
         position = self._build_position_series(candles, signals)
         equity_curve = self._compute_equity_curve(candles, position)
-        metrics = calculate_metrics(trades, equity_curve, self._initial_cash)
+        metrics = calculate_metrics(
+            trades, equity_curve, self._initial_cash, periods_per_year=self._periods_per_year
+        )
 
         return BacktestResult(
             strategy_name=strategy.name,

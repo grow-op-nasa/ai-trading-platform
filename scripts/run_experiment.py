@@ -11,6 +11,7 @@ research report, and persist the whole thing (including its
 
     python scripts/run_experiment.py --symbol SPY --strategy ema_cross
     python scripts/run_experiment.py --symbol QQQ --strategy rsi_mean_reversion --period 1y
+    python scripts/run_experiment.py --symbol SPY --strategy ema_cross --interval 1m --period 5d
 
 Deliberately a script, not a new `src/` module (`DECISIONS.md`,
 ADR-0021 already flags a reusable orchestration layer -- a
@@ -18,6 +19,12 @@ ADR-0021 already flags a reusable orchestration layer -- a
 `run_experiment()` itself is a plain, network-free function so it stays
 directly unit-testable (`tests/test_run_experiment_script.py`); only
 `main()` touches the network, and only when this file is actually run.
+
+Timeframe-agnostic (`DECISIONS.md`, ADR-0038): `--interval` is passed
+through unmodified to both the actual candle fetch and the recorded
+`ExperimentSpec`, so the two can never silently disagree -- the third
+example above runs the exact same `ema_cross` code against 1-minute
+bars, no strategy or pipeline changes required.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from src.attribution.engine import PerformanceAttributor
 from src.attribution.models import AttributionReport  # noqa: F401 -- re-exported type for ExperimentRunResult
 from src.backtesting.engine import Backtester
 from src.backtesting.models import BacktestResult
+from src.data.base import Interval
 from src.execution.engine import PaperBroker
 from src.experiments.registry import ExperimentRegistry
 from src.experiments.spec import ExperimentSpec
@@ -44,6 +52,7 @@ from src.strategies.registry import available_strategies, get_strategy_class
 DEFAULT_STRATEGY = "ema_cross"
 DEFAULT_SYMBOL = "SPY"
 DEFAULT_PERIOD = "2y"
+DEFAULT_INTERVAL = "1d"
 DEFAULT_ALLOCATION = 0.10
 
 
@@ -92,7 +101,7 @@ def run_experiment(
     candles: pd.DataFrame,
     strategy_params: dict | None = None,
     risk_limits: RiskLimits | None = None,
-    interval: str = "1d",
+    interval: Interval | str = DEFAULT_INTERVAL,
     dataset_source: str = "yfinance",
     registry: ExperimentRegistry | None = None,
 ) -> ExperimentRunResult:
@@ -101,17 +110,30 @@ def run_experiment(
     supplied by the caller, never fetched here (see `main()` for the
     network-touching CLI wrapper).
 
+    Timeframe-agnostic (`DECISIONS.md`, ADR-0038): nothing here assumes
+    `candles` is daily -- the same call wires a 1-minute or 1-day
+    dataset through Strategy -> Backtest -> Risk -> Execution ->
+    Attribution -> Research Report -> Experiment Registry identically.
+    `interval` states which timeframe `candles` actually is; it is
+    always recorded on the resulting `ExperimentSpec`, never inferred
+    from `candles`' own shape.
+
     Args:
         strategy_name: a name registered via `@register_strategy`
             (`src.strategies.registry.available_strategies()`).
         symbol: the instrument `candles` represents.
-        candles: OHLCV data to run the strategy against.
+        candles: OHLCV data to run the strategy against, at whatever
+            timeframe `interval` states.
         strategy_params: constructor keyword arguments besides
             `symbol`. Defaults to `{}` (the strategy's own defaults).
         risk_limits: position-sizing configuration. Defaults to
             `RiskLimits()`.
-        interval: the candle interval `candles` represents, recorded on
-            the `ExperimentSpec` only (not validated against the data).
+        interval: the candle timeframe `candles` represents (e.g.
+            `Interval.MINUTE_1` or `"1d"`) -- recorded on the
+            `ExperimentSpec` as a typed `Interval`, not validated
+            against `candles`' own timestamp spacing (the caller states
+            what it requested; this function trusts that statement the
+            same way `ExperimentSpec.capture()` does).
         dataset_source: where `candles` came from, recorded on the
             `ExperimentSpec`.
         registry: an `ExperimentRegistry` to persist into. Defaults to
@@ -188,6 +210,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"yfinance-style relative period, e.g. 6mo, 1y, 2y (default: {DEFAULT_PERIOD})",
     )
     parser.add_argument(
+        "--interval",
+        default=DEFAULT_INTERVAL,
+        choices=[i.value for i in Interval],
+        help=f"candle timeframe, e.g. 1d, 1m, 5m, 60m (default: {DEFAULT_INTERVAL}) -- "
+        "the platform's research/strategy layer is timeframe-agnostic "
+        "(DECISIONS.md, ADR-0038), so any registered strategy runs "
+        "against any of these unmodified",
+    )
+    parser.add_argument(
         "--allocation",
         type=float,
         default=DEFAULT_ALLOCATION,
@@ -204,21 +235,28 @@ def main(argv: list[str] | None = None) -> int:
     # not, and tests import this module without either.
     from src.data.service import MarketDataService
 
-    candles = MarketDataService().get_history(args.symbol, period=args.period)
+    candles = MarketDataService().get_history(
+        args.symbol, period=args.period, interval=args.interval
+    )
 
     run_result = run_experiment(
         strategy_name=args.strategy,
         symbol=args.symbol,
         candles=candles,
         risk_limits=RiskLimits(allocation_per_trade_pct=args.allocation),
+        interval=args.interval,
         dataset_source="yfinance",
     )
 
     spec = run_result.spec
     result = run_result.result
-    print(f"Experiment #{run_result.experiment_id} -- {args.strategy} on {args.symbol}")
+    print(f"Experiment #{run_result.experiment_id} -- {args.strategy} on {args.symbol} ({spec.interval})")
     print(f"  Strategy version: {spec.strategy_version[:12]}...")
-    print(f"  Dataset:          {spec.dataset_start.date()} to {spec.dataset_end.date()}")
+    # Full timestamp, not spec.dataset_start.date() -- truncating to a
+    # calendar date here would silently discard the time-of-day an
+    # intraday run's dataset boundaries actually carry (DECISIONS.md,
+    # ADR-0038).
+    print(f"  Dataset:          {spec.dataset_start} to {spec.dataset_end}")
     print(f"  Dataset fingerprint: {spec.dataset_fingerprint[:12]}...")
     print(f"  Trades: {len(result.trades)}")
     for key, value in result.metrics.items():

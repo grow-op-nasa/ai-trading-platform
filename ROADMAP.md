@@ -374,7 +374,7 @@ deferred -- none of that scope moved.
 Confirmed via real `pytest` on the dev machine: see `PROJECT_STATE.md`
 for the exact count.
 
-## Sprint 6 -- Research Pipeline & Experiment Integrity (in progress)
+## Sprint 6 -- Research Pipeline & Experiment Integrity ✅ Complete
 
 Connecting the pieces already built, rather than adding another
 isolated feature. Target: a researcher can run an experiment
@@ -424,17 +424,30 @@ live market data streaming; real mark-to-market; a dashboard; AI
 agents; automatic strategy discovery. All either already tracked
 elsewhere in this file or explicitly out of scope for now.
 
-**What's left before Sprint 6 can close:**
+**Part 2 -- close-out ✅ Complete:**
 
-- ⬜ A worked example wiring an actual experiment run (strategy pick,
-  symbol, dataset fetch, parameters, risk allocation) through the full
-  chain via a single call or short script, rather than only through a
-  test -- `tests/test_pipeline_contract.py` proves the pipeline
-  composes; nothing yet gives a person a one-line way to run it
-  themselves.
-- ⬜ A second registered strategy (e.g. an RSI mean-reversion strategy)
-  to prove the registry/`ExperimentSpec` seam genuinely accepts a new
-  strategy as an extension, not just in theory -- not started.
+- ✅ **Worked example**: `scripts/run_experiment.py` wires an actual
+  experiment run (strategy pick, symbol, candles, parameters, risk
+  allocation) through the full chain via a single function call
+  (`run_experiment(...)`) or a short CLI command (`python
+  scripts/run_experiment.py --symbol SPY --strategy ema_cross`).
+  Deliberately outside `src/` -- not a permanent orchestration API
+  (ADR-0021's deferred `PaperTradingLoop`). Its core function is
+  network-free and directly tested against both registered strategies
+  (`tests/test_run_experiment_script.py`); only its thin `main()`
+  wrapper touches the network. See `DECISIONS.md`, ADR-0037.
+- ✅ **Second registered strategy**: `RSIMeanReversionStrategy`
+  (`src/strategies/rsi_mean_reversion.py`, registered as
+  `"rsi_mean_reversion"`) -- the deliberately opposite trading idea
+  from `EMACrossStrategy` (mean reversion, not trend following), proof
+  the registry/`ExperimentSpec` seam genuinely accepts a new strategy
+  as an extension, not just in theory. A new structural test
+  (`tests/test_architecture.py::test_second_strategy_required_no_changes_to_core_pipeline_modules`)
+  asserts directly that adding it touched zero lines in
+  `src/backtesting`, `src/experiments/registry.py`, `src/attribution`,
+  `src/research`, or `src/broker`. See ADR-0037.
+
+Both items that were blocking Sprint 6's close are now resolved.
 
 ## Sprint 7 -- Analytics & Dashboard (planned)
 

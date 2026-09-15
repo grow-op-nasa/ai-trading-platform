@@ -166,6 +166,39 @@ def test_paper_broker_has_no_mechanism_to_mark_a_position_to_a_new_price():
         assert not hasattr(broker, forbidden_method)
 
 
+def test_second_strategy_required_no_changes_to_core_pipeline_modules():
+    # Proof of the closing architectural principle in Sprint 6's spec:
+    # adding RSIMeanReversionStrategy (ROADMAP.md, Sprint 6 close-out)
+    # must not have required touching the backtester, experiment
+    # registry, attribution engine, reporter, or broker layer -- it
+    # should simply plug into the existing research pipeline as a new
+    # strategy file, nothing more. This checks the actual committed
+    # source text of those modules for any mention of the new strategy,
+    # rather than trusting a docstring's claim.
+    core_modules = [
+        SRC_ROOT / "backtesting",
+        SRC_ROOT / "experiments" / "registry.py",
+        SRC_ROOT / "attribution",
+        SRC_ROOT / "research",
+        SRC_ROOT / "broker",
+    ]
+    forbidden_mentions = ("rsi_mean_reversion", "RSIMeanReversionStrategy")
+
+    offenders = []
+    for module_path in core_modules:
+        files = [module_path] if module_path.is_file() else sorted(module_path.glob("*.py"))
+        for path in files:
+            text = path.read_text()
+            if any(mention in text for mention in forbidden_mentions):
+                offenders.append(str(path))
+
+    assert offenders == [], (
+        f"Adding a second strategy must not require modifying core "
+        f"pipeline modules -- it should compose without leaking "
+        f"responsibilities into them. Offending files: {offenders}"
+    )
+
+
 def test_account_state_equity_is_computed_from_frozen_entry_price_only():
     from src.risk.models import SizingDecision
 

@@ -12,11 +12,21 @@ directly, with no base class at all, exactly as before.
 
 `ema_cross.py`'s `EMACrossStrategy` is the platform's first permanent
 strategy -- deliberately simple, built to exercise the platform end to
-end rather than to be profitable as-is.
+end rather than to be profitable as-is. `rsi_mean_reversion.py`'s
+`RSIMeanReversionStrategy` is the second (`ROADMAP.md`, Sprint 6 close-
+out) -- a deliberately different trading idea (mean reversion, not
+trend following), proving the platform's abstractions generalize rather
+than having been quietly shaped around one strategy's needs.
+
+Importing this package registers every built-in strategy with
+`src.strategies.registry` (`@register_strategy`, `DECISIONS.md`
+ADR-0035) as a side effect -- `ExperimentSpec.reconstruct_strategy()`
+depends on this having happened at least once in the process.
 """
 
 from src.strategies.base import Strategy
 from src.strategies.ema_cross import EMACrossStrategy
+from src.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
 from src.strategies.sdk import BaseStrategy
 
-__all__ = ["Strategy", "BaseStrategy", "EMACrossStrategy"]
+__all__ = ["Strategy", "BaseStrategy", "EMACrossStrategy", "RSIMeanReversionStrategy"]

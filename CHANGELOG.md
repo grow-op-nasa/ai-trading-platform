@@ -11,7 +11,73 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
-## Sprint 6 -- 2026-09-15, Research Pipeline & Experiment Integrity (part 1)
+## Sprint 6 (complete) -- 2026-09-15, Research Pipeline & Experiment Integrity (part 2, close-out)
+
+Closes both items left open at the end of part 1 (`ROADMAP.md`'s
+"What's left before Sprint 6 can close"): a second registered strategy
+proving the registry/`ExperimentSpec` seam genuinely generalizes, and a
+worked example wiring one real experiment through the full pipeline.
+Sprint 6 is now complete.
+
+### Added
+
+- `src/strategies/rsi_mean_reversion.py` -- `RSIMeanReversionStrategy`,
+  registered as `"rsi_mean_reversion"` (`DECISIONS.md`, ADR-0037). The
+  platform's second permanent strategy, and deliberately the *opposite*
+  trading idea from `EMACrossStrategy` (mean reversion, not trend
+  following) rather than a parameter variant of it. Long-only: enters
+  `LONG` the first time RSI drops to or below `oversold` (default
+  `30.0`), exits to `FLAT` the first time RSI, while in that position,
+  rises to or above `overbought` (default `70.0`). Exposes a `params`
+  property (`period`, `oversold`, `overbought`, `confidence`) for
+  `ExperimentSpec.capture()`, same as `EMACrossStrategy`.
+- `scripts/run_experiment.py` + `scripts/__init__.py` -- a worked
+  example wiring one experiment through Strategy -> Backtest -> Risk ->
+  Execution -> Attribution -> Research Report -> Experiment Registry.
+  `run_experiment(strategy_name, symbol, candles, ...)` is a plain,
+  network-free core function; `main()` is a thin argparse CLI wrapper
+  that is the only code path touching the network
+  (`MarketDataService().get_history(...)`). Run as:
+  `python scripts/run_experiment.py --symbol SPY --strategy ema_cross`.
+  Deliberately placed outside `src/` -- see ADR-0037.
+- `tests/test_rsi_mean_reversion_strategy.py` (14 tests) -- mirrors
+  `tests/test_ema_cross_strategy.py`'s structure and rigor: constructor
+  validation, `.name`, `prepare()` matching `IndicatorEngine` output,
+  no-signal and warmup cases, a full oversold-to-overbought cycle with a
+  sparsity assertion, a never-emits-SHORT check, confidence/metadata
+  checks, and an end-to-end `Backtester().run()` smoke test.
+- `tests/test_architecture.py::test_second_strategy_required_no_changes_to_core_pipeline_modules`
+  -- greps `src/backtesting`, `src/experiments/registry.py`,
+  `src/attribution`, `src/research`, and `src/broker` for any mention of
+  the new strategy and fails if it finds one. Direct, structural proof
+  of Sprint 6's closing architectural principle, not just a docstring's
+  claim.
+- `tests/test_run_experiment_script.py` (7 tests) -- exercises
+  `run_experiment()` against synthetic, network-free candles for *both*
+  `"ema_cross"` and `"rsi_mean_reversion"`, plus `_parse_args()`.
+
+### Decided
+
+- The second strategy is a genuinely different trading idea (mean
+  reversion), not a variant of the first -- a relabeled EMA-cross
+  wouldn't have tested anything the registry seam didn't already prove.
+  See `DECISIONS.md`, ADR-0037.
+- The worked example lives in `scripts/`, not `src/` -- avoids
+  committing to a permanent orchestration API (`PaperTradingLoop`,
+  ADR-0021) this round. Its core logic is a plain function, separate
+  from its network-touching CLI wrapper, specifically so it stays
+  directly testable without hitting the network.
+
+### Verified
+
+- Sandbox run (stub-based runner): **385 passed**, 1 known
+  environment-only failure (`test_python_version_passes_against_running_interpreter`,
+  fails only when the sandbox's Python version differs from the pin --
+  expected to pass on the real dev machine), up from the Sprint 6 part 1
+  baseline of 364 passed. Pending confirmation via real `pytest` on the
+  dev machine.
+
+## Sprint 6, part 1 -- 2026-09-15, Research Pipeline & Experiment Integrity
 
 The first step toward the platform's long-term reproducibility target
 (`ROADMAP.md`): experiment -> strategy/version -> parameters ->

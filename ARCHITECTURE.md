@@ -337,10 +337,14 @@ actually produces: not an order, not a market event, a decision.
 
 ### `src/strategies`
 
-**Purpose:** the seam strategies plug into. No concrete strategy exists
-yet -- Sprint 3's first is deliberately simple (an EMA-cross or
-opening-range-breakout, chosen for how easy it is to reason about, not
-for profitability) -- only the interface is defined here.
+**Purpose:** the seam strategies plug into, plus the platform's two
+permanent strategies. `EMACrossStrategy` (Sprint 4) and
+`RSIMeanReversionStrategy` (Sprint 6, `DECISIONS.md` ADR-0037) are
+deliberately opposite trading ideas -- trend following vs. mean
+reversion -- chosen specifically to prove the interface below
+generalizes rather than having been quietly shaped around one
+strategy's needs. Neither is tuned for profitability; both exist to
+exercise the platform end to end on a real (if minimal) trading idea.
 
 - **Inputs/outputs:** see `DECISIONS.md`, ADR-0015 for the full
   `Strategy` contract (supersedes ADR-0011).
@@ -377,12 +381,23 @@ for profitability) -- only the interface is defined here.
     `get_strategy_class(name)` / `available_strategies()`, the same
     `@register_x` pattern `src/indicators/registry.py` and
     `src/cli/registry.py` already use. `EMACrossStrategy` registers
-    itself as `"ema_cross"`. This is what makes
+    itself as `"ema_cross"`, `RSIMeanReversionStrategy` as
+    `"rsi_mean_reversion"`. This is what makes
     `ExperimentSpec.reconstruct_strategy()` possible -- look a class up
     by name, rather than every caller needing to import every strategy
     module by hand.
-- **Does not:** contain any concrete strategy yet. Does not compute
-  indicators or regimes itself -- a conforming strategy's `prepare()`
+  - `ema_cross.py` (Sprint 4) -- `EMACrossStrategy`, the platform's
+    first permanent strategy. Long-only: long while EMA(fast) >
+    EMA(slow), flat otherwise (`fast=12, slow=26` default).
+  - `rsi_mean_reversion.py` (Sprint 6, ADR-0037) --
+    `RSIMeanReversionStrategy`, the platform's second permanent
+    strategy. Long-only: enters `LONG` at or below an `oversold` RSI
+    threshold (default 30), exits to `FLAT` at or above an
+    `overbought` threshold (default 70). The deliberately opposite
+    trading idea from `EMACrossStrategy` -- proof the registry/
+    `ExperimentSpec` seam genuinely generalizes, not a relabeled
+    variant of the first strategy.
+- **Does not:** compute indicators or regimes itself -- a conforming strategy's `prepare()`
   is expected to call `IndicatorEngine`/`MarketRegimeEngine`. Does not
   emit one `Signal` per candle -- only at genuine decision points.
   `BaseStrategy` does not own the signal-emission loop or pick a
@@ -1012,3 +1027,30 @@ contract -- caching, validation, error propagation, period parsing -- is
 verified without depending on Yahoo Finance being up. A separate,
 explicitly-marked integration suite (not written yet) will cover the
 real `YFinanceProvider` against the live API.
+
+## `scripts/`
+
+**Purpose:** standalone worked examples, deliberately outside `src/` --
+not part of the installable package's public API, and not a permanent
+orchestration layer (`DECISIONS.md`, ADR-0021 already flags a future
+"PaperTradingLoop" as deferred, not this). A script here can wire the
+platform's modules together end to end for a person to actually run,
+without the platform committing to that wiring as a stable interface.
+
+- **Key files:**
+  - `run_experiment.py` (Sprint 6, ADR-0037) -- wires one experiment
+    through the entire pipeline: Strategy -> Backtest -> Risk ->
+    Execution -> Attribution -> Research Report -> Experiment Registry
+    (including `ExperimentSpec`). `run_experiment(strategy_name, symbol,
+    candles, ...)` is a plain, network-free function -- directly unit
+    tested (`tests/test_run_experiment_script.py`) against both
+    registered strategies. `main()` is a thin argparse CLI wrapper and
+    the only code path that touches the network
+    (`MarketDataService().get_history(...)`, imported lazily inside
+    `main()` itself). Run as `python scripts/run_experiment.py --symbol
+    SPY --strategy ema_cross`.
+- **Depends on:** every pipeline capability it wires together --
+  `src/strategies`, `src/backtesting`, `src/risk`, `src/execution`,
+  `src/attribution`, `src/research`, `src/experiments`, and (only inside
+  `main()`) `src/data`. Nothing in `src/` depends on `scripts/` --
+  dependency direction is strictly one-way, the same as `tests/`.

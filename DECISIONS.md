@@ -2037,3 +2037,75 @@ asserting both the raised `ValueError` and that no cash/position side
 effects occur on the rejected call. This closes the last item explicitly
 flagged as deferred-not-forgotten in ADR-0033 and `PROJECT_STATE.md`'s
 Technical Debt.
+
+---
+
+## ADR-0037: Sprint 6 close-out -- a second strategy and a worked-example script
+
+**Status:** Accepted -- Sprint 6
+
+**Context:** ADR-0035/ADR-0036 (Sprint 6 part 1) built `ExperimentSpec`,
+the strategy registry, and the symbol/execution invariant, but left two
+items open in `ROADMAP.md` before Sprint 6 could formally close: (1) no
+second strategy had ever been registered, so the registry/`ExperimentSpec`
+seam had only ever been exercised by `EMACrossStrategy` -- untested
+against the actual claim that a genuinely different strategy plugs in
+without touching core modules; (2) no script existed wiring a real
+experiment through the full chain end to end -- only test fixtures had
+ever driven the pipeline. Both are explicitly proof-point work, not new
+capability: nothing in this ADR adds a feature the platform didn't
+already have a seam for.
+
+**Decision:** Two additions, both deliberately minimal.
+
+1. **`RSIMeanReversionStrategy`** (`src/strategies/rsi_mean_reversion.py`,
+   registered as `"rsi_mean_reversion"`). Chosen specifically because it
+   is the *opposite* trading idea from `EMACrossStrategy` -- mean
+   reversion, not trend following -- rather than a parameter variant of
+   the same idea, so it's a real second data point for generalization,
+   not a relabeled first one. Long-only: enters `LONG` the first time
+   RSI drops to or below an `oversold` threshold (default `30.0`), exits
+   to `FLAT` the first time RSI, while in that position, rises to or
+   above an `overbought` threshold (default `70.0`). `<=`/`>=` semantics
+   (not strict `<`/`>`) chosen so a threshold hit is never missed due to
+   floating-point exactness. Rejects construction if `oversold` is not
+   strictly less than `overbought`, or either is outside `(0, 100)`.
+   Exposes a `params` property (`period`, `oversold`, `overbought`,
+   `confidence`) the same way `EMACrossStrategy` does, for
+   `ExperimentSpec.capture()`.
+2. **`scripts/run_experiment.py`** -- a worked example wiring one real
+   experiment through Strategy -> Backtest -> Risk -> Execution ->
+   Attribution -> Research Report -> Experiment Registry (including
+   `ExperimentSpec`). Deliberately placed in the pre-existing top-level
+   `scripts/` directory, not `src/` -- `src/` would make this a
+   permanent public API commitment the platform doesn't need yet
+   (ADR-0021 already flags a reusable orchestration layer, a
+   "PaperTradingLoop," as deferred future work; this script is not
+   that). Split into a plain, network-free `run_experiment(...)` core
+   function -- directly unit-testable, used identically for
+   `"ema_cross"` and `"rsi_mean_reversion"` in
+   `tests/test_run_experiment_script.py` -- and a thin `main()`/argparse
+   CLI wrapper that is the *only* code path touching the network
+   (`MarketDataService().get_history(...)`, imported lazily inside
+   `main()` so importing the module for testing never requires it).
+
+**Consequences:** Extension Cost (ADR-0014) for the new strategy: 2
+files touched outside the new `rsi_mean_reversion.py` itself --
+`src/strategies/__init__.py` (import + `__all__`, so the registry side
+effect runs) and this file. Zero changes to `src/backtesting`,
+`src/experiments/registry.py`, `src/attribution`, `src/research`, or
+`src/broker` -- asserted directly by a new structural test,
+`tests/test_architecture.py::test_second_strategy_required_no_changes_to_core_pipeline_modules`,
+which greps those modules' source text for any mention of the new
+strategy and fails if it finds one. This is the proof point Sprint 6's
+closing principle asked for: adding a second strategy was an extension,
+not a rewrite. `tests/test_rsi_mean_reversion_strategy.py` (14 tests)
+mirrors `tests/test_ema_cross_strategy.py`'s structure and rigor
+directly, including a full oversold-to-overbought cycle test against an
+empirically-verified fixture (not hand-predicted RSI values).
+`scripts/run_experiment.py` and `scripts/__init__.py` are new files with
+zero Extension Cost of their own; `tests/test_run_experiment_script.py`
+(7 tests) exercises `run_experiment()` against both registered
+strategies plus `_parse_args()`, entirely network-free. Both
+`ROADMAP.md`'s Sprint 6 close-out items are resolved; Sprint 6 itself is
+marked complete in `ROADMAP.md`/`PROJECT_STATE.md` as of this entry.

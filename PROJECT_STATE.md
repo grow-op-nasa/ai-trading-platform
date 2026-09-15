@@ -1,6 +1,26 @@
 # Project State
 
-_Last updated: 2026-09-15 -- Sprint 5 is complete, and a targeted
+_Last updated: 2026-09-15 -- **Sprint 6 (Research Pipeline & Experiment
+Integrity) is complete.** Part 2 closed both items left open at the end
+of part 1: `RSIMeanReversionStrategy` (`src/strategies/rsi_mean_reversion.py`,
+registered as `"rsi_mean_reversion"`) is the platform's second permanent
+strategy -- a deliberately different trading idea (mean reversion, not
+trend following) proving the registry/`ExperimentSpec` seam genuinely
+generalizes, not just accommodates the one strategy it was designed
+against. `scripts/run_experiment.py` is a worked example wiring one real
+experiment through the entire pipeline (Strategy -> Backtest -> Risk ->
+Execution -> Attribution -> Research Report -> Experiment Registry), with
+its core `run_experiment()` function kept network-free and directly
+testable, separate from its thin CLI wrapper. A new structural test
+(`tests/test_architecture.py::test_second_strategy_required_no_changes_to_core_pipeline_modules`)
+asserts directly -- not just by docstring claim -- that adding the second
+strategy touched zero lines in `src/backtesting`, `src/experiments/registry.py`,
+`src/attribution`, `src/research`, or `src/broker`. See `DECISIONS.md`,
+ADR-0037; `CHANGELOG.md`, "Sprint 6 (complete) -- part 2, close-out."
+Sandbox-verified at 385 passed (1 known environment-only failure);
+pending confirmation via real `pytest` on the dev machine._
+
+_Sprint 5 is complete, and a targeted
 architecture-review cleanup pass is complete ahead of Sprint 6 (see
 `DECISIONS.md`, ADR-0031 through ADR-0034; `CHANGELOG.md`,
 "Pre-Sprint 6 -- Architecture Review Cleanup"). Four concrete brokers
@@ -366,6 +386,31 @@ For why things were built the way they were, see `DECISIONS.md`.
   (Python 3.14.6): 329 passed, all green. See `DECISIONS.md`, ADR-0031
   through ADR-0034; `CHANGELOG.md`, "Pre-Sprint 6 -- Architecture
   Review Cleanup."
+- ✅ Sprint 6 part 2 -- Research Pipeline & Experiment Integrity
+  close-out (`DECISIONS.md`, ADR-0037). `RSIMeanReversionStrategy`
+  (`src/strategies/rsi_mean_reversion.py`), registered as
+  `"rsi_mean_reversion"`, is the platform's second permanent
+  strategy -- deliberately the opposite trading idea from
+  `EMACrossStrategy` (mean reversion, not trend following): long-only,
+  enters `LONG` at or below an `oversold` RSI threshold (default 30),
+  exits to `FLAT` at or above an `overbought` threshold (default 70).
+  `scripts/run_experiment.py` (+ `scripts/__init__.py`) is a worked
+  example wiring one real experiment through Strategy -> Backtest ->
+  Risk -> Execution -> Attribution -> Research Report -> Experiment
+  Registry; its core `run_experiment()` function is network-free and
+  directly testable, kept separate from a thin argparse `main()` that
+  is the only code path touching `MarketDataService`. Deliberately
+  placed in the pre-existing top-level `scripts/` directory, not
+  `src/`, to avoid committing to a permanent orchestration API this
+  round (ADR-0021's deferred `PaperTradingLoop`). A new structural test
+  (`tests/test_architecture.py::test_second_strategy_required_no_changes_to_core_pipeline_modules`)
+  greps `src/backtesting`, `src/experiments/registry.py`,
+  `src/attribution`, `src/research`, and `src/broker` for any mention
+  of the new strategy and fails if it finds one -- direct proof, not a
+  docstring claim, that the second strategy was an extension, not a
+  rewrite. Extension Cost: 2 files touched outside new files
+  (`src/strategies/__init__.py`, `DECISIONS.md`). Both of Sprint 6's
+  close-out items are resolved; **Sprint 6 is complete.**
 - ✅ Sprint 6 part 1 -- Research Pipeline & Experiment Integrity: the
   reproducibility seam. `ExperimentSpec` (`src/experiments/spec.py`) is
   an immutable record of strategy name/version, parameters, symbol,
@@ -408,14 +453,18 @@ dev machine (Python 3.14.6) before the cleanup began. The cleanup
 itself is likewise confirmed via real `pytest` on the dev machine:
 329 passed in 1.26s, all green.
 
-**Sprint 6 (Research Pipeline & Experiment Integrity) is in progress.**
+**Sprint 6 (Research Pipeline & Experiment Integrity) is complete.**
 Part 1 -- `ExperimentSpec`, strategy identity/registry, dataset
 fingerprinting, `ExperimentRegistry.save_spec()`/`get_spec()`, the
 `PaperBroker` symbol invariant, and the end-to-end pipeline contract
-test -- is built and confirmed via real `pytest` on the dev machine
-(Python 3.14.6): **364 passed in 0.87s**, all green (see `ROADMAP.md`'s
-Sprint 6 section for what's still open before the sprint closes: a
-worked example script and a second registered strategy).
+test -- was confirmed via real `pytest` on the dev machine (Python
+3.14.6): 364 passed in 0.87s. Part 2 -- `RSIMeanReversionStrategy` (a
+second, deliberately different registered strategy) and
+`scripts/run_experiment.py` (a worked example wiring one real
+experiment through the full pipeline) -- closes both items `ROADMAP.md`
+listed as blocking the sprint's close. Sandbox-verified at **385
+passed**, 1 known environment-only failure; pending confirmation via
+real `pytest` on the dev machine.
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2 through 5, or the cleanup): no data validation beyond
@@ -425,11 +474,9 @@ suite against the live yfinance API.
 
 ## Next Task
 
-Close out Sprint 6: a worked example wiring an actual experiment run
-through the full chain, and a second registered strategy proving the
-registry seam accepts a real extension (see `ROADMAP.md`'s Sprint 6
-section) -- part 1's 364 tests are confirmed via real `pytest` on the
-dev machine. Sprint 7 (Analytics & Dashboard) is next after that.
+Sprint 6 is closed. Confirm the part 2 close-out via real `pytest` on
+the dev machine (sandbox-verified at 385 passed, 1 known
+environment-only failure), then begin Sprint 7 (Analytics & Dashboard).
 Separately available, none yet explicitly requested: setting
 `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
 `TigerBroker.get_account()` against a real Tiger paper account; setting
@@ -553,19 +600,21 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 364 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 385 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 12 backtesting + 21 experiments
                           # + 29 cli/doctor + 13 signals + 13 strategy_sdk + 8 attribution
                           # + 17 research + 11 ema_cross_strategy + 17 risk + 19 execution
                           # + 6 integration_paper_trading + 34 broker + 15 ibkr
-                          # + 11 reconciliation + 31 ig + 15 tiger + 8 architecture
+                          # + 11 reconciliation + 31 ig + 15 tiger + 9 architecture
                           # + 5 portfolio + 6 hashing + 9 strategy_registry
-                          # + 12 experiment_spec + 3 pipeline_contract)
+                          # + 12 experiment_spec + 3 pipeline_contract
+                          # + 14 rsi_mean_reversion_strategy + 7 run_experiment_script)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until
                           # ALPACA_API_KEY/ALPACA_API_SECRET are set)
 ```
 
-Confirmed via real `pytest` on the dev machine (Python 3.14.6): 364
-passed in 0.87s, all green.
+Sandbox-verified (stub-based runner): 385 passed, 1 known
+environment-only failure. Pending confirmation via real `pytest` on the
+dev machine (Python 3.14.6).

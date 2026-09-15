@@ -70,12 +70,10 @@ Sprint 6 is now complete.
 
 ### Verified
 
-- Sandbox run (stub-based runner): **385 passed**, 1 known
-  environment-only failure (`test_python_version_passes_against_running_interpreter`,
-  fails only when the sandbox's Python version differs from the pin --
-  expected to pass on the real dev machine), up from the Sprint 6 part 1
-  baseline of 364 passed. Pending confirmation via real `pytest` on the
-  dev machine.
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6):
+  **386 passed in 0.92s** -- all tests green, including
+  `test_python_version_passes_against_running_interpreter` -- up from
+  the Sprint 6 part 1 baseline of 364.
 
 ## Sprint 6, part 1 -- 2026-09-15, Research Pipeline & Experiment Integrity
 

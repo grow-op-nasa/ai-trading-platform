@@ -17,8 +17,8 @@ asserts directly -- not just by docstring claim -- that adding the second
 strategy touched zero lines in `src/backtesting`, `src/experiments/registry.py`,
 `src/attribution`, `src/research`, or `src/broker`. See `DECISIONS.md`,
 ADR-0037; `CHANGELOG.md`, "Sprint 6 (complete) -- part 2, close-out."
-Sandbox-verified at 385 passed (1 known environment-only failure);
-pending confirmation via real `pytest` on the dev machine._
+Confirmed via real `pytest` on the dev machine (Python 3.14.6): **386
+passed in 0.92s**, all green._
 
 _Sprint 5 is complete, and a targeted
 architecture-review cleanup pass is complete ahead of Sprint 6 (see
@@ -462,9 +462,8 @@ test -- was confirmed via real `pytest` on the dev machine (Python
 second, deliberately different registered strategy) and
 `scripts/run_experiment.py` (a worked example wiring one real
 experiment through the full pipeline) -- closes both items `ROADMAP.md`
-listed as blocking the sprint's close. Sandbox-verified at **385
-passed**, 1 known environment-only failure; pending confirmation via
-real `pytest` on the dev machine.
+listed as blocking the sprint's close. Confirmed via real `pytest` on
+the dev machine (Python 3.14.6): **386 passed in 0.92s**, all green.
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2 through 5, or the cleanup): no data validation beyond
@@ -474,10 +473,9 @@ suite against the live yfinance API.
 
 ## Next Task
 
-Sprint 6 is closed. Confirm the part 2 close-out via real `pytest` on
-the dev machine (sandbox-verified at 385 passed, 1 known
-environment-only failure), then begin Sprint 7 (Analytics & Dashboard).
-Separately available, none yet explicitly requested: setting
+Sprint 6 is closed and confirmed (386 passed via real `pytest` on the
+dev machine). Begin Sprint 7 (Analytics & Dashboard). Separately
+available, none yet explicitly requested: setting
 `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
 `TigerBroker.get_account()` against a real Tiger paper account; setting
 `IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD` to exercise `IGBroker` against
@@ -600,7 +598,7 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 385 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 386 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 12 backtesting + 21 experiments
                           # + 29 cli/doctor + 13 signals + 13 strategy_sdk + 8 attribution
                           # + 17 research + 11 ema_cross_strategy + 17 risk + 19 execution
@@ -615,6 +613,5 @@ python -m src.cli doctor  # should print one line per check and end with "Everyt
                           # ALPACA_API_KEY/ALPACA_API_SECRET are set)
 ```
 
-Sandbox-verified (stub-based runner): 385 passed, 1 known
-environment-only failure. Pending confirmation via real `pytest` on the
-dev machine (Python 3.14.6).
+Confirmed via real `pytest` on the dev machine (Python 3.14.6): 386
+passed in 0.92s, all green.

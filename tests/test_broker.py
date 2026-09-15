@@ -15,7 +15,7 @@ import pytest
 from src.broker.alpaca import ALPACA_LIVE_BASE_URL, ALPACA_PAPER_BASE_URL, AlpacaBroker
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
 from src.broker.models import BrokerOrder, OrderRequest, OrderSide, OrderStatus
-from src.risk.models import AccountState
+from src.portfolio.models import AccountState
 
 
 class FakeResponse:

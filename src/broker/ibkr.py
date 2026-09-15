@@ -45,7 +45,7 @@ import requests
 from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
 from src.broker.models import BrokerOrder, OrderRequest
-from src.risk.models import AccountState
+from src.portfolio.models import AccountState
 
 IBKR_GATEWAY_BASE_URL = "https://localhost:5000/v1/api"
 

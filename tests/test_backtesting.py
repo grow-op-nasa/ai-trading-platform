@@ -37,8 +37,16 @@ def make_candles(closes: list[float]) -> pd.DataFrame:
     )
 
 
-def sig(timestamp: pd.Timestamp, direction: SignalDirection, confidence: float = 0.9, **metadata) -> Signal:
-    return Signal(timestamp=timestamp, direction=direction, confidence=confidence, metadata=metadata)
+def sig(
+    timestamp: pd.Timestamp,
+    direction: SignalDirection,
+    confidence: float = 0.9,
+    symbol: str = "TEST",
+    **metadata,
+) -> Signal:
+    return Signal(
+        timestamp=timestamp, symbol=symbol, direction=direction, confidence=confidence, metadata=metadata
+    )
 
 
 class ScriptedStrategy:
@@ -266,6 +274,20 @@ def test_backtest_result_carries_the_full_signal_list():
 
     assert len(result.signals) == 1
     assert result.signals[0].metadata["reason"] == "test"
+
+
+def test_backtest_result_signals_preserve_symbol():
+    # Symbol lineage (DECISIONS.md, ADR-0033): the Backtester doesn't
+    # touch Signal.symbol at all -- it just needs to still be there,
+    # unmodified, on the far side of a full run.
+    closes = [100, 101, 102]
+    candles = make_candles(closes)
+    signals = [sig(candles.index[0], SignalDirection.LONG, symbol="QQQ")]
+    strategy = ScriptedStrategy(signals=signals, name="always_long")
+
+    result = Backtester().run(strategy, candles)
+
+    assert result.signals[0].symbol == "QQQ"
 
 
 def test_real_strategy_using_indicator_engine_runs_end_to_end():

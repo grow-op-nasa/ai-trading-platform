@@ -11,6 +11,109 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Pre-Sprint 6 -- 2026-09-15, Architecture Review Cleanup
+
+A targeted correction pass ahead of Sprint 6, not a redesign -- four
+architectural inconsistencies an architecture review surfaced in
+Sprint 4-5's work, fixed before new feature work starts. Every existing
+ADR's deliberate deferral (confidence-scaled sizing, stop-based risk,
+real mark-to-market, Tiger/IB order lifecycles, IG's structural
+`get_order`/`cancel_order` gap) was left exactly as deferred.
+
+### Added / Changed
+
+- `src/portfolio/` (new) -- `AccountState` moved here from `src/risk`,
+  unchanged in fields/validation/semantics. `src/broker/base.py` and all
+  four concrete brokers, `src/risk/engine.py`, `src/risk/__init__.py`,
+  and `src/execution/engine.py` now import it from
+  `src.portfolio.models` instead of `src.risk.models` -- `src/broker`
+  no longer depends on `src/risk` to describe an account. See
+  `DECISIONS.md`, ADR-0031.
+- `src/risk/models.py` -- `RiskLimits.risk_per_trade_pct` renamed to
+  `allocation_per_trade_pct` (and `PositionSizer`'s `reason` strings
+  updated to match). Behavior completely unchanged -- still a fixed
+  fraction of equity. `RiskLimits`'s docstring now states explicitly
+  that this is capital allocation, not maximum loss, and that
+  stop-based risk sizing is a distinct, unbuilt capability. See
+  `DECISIONS.md`, ADR-0032.
+- `src/signals/models.py` -- `Signal` gained a required, first-class
+  `symbol: str` field (not a `metadata` key). `BaseStrategy`
+  (`src/strategies/sdk.py`) now takes a required `symbol` constructor
+  argument and attaches it to every `Signal` it emits;
+  `EMACrossStrategy` threads it through. `ExperimentRegistry`
+  (`src/experiments/registry.py`) gained a `symbol` column on the
+  `signals` table (`save_signals()`/`_row_to_signal()` updated). The
+  Backtester needed no change -- `Signal` objects pass through
+  `BacktestResult.signals` untouched. See `DECISIONS.md`, ADR-0033.
+- `src/research/models.py`, `src/research/reporter.py` --
+  `ResearchReport` gained `renderer_error: str | None`.
+  `ResearchReporter.run()` now records the actual exception message when
+  a `ClaudeNarrativeRenderer` fails and falls back, leaving it `None` on
+  the normal (unconfigured-Claude) fallback path. `rendered_by` and the
+  deterministic `findings` are unaffected either way. See
+  `DECISIONS.md`, ADR-0034.
+- `src/execution/engine.py`, `src/broker/base.py`, `src/broker/__init__.py`
+  -- docstrings strengthened: `PaperBroker.account_state.equity`'s
+  not-marked-to-market limitation is now stated in multiple places, and
+  `BrokerConnection`'s doc now names the three different reasons a
+  concrete broker's method can raise `NotImplementedError` (not yet
+  built vs. structurally impossible given the broker's own API vs.
+  genuinely unsupported). No behavior changed.
+- `tests/test_architecture.py` (new, 8 tests) -- protects the corrected
+  contracts directly: broker modules don't import `src.risk` (static
+  source check), `src/portfolio` depends on nothing else in this
+  codebase, `AccountState` no longer defined in `src/risk/models.py`,
+  `PositionSizer` consumes the neutral `AccountState`, `Signal(...)`
+  without `symbol` raises `TypeError`, a full strategy -> backtest ->
+  registry round trip preserves both `symbol` and signal UUID identity,
+  and `PaperBroker` has no mark-to-market mechanism (a structural
+  tripwire against silently reintroducing that capability without a
+  deliberate ADR).
+- `tests/test_portfolio.py` (new, 5 tests) -- `AccountState` validation,
+  moved verbatim from `tests/test_risk.py`.
+- `tests/test_risk.py`, `tests/test_signals.py`, `tests/test_backtesting.py`,
+  `tests/test_experiments.py`, `tests/test_strategy_sdk.py`,
+  `tests/test_ema_cross_strategy.py`, `tests/test_execution.py`,
+  `tests/test_integration_paper_trading.py`, `tests/test_broker.py`,
+  `tests/test_ibkr.py`, `tests/test_ig.py`, `tests/test_tiger.py`,
+  `tests/test_cli_doctor.py`, `tests/test_research.py` -- updated for
+  the `AccountState` import path, the `allocation_per_trade_pct` rename,
+  and `Signal`'s new required `symbol` field (every constructor call
+  site across the suite), plus new coverage for `renderer_error` (a
+  successful Claude render, the normal no-key fallback, a renderer that
+  raises, and deterministic findings surviving a renderer failure).
+
+### Decided
+
+- `AccountState` moves to a new, neutral `src/portfolio` package rather
+  than staying in `src/risk` with a re-export, so the class itself (not
+  just its import path) lives outside both `src/broker` and `src/risk`.
+- Rename, don't invent a stop-loss model just to make
+  `risk_per_trade_pct`'s name technically true -- the terminology was
+  wrong, not the math.
+- `symbol` is a required, non-defaulted field on `Signal`, migrated
+  across every call site in one controlled pass, rather than optional
+  or metadata-based -- a `Signal` should always be independently
+  identifiable.
+- `ClaudeNarrativeRenderer` failures are surfaced via a new
+  `renderer_error` field, not a raised exception or a change to
+  `rendered_by`'s existing two values.
+- `requirements.txt`'s direct-vs-transitive dependency mixing was
+  inspected and deliberately left alone this round -- documented as
+  pre-v1.0 debt in `ROADMAP.md` rather than risking a disruptive
+  dependency change in a narrowly-scoped cleanup.
+- No new ADR for the `PaperBroker` mark-to-market documentation
+  strengthening -- it's a documentation clarification of an existing
+  decision (ADR-0022), not a new architectural decision.
+
+### Verified
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6):
+  **329 passed in 1.26s** -- all tests green, including
+  `test_python_version_passes_against_running_interpreter`, which only
+  fails in the sandbox's Python 3.10 environment (this project requires
+  >=3.12).
+
 ## Sprint 5 (in progress) -- 2026-09-10, Broker Connectivity
 
 ### Added

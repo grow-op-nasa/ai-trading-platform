@@ -1,32 +1,49 @@
 # Project State
 
-_Last updated: 2026-09-10 -- Sprint 5 (in progress). Four concrete
-brokers now implement `BrokerConnection`: **`AlpacaBroker`** (full
-lifecycle -- `get_account`/`submit_order`/`get_order`/`cancel_order`;
-real `ALPACA_API_KEY`/`ALPACA_API_SECRET` are configured and
-`get_account()` is confirmed against Alpaca's real paper account),
-**`IBKRBroker`** (`get_account()` only; IB's Client Portal Web API --
-**confirmed geo-restricted for this deployment**, OFAC/Section 311, so
-it remains an architecture proof without a usable real account),
-**`IGBroker`** (IG's REST API, session-token auth -- a real, usable
-second broker for this platform's user, since IG doesn't geo-block;
-`get_account()` plus `submit_order()`, which resolves synchronously
-into a final `FILLED`/`REJECTED` `BrokerOrder` -- `get_order()`/
-`cancel_order()` stay `NotImplementedError` since IG has no live status
-endpoint to poll and nothing left to cancel once a market order
-resolves), and **`TigerBroker`** (Tiger Trade, wraps the official
-`tigeropen` SDK rather than hand-rolled RSA request signing -- a real,
-usable third broker for this platform's user; `get_account()` only this
-round, `submit_order`/`get_order`/`cancel_order` all
-`NotImplementedError`). `src/reconciliation/` (new) compares
-`PaperBroker`'s simulated fills against real broker fills
-(`reconcile_fill()`), deliberately depending on both `src/execution`
-and `src/broker`. Confirmed via real `pytest` on the dev machine:
-connectivity 213/213, order submission 228/228, order cancellation
-233/233, `IBKRBroker` 248/248, fill reconciliation + `IGBroker`
-connectivity together at 282/282, IG order submission at 290/290, and
-`TigerBroker` at 305/305. Sprints 3 and 4 are both complete and
-confirmed._
+_Last updated: 2026-09-15 -- Sprint 5 is complete, and a targeted
+architecture-review cleanup pass is complete ahead of Sprint 6 (see
+`DECISIONS.md`, ADR-0031 through ADR-0034; `CHANGELOG.md`,
+"Pre-Sprint 6 -- Architecture Review Cleanup"). Four concrete brokers
+implement `BrokerConnection`: **`AlpacaBroker`** (full lifecycle --
+`get_account`/`submit_order`/`get_order`/`cancel_order`; real
+`ALPACA_API_KEY`/`ALPACA_API_SECRET` are configured and `get_account()`
+is confirmed against Alpaca's real paper account), **`IBKRBroker`**
+(`get_account()` only; IB's Client Portal Web API -- **confirmed
+geo-restricted for this deployment**, OFAC/Section 311, so it remains
+an architecture proof without a usable real account), **`IGBroker`**
+(IG's REST API, session-token auth -- a real, usable second broker for
+this platform's user, since IG doesn't geo-block; `get_account()` plus
+`submit_order()`, which resolves synchronously into a final
+`FILLED`/`REJECTED` `BrokerOrder` -- `get_order()`/`cancel_order()`
+stay `NotImplementedError` since IG has no live status endpoint to poll
+and nothing left to cancel once a market order resolves), and
+**`TigerBroker`** (Tiger Trade, wraps the official `tigeropen` SDK
+rather than hand-rolled RSA request signing -- a real, usable third
+broker for this platform's user; `get_account()` only this round,
+`submit_order`/`get_order`/`cancel_order` all `NotImplementedError`).
+`src/reconciliation/` compares `PaperBroker`'s simulated fills against
+real broker fills (`reconcile_fill()`), deliberately depending on both
+`src/execution` and `src/broker`. Confirmed via real `pytest` on the
+dev machine through Sprint 5: connectivity 213/213, order submission
+228/228, order cancellation 233/233, `IBKRBroker` 248/248, fill
+reconciliation + `IGBroker` connectivity together at 282/282, IG order
+submission at 290/290, and `TigerBroker` at 305/305. Sprints 3, 4 and 5
+are all complete and confirmed.
+
+The cleanup that followed corrected four things without redesigning
+anything: `AccountState` moved out of `src/risk` into a new, neutral
+`src/portfolio` package so `broker` no longer depends on `risk`
+(ADR-0031); `RiskLimits.risk_per_trade_pct` was renamed to
+`allocation_per_trade_pct` since it was never risk-per-trade in the
+stop-loss sense (ADR-0032); `Signal` gained a required, first-class
+`symbol` field, threaded through strategies, the Backtester (no code
+change needed there), and the Experiment Registry (ADR-0033);
+`ResearchReport` gained `renderer_error` so a failed
+`ClaudeNarrativeRenderer` call is now observable rather than silently
+swallowed (ADR-0034); and `PaperBroker`'s not-marked-to-market
+limitation is now stated explicitly in multiple docstrings and pinned
+by a structural test. Confirmed via real `pytest` on the dev machine
+(Python 3.14.6): **329 passed**, all green._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -150,25 +167,30 @@ For why things were built the way they were, see `DECISIONS.md`.
 - ✅ Position Sizing (`src/risk/`) -- Sprint 4.
   `PositionSizer.size(signal, account, price)` sizes a `LONG`/`SHORT`
   signal at a fixed fraction of account equity
-  (`RiskLimits.risk_per_trade_pct`, default 10%), the same for every
-  signal regardless of `Signal.confidence`. Sizes down to remaining
-  portfolio exposure headroom (`RiskLimits.max_portfolio_exposure_pct`,
-  default 50% of equity) rather than rejecting outright when the full
-  allocation doesn't fit; only rejects when there's no headroom left.
-  Deliberately standalone from `Backtester` this round -- ADR-0011's
-  single-unit execution model is untouched. Touches zero existing
-  files (Extension Cost: 0). See `DECISIONS.md`, ADR-0021.
+  (`RiskLimits.allocation_per_trade_pct`, default 10% -- renamed from
+  `risk_per_trade_pct` by ADR-0032; this is capital allocation, not a
+  maximum-loss guarantee), the same for every signal regardless of
+  `Signal.confidence`. Sizes down to remaining portfolio exposure
+  headroom (`RiskLimits.max_portfolio_exposure_pct`, default 50% of
+  equity) rather than rejecting outright when the full allocation
+  doesn't fit; only rejects when there's no headroom left. Deliberately
+  standalone from `Backtester` this round -- ADR-0011's single-unit
+  execution model is untouched. Touches zero existing files (Extension
+  Cost: 0). See `DECISIONS.md`, ADR-0021.
 - ✅ Paper Execution (`src/execution/`) -- Sprint 4.
   `PaperBroker.submit_signal(signal, symbol, fill_price,
   sizing_decision=None)` translates a signal into an `Order`, fills it
   instantly and completely at the given price (no slippage/commission),
   and tracks cash + one open position per symbol. `account_state`
-  returns a real `src.risk.AccountState` -- cash plus each position's
-  signed value at entry price for `equity`, unsigned cost basis for
-  `open_exposure` -- closing the loop `PositionSizer` left open. Not
-  marked to market: equity reflects entry-price valuation until a
-  position closes and P&L realizes into cash. Touches zero existing
-  files (Extension Cost: 0). See `DECISIONS.md`, ADR-0022.
+  returns a real `src.portfolio.AccountState` (moved from `src.risk` by
+  ADR-0031) -- cash plus each position's signed value at entry price
+  for `equity`, unsigned cost basis for `open_exposure` -- closing the
+  loop `PositionSizer` left open. Not marked to market: equity reflects
+  entry-price valuation until a position closes and P&L realizes into
+  cash -- this limitation is now stated explicitly in multiple
+  docstrings and pinned by a structural test
+  (`tests/test_architecture.py`). Touches zero existing files
+  (Extension Cost: 0). See `DECISIONS.md`, ADR-0022.
 - ✅ End-to-end proof (`tests/test_integration_paper_trading.py`) --
   Sprint 4. `EMACrossStrategy`'s real signals over real candles, fed
   through `PositionSizer` then `PaperBroker` exactly as a future
@@ -180,8 +202,10 @@ For why things were built the way they were, see `DECISIONS.md`.
   objects.
 - ✅ Broker Connectivity (`src/broker/`) -- Sprint 5.
   `BrokerConnection` (analogous to `DataProvider`) has one method,
-  `get_account() -> src.risk.AccountState` -- reusing the platform's
-  existing account-state currency rather than a parallel model.
+  `get_account() -> src.portfolio.AccountState` (moved from `src.risk`
+  by ADR-0031, so `src/broker` no longer needs to import `src/risk` at
+  all) -- reusing the platform's existing account-state currency rather
+  than a parallel model.
   `AlpacaBroker` reads `ALPACA_API_KEY`/`ALPACA_API_SECRET` from
   arguments or the environment, raises immediately if either is
   missing, defaults to Alpaca's **paper** endpoint (never live, without
@@ -295,34 +319,66 @@ For why things were built the way they were, see `DECISIONS.md`.
   round. Extension Cost: 1 file changed outside the new `tiger.py`/
   `test_tiger.py` (`src/broker/__init__.py`, exports + docstring). See
   `DECISIONS.md`, ADR-0030.
+- ✅ Pre-Sprint 6 architecture review cleanup -- a targeted correction
+  pass, not a redesign, requested after Sprint 5 landed. `src/portfolio/`
+  (new) holds the neutral `AccountState`, moved out of `src/risk` so
+  `broker --> portfolio`, `risk --> portfolio`, `execution -->
+  portfolio` and `broker` never depends on `risk` (ADR-0031).
+  `RiskLimits.risk_per_trade_pct` renamed to `allocation_per_trade_pct`
+  everywhere, with no change to the underlying math -- it was always a
+  fixed allocation, never a stop-based risk model (ADR-0032). `Signal`
+  gained a required, first-class `symbol` field, threaded through
+  `BaseStrategy`/`EMACrossStrategy` and the Experiment Registry's
+  `signals` table; the Backtester needed no code change (ADR-0033).
+  `ResearchReport` gained `renderer_error: str | None`, so a
+  `ClaudeNarrativeRenderer` failure (bad creds, network error, malformed
+  response) is now observable instead of silently indistinguishable
+  from "no API key configured" (ADR-0034). `PaperBroker`'s
+  not-marked-to-market limitation is documented more explicitly across
+  `src/execution` and pinned by a new structural test rather than left
+  as a single roadmap line. New `tests/test_architecture.py` (8 tests)
+  and `tests/test_portfolio.py` (5 tests) protect the corrected shape
+  directly. `requirements.txt`'s direct/transitive mixing was inspected
+  and deliberately left alone (documented as pre-v1.0 debt). No new
+  feature surface, no interface redesign (`BrokerConnection`'s
+  `NotImplementedError` gaps are untouched, now with a documented
+  three-way taxonomy in `src/broker/base.py`), no Experiment Registry
+  scope expansion. Confirmed via real `pytest` on the dev machine
+  (Python 3.14.6): 329 passed, all green. See `DECISIONS.md`, ADR-0031
+  through ADR-0034; `CHANGELOG.md`, "Pre-Sprint 6 -- Architecture
+  Review Cleanup."
 
 ## Current Module
 
-**Sprints 3 and 4 are complete and confirmed. Sprint 5 is in
-progress**: `src/broker/` connectivity, order submission, and order
-cancellation for Alpaca, `IBKRBroker`, `src/reconciliation/`, `IGBroker`
-(connectivity + synchronous order submission), and `TigerBroker`
-(connectivity + account state) are all complete and confirmed --
-305/305 tests pass via real `pytest` on the dev machine (Python
-3.14.6).
+**Sprints 3, 4 and 5 are complete and confirmed, and the Pre-Sprint 6
+architecture review cleanup is complete and confirmed.** `src/broker/`
+connectivity, order submission, and order cancellation for Alpaca,
+`IBKRBroker`, `src/reconciliation/`, `IGBroker` (connectivity +
+synchronous order submission), and `TigerBroker` (connectivity +
+account state) were all confirmed at 305/305 via real `pytest` on the
+dev machine (Python 3.14.6) before the cleanup began. The cleanup
+itself is now likewise confirmed via real `pytest` on the dev machine:
+**329 passed in 1.26s**, all green -- Sprint 6 is unblocked.
 
 What's left on the Market Data Service (moved to Roadmap, not
-blocking Sprint 2, 3, 4, or 5): no data validation beyond
+blocking Sprint 2 through 5, or the cleanup): no data validation beyond
 required-column checks (ADR-0006); caching is CSV-only and re-fetches
 whole ranges on any cache-key miss (ADR-0007); no integration test
 suite against the live yfinance API.
 
 ## Next Task
 
-Setting `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
+Start Sprint 6 (Analytics & Dashboard, see `ROADMAP.md`) -- the
+cleanup's 329 tests are confirmed via real `pytest` on the dev machine.
+Separately available, none yet explicitly requested: setting
+`TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
 `TigerBroker.get_account()` against a real Tiger paper account; setting
 `IG_API_KEY`/`IG_USERNAME`/`IG_PASSWORD` to exercise `IGBroker` against
 a real IG account (`get_account()` and, with a real epic symbol,
 `submit_order()`); and exercising Alpaca's `submit_order`/`get_order`/
 `cancel_order` against the real paper account, then feeding the
 resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
-`reconcile_fill()` for the first live reconciliation -- are all
-available next steps, none yet explicitly requested.
+`reconcile_fill()` for the first live reconciliation.
 
 ## Known Issues
 
@@ -371,14 +427,32 @@ available next steps, none yet explicitly requested.
   there's no second real caller yet to justify a new abstraction's
   shape. Confidence-scaled sizing and a position-count-based portfolio
   limit are deferred, not rejected -- see `DECISIONS.md`, ADR-0021.
+  `allocation_per_trade_pct` (renamed from `risk_per_trade_pct` by
+  ADR-0032) sizes a fixed fraction of equity regardless of stop
+  distance -- true risk-based (stop-loss-distance) sizing is a distinct,
+  unbuilt capability, not just a naming fix; deliberately not invented
+  this round.
 - `PaperBroker` doesn't mark positions to market -- `equity` between
   fills can understate or overstate the account's true value whenever
   an open position has moved in price. No live price feed exists for
   it to mark against yet; real broker connectivity (Sprint 5) is the
-  natural point to revisit this. See `DECISIONS.md`, ADR-0022.
+  natural point to revisit this. Now documented more explicitly across
+  `src/execution`'s docstrings and pinned by a structural test
+  (`tests/test_architecture.py::test_paper_broker_has_no_mechanism_to_mark_a_position_to_a_new_price`)
+  so a future change adding real mark-to-market can't do so silently.
+  See `DECISIONS.md`, ADR-0022, reaffirmed by ADR-0031's cleanup.
 - `PaperBroker` supports only one open position per symbol at a time --
   opening a second raises rather than averaging/scaling into it. Also
   deferred: limit orders, partial fills, slippage, commission.
+  `PaperBroker.submit_signal()`'s own `symbol` argument is not validated
+  against the `Signal.symbol` it's handed (ADR-0033) -- a caller could
+  in principle pass a signal for one symbol and a different `symbol`
+  string; deliberately not added this round to avoid an unrequested
+  behavior change, noted as a candidate follow-up in ADR-0033. `Trade`
+  (`src/backtesting/models.py`) still has no `symbol` field of its own
+  -- it traces back to symbol-carrying `Signal`s via
+  `entry_signal_id`/`exit_signal_id`, which was judged sufficient rather
+  than duplicative.
 - `AlpacaBroker.get_account()` is now confirmed against Alpaca's real
   paper-trading API (`atp doctor`'s Broker Connection check passes with
   real `ALPACA_API_KEY`/`ALPACA_API_SECRET` credentials) -- the first
@@ -399,18 +473,34 @@ available next steps, none yet explicitly requested.
 - Package layout (`src/` vs. `src/ai_trading_platform/`) and flat
   config constants vs. a typed `Settings` object -- both deferred to
   pre-1.0, tracked as ADR-0004 and ADR-0005.
+- `requirements.txt` is a full environment freeze (`pip freeze`), not a
+  curated list of direct dependencies -- inspected during the
+  Pre-Sprint 6 cleanup and deliberately left unchanged, since there's
+  no low-risk way to separate direct from transitive dependencies
+  without an actual migration. Tracked as pre-v1.0 debt in `ROADMAP.md`
+  alongside ADR-0004.
+- `ExperimentRegistry` stores `Signal`s but not yet a full reproducible
+  experiment lineage (strategy name/version, parameters, dataset
+  version, trades, metrics, attribution, research report all linked
+  together) -- scope deliberately held stable during the Pre-Sprint 6
+  cleanup rather than expanded speculatively. Noted as future evolution
+  in `src/experiments/registry.py`'s docstring and `ROADMAP.md`.
 
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 305 passed (7 config + 15 market data + 6 cache
-                          # + 11 indicators + 10 regime + 11 backtesting + 16 experiments
-                          # + 29 cli/doctor + 10 signals + 11 strategy_sdk + 8 attribution
-                          # + 15 research + 11 ema_cross_strategy + 16 risk + 18 execution
-                          # + 5 integration_paper_trading + 34 broker + 15 ibkr
-                          # + 11 reconciliation + 31 ig + 15 tiger)
+pytest                    # should show 329 passed (7 config + 15 market data + 6 cache
+                          # + 11 indicators + 10 regime + 12 backtesting + 17 experiments
+                          # + 29 cli/doctor + 13 signals + 13 strategy_sdk + 8 attribution
+                          # + 17 research + 11 ema_cross_strategy + 17 risk + 18 execution
+                          # + 6 integration_paper_trading + 34 broker + 15 ibkr
+                          # + 11 reconciliation + 31 ig + 15 tiger + 8 architecture
+                          # + 5 portfolio)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until
                           # ALPACA_API_KEY/ALPACA_API_SECRET are set)
 ```
+
+Confirmed via real `pytest` on the dev machine (Python 3.14.6): 329
+passed in 1.26s, all green.

@@ -3,6 +3,9 @@
 `PositionSizer.size()` is tested against `Signal`/`AccountState`
 objects built directly -- no strategy or backtest involved, since
 sizing is deliberately standalone this round (`DECISIONS.md`, ADR-0021).
+`AccountState` is imported from `src.portfolio.models`, the neutral
+domain package it moved to in ADR-0031 -- `src/risk` consumes it, it
+doesn't own it.
 """
 
 from __future__ import annotations
@@ -10,13 +13,16 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from src.portfolio.models import AccountState
 from src.risk.engine import PositionSizer
-from src.risk.models import AccountState, RiskLimits, SizingDecision
+from src.risk.models import RiskLimits, SizingDecision
 from src.signals.models import Signal, SignalDirection
 
 
 def make_signal(direction: SignalDirection = SignalDirection.LONG) -> Signal:
-    return Signal(timestamp=pd.Timestamp("2024-01-01"), direction=direction, confidence=0.8)
+    return Signal(
+        timestamp=pd.Timestamp("2024-01-01"), symbol="SPY", direction=direction, confidence=0.8
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -26,14 +32,14 @@ def make_signal(direction: SignalDirection = SignalDirection.LONG) -> Signal:
 
 def test_risk_limits_defaults():
     limits = RiskLimits()
-    assert limits.risk_per_trade_pct == 0.10
+    assert limits.allocation_per_trade_pct == 0.10
     assert limits.max_portfolio_exposure_pct == 0.50
 
 
-def test_risk_limits_rejects_out_of_range_risk_per_trade_pct():
+def test_risk_limits_rejects_out_of_range_allocation_per_trade_pct():
     for bad_value in (0, -0.1, 1.5):
         with pytest.raises(ValueError):
-            RiskLimits(risk_per_trade_pct=bad_value)
+            RiskLimits(allocation_per_trade_pct=bad_value)
 
 
 def test_risk_limits_rejects_out_of_range_max_portfolio_exposure_pct():
@@ -43,7 +49,19 @@ def test_risk_limits_rejects_out_of_range_max_portfolio_exposure_pct():
 
 
 def test_risk_limits_accepts_boundary_value_one():
-    RiskLimits(risk_per_trade_pct=1.0, max_portfolio_exposure_pct=1.0)  # should not raise
+    RiskLimits(allocation_per_trade_pct=1.0, max_portfolio_exposure_pct=1.0)  # should not raise
+
+
+def test_risk_limits_is_not_a_maximum_loss_model():
+    # allocation_per_trade_pct caps how much capital is committed to a
+    # trade, not how much that trade could lose -- there is no stop-
+    # loss/risk-distance model in this codebase (DECISIONS.md, ADR-0032).
+    # This test exists so the terminology and the docstring's claim stay
+    # honest: RiskLimits has no field describing a stop distance, a
+    # maximum acceptable loss, or anything else loss-based.
+    limits = RiskLimits()
+    loss_related_fields = {"stop_distance", "max_loss_pct", "stop_loss_pct", "risk_distance"}
+    assert not loss_related_fields & set(vars(limits))
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +112,7 @@ def test_size_rejects_non_positive_price():
 
 
 def test_full_size_when_no_open_exposure():
-    limits = RiskLimits(risk_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
+    limits = RiskLimits(allocation_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
     sizer = PositionSizer(limits)
     account = AccountState(equity=100_000, open_exposure=0.0)
 
@@ -103,11 +121,11 @@ def test_full_size_when_no_open_exposure():
     assert decision.approved is True
     assert decision.capital_allocated == pytest.approx(10_000.0)  # 10% of 100k
     assert decision.position_size == pytest.approx(100.0)  # 10,000 / 100
-    assert "full per-trade risk" in decision.reason
+    assert "full per-trade allocation" in decision.reason
 
 
 def test_long_and_short_are_sized_identically():
-    limits = RiskLimits(risk_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
+    limits = RiskLimits(allocation_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
     account = AccountState(equity=100_000, open_exposure=0.0)
 
     long_decision = PositionSizer(limits).size(
@@ -129,7 +147,7 @@ def test_long_and_short_are_sized_identically():
 def test_sized_down_when_desired_capital_exceeds_remaining_headroom():
     # Equity 100k, max exposure 50% = 50k allowed. 45k already
     # committed -> only 5k of headroom left, less than the desired 10k.
-    limits = RiskLimits(risk_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
+    limits = RiskLimits(allocation_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
     sizer = PositionSizer(limits)
     account = AccountState(equity=100_000, open_exposure=45_000)
 
@@ -147,7 +165,7 @@ def test_sized_down_when_desired_capital_exceeds_remaining_headroom():
 
 
 def test_rejected_when_exposure_limit_already_reached():
-    limits = RiskLimits(risk_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
+    limits = RiskLimits(allocation_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
     sizer = PositionSizer(limits)
     account = AccountState(equity=100_000, open_exposure=50_000)  # exactly at the cap
 
@@ -160,7 +178,7 @@ def test_rejected_when_exposure_limit_already_reached():
 
 
 def test_rejected_when_exposure_already_over_the_limit():
-    limits = RiskLimits(risk_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
+    limits = RiskLimits(allocation_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
     sizer = PositionSizer(limits)
     account = AccountState(equity=100_000, open_exposure=60_000)  # somehow over the cap
 

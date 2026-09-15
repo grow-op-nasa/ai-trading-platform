@@ -9,6 +9,7 @@ strategy's job. Strategies produce signals; the Backtester (and later,
 
     Signal(
         timestamp=candles.index[-1],
+        symbol="SPY",
         direction=SignalDirection.LONG,
         confidence=0.87,
         metadata={"trend": "UP", "volatility": "LOW", "reason": "EMA20 crossed EMA50"},
@@ -18,6 +19,16 @@ Signals are emitted sparsely -- one per decision point, not one per
 candle. A strategy that's been LONG for the last 50 bars with nothing
 new to say emits nothing on those bars; the Backtester holds the last
 known direction until the next Signal arrives.
+
+`symbol` (`DECISIONS.md`, ADR-0033) is a first-class, typed field --
+not a `metadata` key -- because a Signal needs to be independently
+identifiable once the platform deals with more than one instrument at a
+time (multiple brokers, multiple symbols per portfolio). Before
+ADR-0033, `symbol` existed only in whatever surrounding context happened
+to be passed alongside a Signal (e.g. `PaperBroker.submit_signal`'s own
+`symbol` argument) -- a Signal read back in isolation (from
+`ExperimentRegistry`, say) had no way to say which instrument it was
+about.
 """
 
 from __future__ import annotations
@@ -52,6 +63,10 @@ class Signal:
 
     Args:
         timestamp: the candle at which this decision was made.
+        symbol: which instrument this decision is about. First-class and
+            required (`DECISIONS.md`, ADR-0033) -- not a `metadata` key
+            -- so a Signal remains identifiable on its own, independent
+            of whatever backtest or strategy context it came from.
         direction: what position the portfolio should move toward.
         confidence: 0.0-1.0. How sure the strategy is, not a position
             size -- the current Backtester execution model is still
@@ -70,6 +85,7 @@ class Signal:
     """
 
     timestamp: pd.Timestamp
+    symbol: str
     direction: SignalDirection
     confidence: float
     metadata: dict[str, Any] = field(default_factory=dict)

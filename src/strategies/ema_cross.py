@@ -34,6 +34,9 @@ class EMACrossStrategy(BaseStrategy):
     by construction (ADR-0015), not one signal per candle.
 
     Args:
+        symbol: which instrument this strategy instance decides for
+            (`DECISIONS.md`, ADR-0033) -- attached to every `Signal` it
+            emits via `BaseStrategy.emit_signal()`.
         fast: EMA period for the fast average.
         slow: EMA period for the slow average. Must be greater than
             `fast`, or the "cross" has no meaning.
@@ -49,6 +52,7 @@ class EMACrossStrategy(BaseStrategy):
 
     def __init__(
         self,
+        symbol: str,
         fast: int = DEFAULT_FAST_PERIOD,
         slow: int = DEFAULT_SLOW_PERIOD,
         confidence: float = DEFAULT_CONFIDENCE,
@@ -57,7 +61,7 @@ class EMACrossStrategy(BaseStrategy):
             raise ValueError(
                 f"fast period ({fast}) must be less than slow period ({slow})"
             )
-        super().__init__(name="ema_cross")
+        super().__init__(name="ema_cross", symbol=symbol)
         self._fast = fast
         self._slow = slow
         self._confidence = confidence

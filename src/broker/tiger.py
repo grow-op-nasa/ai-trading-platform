@@ -42,7 +42,7 @@ from typing import Protocol
 from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
 from src.broker.models import BrokerOrder, OrderRequest
-from src.risk.models import AccountState
+from src.portfolio.models import AccountState
 
 _NOT_IMPLEMENTED_MESSAGE = (
     "TigerBroker does not yet support {method}() -- this round is scoped "

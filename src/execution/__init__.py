@@ -2,10 +2,12 @@
 it, and tracks the resulting portfolio.
 
 Closes the loop `DECISIONS.md` ADR-0021 (`src/risk`) left open --
-`PaperBroker.account_state` is a real `AccountState` the next
-`PositionSizer.size()` call can consume directly. Deliberately simple
-this round: market orders only, instant full fills, no live
-mark-to-market, one open position per symbol at a time. Real broker
+`PaperBroker.account_state` is a real `src.portfolio.AccountState` the
+next `PositionSizer.size()` call can consume directly. Deliberately
+simple this round: market orders only, instant full fills, no live
+mark-to-market (`account_state.equity` values open positions at their
+frozen entry price, not a current market price -- see `engine.py`'s
+docstrings), one open position per symbol at a time. Real broker
 connectivity is Sprint 5. See `DECISIONS.md`, ADR-0022.
 """
 

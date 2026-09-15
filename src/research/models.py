@@ -41,8 +41,21 @@ class ResearchFindings:
 class ResearchReport:
     """The final output of the AI Research Reporter: the deterministic
     findings plus one rendered narrative -- a research recommendation
-    for a person to weigh, never a trading decision (ADR-0017)."""
+    for a person to weigh, never a trading decision (ADR-0017).
+
+    `renderer_error` (`DECISIONS.md`, ADR-0034) distinguishes two
+    different reasons `rendered_by` can be `"fallback"`: `None` means
+    the fallback was simply the normal choice (no API key configured, or
+    `anthropic` not installed) -- nothing went wrong. A non-`None`
+    message means a `ClaudeNarrativeRenderer` was actually attempted and
+    failed (bad key, network error, malformed response, timeout, etc.),
+    and the platform fell back to keep the report itself from being
+    lost. `findings` (the deterministic source of truth) are identical
+    either way -- only which prose renderer produced `narrative` is in
+    question.
+    """
 
     findings: ResearchFindings
     narrative: str
     rendered_by: str  # "fallback" or "claude"
+    renderer_error: str | None = None

@@ -50,6 +50,19 @@ with feature work. Full rationale in `DECISIONS.md`.
 
 Best sequenced together, since both land in the same files.
 
+- **Direct-vs-transitive dependency separation**: `requirements.txt`
+  today is a full environment freeze (includes Jupyter, Streamlit,
+  plotting/notebook tooling, and their own transitive dependencies),
+  not a curated list of this platform's direct runtime dependencies.
+  Flagged in the architecture review cleanup (pre-Sprint 6) but
+  deliberately not touched then -- splitting it into direct vs.
+  dev/transitive requires verifying nothing genuinely needed at runtime
+  gets dropped, real risk of breaking a working environment for a
+  cosmetic improvement. Left as documented pre-v1.0 debt, the same
+  "tracked, not yet built" posture as ADR-0004's package-layout
+  migration, rather than a disruptive change made in an unrelated
+  cleanup pass.
+
 ## Sprint 2 -- Research Engine ✅ Complete
 
 Pivoted from a narrow "build indicators" sprint into a broader
@@ -107,8 +120,10 @@ principles in `DECISIONS.md` (ADR-0000: extensibility; ADR-0017: every
 component produces knowledge for the next).
 
 - ✅ **Module 1 -- Signal Framework** (`src/signals/`): `Signal`
-  (`timestamp`, `direction`, `confidence`, `metadata`, `id`) and
-  `SignalDirection` (`LONG`/`SHORT`/`FLAT`). No price field -- a Signal
+  (`timestamp`, `symbol`, `direction`, `confidence`, `metadata`, `id` --
+  `symbol` added in the pre-Sprint 6 architecture review, `DECISIONS.md`
+  ADR-0033) and `SignalDirection` (`LONG`/`SHORT`/`FLAT`). No price
+  field -- a Signal
   is a decision, not a market event or an order. Strategies emit
   signals sparsely (one per decision point), and the Backtester
   (`src/strategies/base.py`, `src/backtesting/`) was updated to consume
@@ -153,7 +168,14 @@ component produces knowledge for the next).
   when the evidence actually supports one -- no session-of-day claim
   is possible yet, since that axis is still deferred pending ADR-0006.
   This is a research recommendation for a person to weigh, not a
-  trading decision (ADR-0017). See `DECISIONS.md`, ADR-0020.
+  trading decision (ADR-0017). A `ClaudeNarrativeRenderer` failure
+  (missing package, bad key, network error, malformed response, timeout)
+  still falls back to the deterministic renderer rather than losing the
+  report, and the failure is now recorded, not silently hidden --
+  `ResearchReport.renderer_error` (pre-Sprint 6 architecture review,
+  `DECISIONS.md` ADR-0034) distinguishes "fell back because Claude
+  actually failed" from "fell back because it was simply never
+  configured." See `DECISIONS.md`, ADR-0020, ADR-0034.
 
 **Success criteria:** every strategy returns a standardized `Signal`
 (✅); a new strategy can be added without modifying the Backtester
@@ -184,21 +206,31 @@ below, where it's now built.
   logic gets added. Replaces the demonstration-only class that
   previously lived in `tests/test_strategy_sdk.py`.
 - ✅ `src/risk/`: `PositionSizer` -- position sizing at a fixed fraction
-  of account equity (`RiskLimits.risk_per_trade_pct`, default 10%),
-  identical regardless of `Signal.confidence`; a portfolio-level
-  exposure cap (`RiskLimits.max_portfolio_exposure_pct`, default 50%)
-  that sizes down before it ever rejects outright. Deliberately
-  standalone from `Backtester` this round -- see `DECISIONS.md`,
-  ADR-0021. Confidence-scaled sizing and a position-count-based
-  portfolio limit are deferred, not rejected.
+  of account equity (`RiskLimits.allocation_per_trade_pct`, default 10%
+  -- renamed from `risk_per_trade_pct` in the pre-Sprint 6 architecture
+  review, `DECISIONS.md` ADR-0032, since it's capital allocation, not a
+  maximum-loss guarantee), identical regardless of `Signal.confidence`;
+  a portfolio-level exposure cap (`RiskLimits.max_portfolio_exposure_pct`,
+  default 50%) that sizes down before it ever rejects outright.
+  Deliberately standalone from `Backtester` this round -- see
+  `DECISIONS.md`, ADR-0021. Confidence-scaled sizing and a
+  position-count-based portfolio limit are deferred, not rejected. True
+  risk-based (stop-distance) sizing is a distinct, unbuilt capability
+  (ADR-0032).
 - ✅ `src/execution/`: `PaperBroker` -- translates a `Signal` +
   `SizingDecision` into an `Order`, fills it instantly and completely
   at the caller-supplied price (no slippage/commission), tracks cash
   and one open position per symbol, and exposes `account_state` as a
-  real `src.risk.AccountState` -- closing the loop `PositionSizer` left
-  open. Not marked to market. See `DECISIONS.md`, ADR-0022. Real broker
-  connectivity, limit orders, partial fills, and multi-position
-  averaging are deferred, not rejected.
+  real `src.portfolio.AccountState` (moved out of `src/risk` in the
+  pre-Sprint 6 architecture review, `DECISIONS.md` ADR-0031) -- closing
+  the loop `PositionSizer` left open. **Not marked to market** --
+  `account_state.equity` values each open position at its own frozen
+  entry price, never a live/current price; this must not become the
+  unexamined foundation of live multi-position risk sizing before real
+  mark-to-market exists (see `DECISIONS.md`, ADR-0022, strengthened by
+  ADR-0031). See `DECISIONS.md`, ADR-0022. Real broker connectivity,
+  limit orders, partial fills, and multi-position averaging are
+  deferred, not rejected.
 - ✅ Full loop proven end-to-end
   (`tests/test_integration_paper_trading.py`): `EMACrossStrategy`'s
   real signals over real candles, fed through `PositionSizer` then
@@ -293,6 +325,55 @@ once there's a second real caller that needs one.
   deliberately deferred, even though Tiger's API looks better suited to
   a real order lifecycle than IG's does; not started.
 
+## Pre-Sprint 6 -- Architecture review cleanup ✅ Complete
+
+A targeted correction pass, not a redesign -- four architectural
+inconsistencies an architecture review surfaced in Sprint 4-5's work,
+fixed before starting Sprint 6 rather than carried forward. Every
+existing ADR's deliberate deferral (confidence-scaled sizing,
+stop-based risk, real mark-to-market, Tiger/IB order lifecycles, IG's
+structural `get_order`/`cancel_order` gap, etc.) was left exactly as
+deferred -- none of that scope moved.
+
+- ✅ **Dependency direction**: `AccountState` moved out of `src/risk`
+  into a new, neutral `src/portfolio` package that depends on nothing
+  else in this codebase -- `src/broker` no longer imports `src/risk` to
+  describe an account. See `DECISIONS.md`, ADR-0031.
+- ✅ **Risk terminology**: `RiskLimits.risk_per_trade_pct` renamed to
+  `allocation_per_trade_pct` -- it always meant capital allocation, not
+  maximum loss, and there is still no stop-loss/risk-distance model in
+  this codebase. Behavior unchanged; naming corrected. See
+  `DECISIONS.md`, ADR-0032.
+- ✅ **Signal identity**: `Signal` gained a required, first-class
+  `symbol` field, threaded through `BaseStrategy`/`EMACrossStrategy`,
+  the Backtester (no code change needed), and `ExperimentRegistry`'s
+  persistence layer. A `Signal` read back in isolation now always says
+  which instrument it's about. See `DECISIONS.md`, ADR-0033.
+- ✅ **Research transparency**: `ResearchReport.renderer_error` makes a
+  `ClaudeNarrativeRenderer` failure observable instead of collapsing
+  into the same `rendered_by == "fallback"` state as the normal,
+  unconfigured-Claude path. Deterministic findings and the fallback
+  guarantee are unchanged. See `DECISIONS.md`, ADR-0034.
+- ✅ **Documentation-only**: `PaperBroker.account_state.equity`'s
+  not-marked-to-market limitation is now stated explicitly in multiple
+  places (module docstring, `account_state`'s own docstring, this file)
+  and pinned by a structural test
+  (`tests/test_architecture.py::test_paper_broker_has_no_mechanism_to_mark_a_position_to_a_new_price`)
+  that fails on purpose if real mark-to-market is ever added without a
+  deliberate ADR -- no behavior changed.
+- Also reconciled: `src/broker/base.py`'s docstring now names the three
+  different reasons a concrete broker's method can raise
+  `NotImplementedError` (not yet built vs. structurally impossible given
+  the broker's own API vs. genuinely unsupported), so a broker's own
+  docstring is read as authoritative rather than assumed. Requirements
+  file cleanup (`requirements.txt` mixing direct and transitive/dev
+  dependencies) was inspected and deliberately left alone -- tracked as
+  pre-v1.0 debt above, not fixed here, since a disruptive dependency
+  change didn't belong in a cleanup pass this narrowly scoped.
+
+Confirmed via real `pytest` on the dev machine: see `PROJECT_STATE.md`
+for the exact count.
+
 ## Sprint 6 -- Analytics & Dashboard (planned)
 
 - `src/analytics/`: backtest performance metrics (Sharpe, drawdown,
@@ -316,3 +397,13 @@ once there's a second real caller that needs one.
   exists and returns a real exit code) on every push -- not set up yet.
 - Documentation set (`PROJECT_STATE.md`, `ARCHITECTURE.md`,
   `CHANGELOG.md`, `DECISIONS.md`, `ROADMAP.md`) updated every sprint.
+- **Full experiment lineage** (`src/experiments/`): today only signals
+  are first-class rows (`DECISIONS.md`, ADR-0016); trades, attribution,
+  and research reports stay in-memory, produced on demand from a
+  `BacktestResult`/`AttributionReport` pair. A future evolution could
+  let one experiment retain a complete, reproducible lineage --
+  strategy/version, parameters, dataset/version, signals, trades,
+  metrics, attribution, and a research report, all queryable together.
+  Deliberately not built in the pre-Sprint 6 architecture cleanup or
+  any sprint so far -- noted here so the shape isn't lost, not because
+  it's scheduled.

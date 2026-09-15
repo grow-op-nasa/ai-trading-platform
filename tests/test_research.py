@@ -298,6 +298,9 @@ def test_reporter_uses_fallback_when_no_api_key(monkeypatch):
 
     assert isinstance(report, ResearchReport)
     assert report.rendered_by == "fallback"
+    # No renderer was ever attempted here -- this is the normal,
+    # unconfigured-Claude path, not a failure (DECISIONS.md, ADR-0034).
+    assert report.renderer_error is None
 
 
 def test_reporter_uses_injected_renderer_when_given():
@@ -312,6 +315,22 @@ def test_reporter_uses_injected_renderer_when_given():
 
     assert report.narrative == "stubbed narrative"
     assert report.rendered_by == "claude"
+    assert report.renderer_error is None
+
+
+def test_reporter_uses_claude_renderer_successfully_end_to_end(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "anthropic", _FakeAnthropicModule())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    result = make_result()
+    attribution = make_attribution(total_trades=1)
+
+    report = ResearchReporter().run(result, attribution)
+
+    assert report.rendered_by == "claude"
+    assert report.renderer_error is None
+    assert report.narrative == "A rephrased research summary."
 
 
 def test_reporter_falls_back_when_renderer_raises():
@@ -326,6 +345,30 @@ def test_reporter_falls_back_when_renderer_raises():
 
     assert report.rendered_by == "fallback"
     assert "ema_cross" in report.narrative or report.findings.strategy_name in report.narrative
+    # The failure is observable, not silently concealed (DECISIONS.md,
+    # ADR-0034) -- an operator can tell this apart from the normal,
+    # no-key fallback path.
+    assert report.renderer_error == "network is down"
+
+
+def test_reporter_deterministic_findings_survive_a_renderer_failure():
+    class _BrokenRenderer:
+        def render(self, findings):
+            raise RuntimeError("network is down")
+
+    result = make_result(strategy_name="orb", sharpe=2.0)
+    attribution = make_attribution(total_trades=7, win_rate=0.7)
+
+    working_report = ResearchReporter().run(result, attribution)
+    broken_report = ResearchReporter(renderer=_BrokenRenderer()).run(result, attribution)
+
+    # The deterministic findings are identical regardless of whether the
+    # prose renderer succeeded or failed -- only rendered_by/
+    # renderer_error/narrative differ. The LLM never gets a chance to
+    # alter what facts exist, only how they're phrased.
+    assert broken_report.findings == working_report.findings
+    assert broken_report.rendered_by == "fallback"
+    assert broken_report.renderer_error == "network is down"
 
 
 def test_reporter_findings_are_always_populated_regardless_of_renderer():

@@ -9,8 +9,8 @@
 Closes the loop `DECISIONS.md` ADR-0021 left open: `PositionSizer`
 decides how much to risk, `PaperBroker` simulates actually taking that
 position and tracks the resulting portfolio, and `account_state` is a
-real `src.risk.AccountState` the next `PositionSizer.size()` call can
-consume directly. Deliberately simple (`DECISIONS.md`, ADR-0022):
+real `src.portfolio.AccountState` the next `PositionSizer.size()` call
+can consume directly. Deliberately simple (`DECISIONS.md`, ADR-0022):
 market orders only, filled immediately and completely at whatever price
 the caller supplies (no slippage or commission modeled, matching
 ADR-0011's Backtester simplifications), one open position per symbol at
@@ -18,12 +18,20 @@ a time (no scaling into or averaging an existing position), and no
 live mark-to-market -- an open position's contribution to `equity` is
 frozen at its own entry price until it's closed and the P&L is
 realized into cash.
+
+**This is not a realistic live portfolio valuation.**
+`PaperBroker.account_state.equity` deliberately does not mark open
+positions to current market prices -- see `account_state`'s own
+docstring below and `DECISIONS.md`, ADR-0022/ADR-0031, for why this
+must not silently become the unexamined foundation of live,
+multi-position risk sizing before real mark-to-market exists.
 """
 
 from __future__ import annotations
 
 from src.execution.models import Fill, Order, OrderSide, Position
-from src.risk.models import AccountState, SizingDecision
+from src.portfolio.models import AccountState
+from src.risk.models import SizingDecision
 from src.signals.models import Signal, SignalDirection
 
 
@@ -49,14 +57,24 @@ class PaperBroker:
 
     @property
     def account_state(self) -> AccountState:
-        """The broker's current state as a `src.risk.AccountState`,
+        """The broker's current state as a `src.portfolio.AccountState`,
         ready to feed straight into `PositionSizer.size()` for the next
         decision.
 
-        `equity` values each open position at its own entry price, not
-        a live mark-to-market (see the module docstring) -- floating
-        P&L on an open position isn't reflected until it's closed and
-        realized into cash.
+        **Not mark-to-market.** `equity` values each open position at
+        its own frozen entry price, never at a live/current market
+        price -- floating P&L on an open position isn't reflected here
+        at all until that position is closed and the P&L is realized
+        into cash (see the module docstring). Concretely: if a symbol's
+        price moves after a position is opened, this property's `equity`
+        does not change because of that move -- only a subsequent close
+        changes it. This is an intentional simplification of the paper
+        execution model (`DECISIONS.md`, ADR-0022), not a bug, but it
+        means this value should not be treated as a realistic live
+        portfolio valuation. Real mark-to-market (revaluing every open
+        position against a current price on every read) is a distinct,
+        unbuilt capability -- do not build multi-position live risk
+        sizing on top of this property without it.
         """
         market_value = sum(
             position.quantity * position.entry_price

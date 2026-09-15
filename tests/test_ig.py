@@ -16,7 +16,7 @@ from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
 from src.broker.ig import IG_DEMO_BASE_URL, IG_LIVE_BASE_URL, IGBroker
 from src.broker.models import OrderRequest, OrderSide, OrderStatus
-from src.risk.models import AccountState
+from src.portfolio.models import AccountState
 
 
 class FakeResponse:

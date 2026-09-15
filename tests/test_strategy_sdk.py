@@ -53,13 +53,18 @@ def test_base_strategy_cannot_be_instantiated_directly():
 
 
 def test_name_property_returns_constructor_value():
-    strategy = MinimalStrategy(name="minimal")
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
     assert strategy.name == "minimal"
+
+
+def test_symbol_property_returns_constructor_value():
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
+    assert strategy.symbol == "SPY"
 
 
 def test_indicator_matches_direct_indicator_engine_call():
     candles = make_candles([100, 101, 102, 103, 104, 105])
-    strategy = MinimalStrategy(name="minimal")
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
 
     via_sdk = strategy.indicator(candles, "SMA", period=3)
     via_engine = IndicatorEngine(candles).calculate("SMA", period=3)
@@ -69,19 +74,19 @@ def test_indicator_matches_direct_indicator_engine_call():
 
 def test_require_columns_passes_when_present():
     candles = make_candles([100, 101, 102])
-    strategy = MinimalStrategy(name="minimal")
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
     strategy.require_columns(candles, "close", "volume")  # should not raise
 
 
 def test_require_columns_defaults_to_ohlcv():
     candles = make_candles([100, 101, 102])
-    strategy = MinimalStrategy(name="minimal")
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
     strategy.require_columns(candles)  # no columns given -> defaults to OHLCV
 
 
 def test_require_columns_raises_with_clear_message_when_missing():
     candles = make_candles([100, 101, 102]).drop(columns=["volume"])
-    strategy = MinimalStrategy(name="minimal")
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
 
     with pytest.raises(ValueError) as exc_info:
         strategy.require_columns(candles)
@@ -91,7 +96,7 @@ def test_require_columns_raises_with_clear_message_when_missing():
 
 
 def test_emit_signal_merges_strategy_name_into_metadata():
-    strategy = MinimalStrategy(name="minimal")
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
     signal = strategy.emit_signal(
         pd.Timestamp("2024-01-01"), SignalDirection.LONG, confidence=0.9, reason="test"
     )
@@ -100,8 +105,17 @@ def test_emit_signal_merges_strategy_name_into_metadata():
     assert signal.metadata["reason"] == "test"
 
 
+def test_emit_signal_attaches_the_strategys_symbol():
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
+    signal = strategy.emit_signal(
+        pd.Timestamp("2024-01-01"), SignalDirection.LONG, confidence=0.9
+    )
+
+    assert signal.symbol == "SPY"
+
+
 def test_emit_signal_author_supplied_strategy_key_wins_on_collision():
-    strategy = MinimalStrategy(name="minimal")
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
     signal = strategy.emit_signal(
         pd.Timestamp("2024-01-01"),
         SignalDirection.LONG,
@@ -113,7 +127,7 @@ def test_emit_signal_author_supplied_strategy_key_wins_on_collision():
 
 
 def test_emit_signal_rejects_invalid_confidence():
-    strategy = MinimalStrategy(name="minimal")
+    strategy = MinimalStrategy(name="minimal", symbol="SPY")
     with pytest.raises(ValueError):
         strategy.emit_signal(pd.Timestamp("2024-01-01"), SignalDirection.LONG, confidence=1.5)
 
@@ -121,7 +135,7 @@ def test_emit_signal_rejects_invalid_confidence():
 def test_ema_cross_strategy_runs_end_to_end_through_backtester():
     closes = [100, 101, 99, 102, 104, 103, 106, 108, 107, 110, 112, 111]
     candles = make_candles(closes)
-    strategy = EMACrossStrategy(fast=2, slow=4)
+    strategy = EMACrossStrategy(symbol="SPY", fast=2, slow=4)
 
     result = Backtester().run(strategy, candles)
 
@@ -129,6 +143,7 @@ def test_ema_cross_strategy_runs_end_to_end_through_backtester():
     assert isinstance(result.trades, list)
     assert isinstance(result.signals, list)
     for signal in result.signals:
+        assert signal.symbol == "SPY"
         assert signal.metadata["strategy"] == "ema_cross"
         assert "reason" in signal.metadata
 
@@ -136,7 +151,7 @@ def test_ema_cross_strategy_runs_end_to_end_through_backtester():
 def test_ema_cross_strategy_instance_is_reusable_across_runs():
     # self.indicator() is stateless, so the same instance should work
     # against a second, different candle set without stale state.
-    strategy = EMACrossStrategy(fast=2, slow=4)
+    strategy = EMACrossStrategy(symbol="SPY", fast=2, slow=4)
     first_candles = make_candles([100, 101, 99, 102, 104, 103, 106, 108])
     second_candles = make_candles([50, 49, 51, 53, 52, 55, 54, 58])
 

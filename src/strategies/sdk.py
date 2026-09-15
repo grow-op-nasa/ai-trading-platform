@@ -16,8 +16,8 @@ helpers can still just implement the three methods directly, exactly
 as before.
 
     class EMACrossStrategy(BaseStrategy):
-        def __init__(self, fast: int = 20, slow: int = 50):
-            super().__init__(name="ema_cross")
+        def __init__(self, symbol: str, fast: int = 20, slow: int = 50):
+            super().__init__(name="ema_cross", symbol=symbol)
             self._fast = fast
             self._slow = slow
 
@@ -71,15 +71,28 @@ class BaseStrategy(ABC):
 
     Args:
         name: short, human-readable identifier for this strategy.
+        symbol: which instrument this strategy instance decides for.
+            Required (`DECISIONS.md`, ADR-0033) -- `emit_signal()`
+            attaches it to every `Signal` it constructs, since `Signal`
+            now carries `symbol` as a first-class field. Matches how
+            `Backtester`/`PaperBroker` already run one strategy instance
+            against one instrument's candles at a time; a strategy that
+            genuinely wants to decide across multiple instruments in one
+            run isn't supported by this SDK yet.
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, symbol: str) -> None:
         self._name = name
-        self.log = logger.bind(strategy=name)
+        self._symbol = symbol
+        self.log = logger.bind(strategy=name, symbol=symbol)
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def symbol(self) -> str:
+        return self._symbol
 
     @abstractmethod
     def prepare(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -134,11 +147,14 @@ class BaseStrategy(ABC):
         Automatically merges `{"strategy": self.name}` into `metadata`
         (author-supplied keys win on collision) so a signal remains
         traceable back to its origin even when inspected independently
-        of the `BacktestResult`/experiment it came from.
+        of the `BacktestResult`/experiment it came from. Also attaches
+        `self.symbol` to every `Signal` it builds -- a strategy instance
+        decides for exactly one instrument (see `__init__`).
         """
         merged_metadata = {"strategy": self.name, **metadata}
         signal = Signal(
             timestamp=timestamp,
+            symbol=self._symbol,
             direction=direction,
             confidence=confidence,
             metadata=merged_metadata,

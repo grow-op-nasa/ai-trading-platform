@@ -50,7 +50,7 @@ import requests
 from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
 from src.broker.models import BrokerOrder, OrderRequest, OrderSide, OrderStatus
-from src.risk.models import AccountState
+from src.portfolio.models import AccountState
 
 IG_DEMO_BASE_URL = "https://demo-api.ig.com/gateway/deal"
 IG_LIVE_BASE_URL = "https://api.ig.com/gateway/deal"

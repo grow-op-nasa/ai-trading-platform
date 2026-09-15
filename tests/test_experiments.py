@@ -20,6 +20,7 @@ def make_registry(tmp_path) -> ExperimentRegistry:
 def make_signal(**overrides) -> Signal:
     defaults = dict(
         timestamp=pd.Timestamp("2024-01-01"),
+        symbol="SPY",
         direction=SignalDirection.LONG,
         confidence=0.8,
         metadata={"reason": "test"},
@@ -197,9 +198,27 @@ def test_save_and_get_signals_round_trips(tmp_path):
     assert len(fetched) == 1
     assert fetched[0].id == signal.id
     assert fetched[0].timestamp == signal.timestamp
+    assert fetched[0].symbol == signal.symbol
     assert fetched[0].direction == signal.direction
     assert fetched[0].confidence == signal.confidence
     assert fetched[0].metadata == {"trend": "UP", "reason": "EMA20 crossed EMA50"}
+
+
+def test_save_and_get_signals_round_trips_symbol_for_multiple_instruments(tmp_path):
+    # Symbol lineage (DECISIONS.md, ADR-0033): persistence and
+    # reconstruction must not collapse distinct symbols together.
+    registry = make_registry(tmp_path)
+    experiment_id = registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+    spy_signal = make_signal(symbol="SPY")
+    qqq_signal = make_signal(symbol="QQQ")
+
+    registry.save_signals(experiment_id, [spy_signal, qqq_signal])
+    fetched_by_id = {s.id: s for s in registry.get_signals(experiment_id)}
+
+    assert fetched_by_id[spy_signal.id].symbol == "SPY"
+    assert fetched_by_id[qqq_signal.id].symbol == "QQQ"
 
 
 def test_get_signals_orders_by_timestamp(tmp_path):
@@ -267,3 +286,4 @@ def test_signals_persist_across_reconnects(tmp_path):
 
     assert fetched is not None
     assert fetched.metadata == signal.metadata
+    assert fetched.symbol == signal.symbol

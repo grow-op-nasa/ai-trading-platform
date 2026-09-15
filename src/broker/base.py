@@ -14,6 +14,31 @@ Connectivity/account state (`DECISIONS.md`, ADR-0023), order submission
 of `src/execution`'s `Order`/`Fill`, since a real order's asynchronous
 lifecycle (pending, partial fill, rejection, cancellation) doesn't fit
 `PaperBroker`'s synchronous, instant-fill model.
+
+`get_account()` returns `src.portfolio.AccountState`, a neutral domain
+model that lives outside both `src/broker` and `src/risk`
+(`DECISIONS.md`, ADR-0031) -- broker infrastructure is foundational and
+should not have to depend on the risk layer just to describe an
+account.
+
+Not every concrete broker implements every method identically, and a
+`NotImplementedError` here does not always mean the same thing -- three
+distinct cases show up across `src/broker`'s concrete implementations,
+and each one's docstring/module comment says which applies: (1) **not
+yet implemented** -- the broker's API could support this, but this
+codebase hasn't built it yet (e.g. `IBKRBroker`/`TigerBroker`'s
+`submit_order`, pending their own design round); (2) **intentionally
+impossible given the broker's own API model** -- no design round would
+change the answer, because the broker's data model doesn't have the
+concept this method asks for (e.g. `IGBroker.get_order`/`cancel_order`:
+a filled market order becomes a position, not a queryable order object,
+so there is nothing to poll or cancel); (3) genuinely unsupported by
+this interface entirely (not currently exercised by any broker in this
+codebase, but distinct from the other two in principle). Treat a
+`NotImplementedError`'s message as authoritative about which of these
+applies -- do not assume case (1) (a gap to eventually fill) when a
+broker actually means case (2) (a structural fact about how that broker
+works).
 """
 
 from __future__ import annotations
@@ -21,7 +46,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from src.broker.models import BrokerOrder, OrderRequest
-from src.risk.models import AccountState
+from src.portfolio.models import AccountState
 
 
 class BrokerConnection(ABC):
@@ -32,10 +57,11 @@ class BrokerConnection(ABC):
         """Fetch the account's current state from the broker.
 
         Returns:
-            A real `src.risk.AccountState` -- the same currency
-            `PositionSizer` already consumes from `PaperBroker`
-            (`src/execution`), so a live broker slots into the existing
-            sizing pipeline without a new, parallel account model.
+            A real `src.portfolio.AccountState` -- the same currency
+            `PositionSizer` (`src/risk`) already consumes from
+            `PaperBroker` (`src/execution`), so a live broker slots into
+            the existing sizing pipeline without a new, parallel account
+            model.
 
         Raises:
             BrokerAuthenticationError: credentials were rejected.

@@ -223,7 +223,7 @@ def test_broker_connection_not_implemented_when_credentials_missing(monkeypatch)
 
 
 def test_broker_connection_ok_when_alpaca_reachable(monkeypatch):
-    from src.risk.models import AccountState
+    from src.portfolio.models import AccountState
 
     monkeypatch.setenv("ALPACA_API_KEY", "key")
     monkeypatch.setenv("ALPACA_API_SECRET", "secret")

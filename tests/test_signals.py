@@ -11,6 +11,7 @@ from src.signals.models import Signal, SignalDirection
 def make_signal(**overrides) -> Signal:
     defaults = dict(
         timestamp=pd.Timestamp("2024-01-01"),
+        symbol="SPY",
         direction=SignalDirection.LONG,
         confidence=0.8,
         metadata={"reason": "test"},
@@ -66,6 +67,7 @@ def test_signal_is_immutable():
 def test_signal_metadata_defaults_to_empty_dict():
     signal = Signal(
         timestamp=pd.Timestamp("2024-01-01"),
+        symbol="SPY",
         direction=SignalDirection.FLAT,
         confidence=0.5,
     )
@@ -74,6 +76,33 @@ def test_signal_metadata_defaults_to_empty_dict():
 
 def test_two_signals_with_identical_fields_still_have_different_ids():
     ts = pd.Timestamp("2024-01-01")
-    first = Signal(timestamp=ts, direction=SignalDirection.LONG, confidence=0.9)
-    second = Signal(timestamp=ts, direction=SignalDirection.LONG, confidence=0.9)
+    first = Signal(timestamp=ts, symbol="SPY", direction=SignalDirection.LONG, confidence=0.9)
+    second = Signal(timestamp=ts, symbol="SPY", direction=SignalDirection.LONG, confidence=0.9)
     assert first.id != second.id
+
+
+# ---------------------------------------------------------------------------
+# symbol -- first-class field (DECISIONS.md, ADR-0033)
+# ---------------------------------------------------------------------------
+
+
+def test_signal_carries_the_symbol_it_was_created_for():
+    signal = make_signal(symbol="QQQ")
+    assert signal.symbol == "QQQ"
+
+
+def test_signal_symbol_is_not_stored_in_metadata():
+    # symbol must be its own typed field, not a metadata workaround.
+    signal = make_signal(symbol="GLD", metadata={"reason": "test"})
+    assert "symbol" not in signal.metadata
+    assert signal.symbol == "GLD"
+
+
+def test_two_signals_for_different_symbols_are_distinguishable_without_context():
+    # The whole point of ADR-0033: a Signal read back in isolation (no
+    # surrounding backtest/strategy context) still says which
+    # instrument it's about.
+    ts = pd.Timestamp("2024-01-01")
+    spy_signal = Signal(timestamp=ts, symbol="SPY", direction=SignalDirection.LONG, confidence=0.9)
+    qqq_signal = Signal(timestamp=ts, symbol="QQQ", direction=SignalDirection.LONG, confidence=0.9)
+    assert spy_signal.symbol != qqq_signal.symbol

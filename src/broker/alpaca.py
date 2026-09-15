@@ -36,7 +36,7 @@ import requests
 from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
 from src.broker.models import BrokerOrder, OrderRequest, OrderSide, OrderStatus
-from src.risk.models import AccountState
+from src.portfolio.models import AccountState
 
 ALPACA_PAPER_BASE_URL = "https://paper-api.alpaca.markets"
 ALPACA_LIVE_BASE_URL = "https://api.alpaca.markets"

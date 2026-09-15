@@ -19,7 +19,9 @@ from src.signals.models import Signal, SignalDirection
 
 
 def make_signal(direction: SignalDirection = SignalDirection.LONG) -> Signal:
-    return Signal(timestamp=pd.Timestamp("2024-01-01"), direction=direction, confidence=0.8)
+    return Signal(
+        timestamp=pd.Timestamp("2024-01-01"), symbol="SPY", direction=direction, confidence=0.8
+    )
 
 
 def make_sizing_decision(position_size: float = 10.0, approved: bool = True) -> SizingDecision:

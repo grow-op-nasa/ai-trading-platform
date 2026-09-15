@@ -1627,3 +1627,238 @@ deferred, not rejected. `TigerBroker` is untested against Tiger's real
 API or the real `tigeropen` SDK -- only against a fake `_TradeClient` --
 the same accepted gap every other concrete broker in this codebase
 carries.
+
+---
+
+## ADR-0031: `AccountState` moves to a new, neutral `src/portfolio` package
+
+**Status:** Accepted -- architecture review cleanup, pre-Sprint 6
+
+**Context:** An architecture review of Sprint 4-5's work flagged that
+`AccountState` had lived in `src/risk` (`src/risk/models.py`) since
+ADR-0021, and every concrete broker in `src/broker` (`AlpacaBroker`,
+`IBKRBroker`, `IGBroker`, `TigerBroker`) imported it from there via
+`from src.risk.models import AccountState`. That import runs the
+dependency arrow backwards: `src/broker` is foundational connectivity
+infrastructure -- ADR-0000's capability-based organization treats it as
+a layer other things build on, not a consumer of `src/risk` -- while
+`src/risk`'s whole job (ADR-0021) is to *consume* account information to
+make a sizing decision, not to *define* the account domain model other
+layers have to reach into it for. `src/execution`'s `PaperBroker` had
+the identical import. This is the same category of problem ADR-0002
+already solved once for market data (`DataProvider` living independent
+of `MarketDataService`) -- a shared shape should live somewhere nothing
+needs to reach backwards to get it.
+
+**Decision:** Create `src/portfolio/` (`models.py` -- `AccountState`,
+`__init__.py` -- re-exports it), a capability package that depends on
+nothing else in this codebase. `AccountState`'s fields, validation, and
+semantics are unchanged -- this is a pure move, not a redesign.
+`src/broker/base.py` and all four concrete brokers, `src/risk/engine.py`
+and `src/risk/__init__.py`, and `src/execution/engine.py` all now import
+`AccountState` from `src.portfolio.models` instead of `src.risk.models`.
+`src/risk/models.py` no longer defines `AccountState` at all -- not even
+as a re-export -- so a static check of `src/risk/models.py`'s own
+source can confirm the class actually moved. `src/risk/__init__.py`
+does re-export `AccountState` (`from src.portfolio.models import
+AccountState`) purely for import-path convenience (`from src.risk
+import AccountState` still works); this is `src/risk` consuming
+`src/portfolio`, the correct direction, not the class living in two
+places. The resulting dependency shape is `broker -> portfolio`,
+`risk -> portfolio`, `execution -> portfolio`, and never `broker ->
+risk` -- protected going forward by a static source-inspection test
+(`tests/test_architecture.py`) that fails if any `src/broker/*.py` file
+re-introduces a `from src.risk` import.
+
+**Consequences:** Extension Cost (ADR-0014) for this cleanup: every
+concrete broker file, `src/risk/engine.py`, `src/risk/__init__.py`,
+`src/risk/models.py`, and `src/execution/engine.py` each changed one
+import line (and, for `src/risk/models.py`, lost the class itself) --
+mechanical, not structural, changes; no behavior changed anywhere.
+`src/portfolio` is deliberately minimal today (just `AccountState`) --
+if the platform later needs richer portfolio/position tracking, that's
+a natural place to grow, not a reason to have delayed this move.
+`ExperimentRegistry`, `src/backtesting`, and every other module that
+never touched `AccountState` are untouched. This ADR is a pure
+dependency-direction correction; the four-criteria bar (works / tested
+/ documented / extensible) was already met for `AccountState` itself
+under ADR-0021, so no new behavior needed new tests -- only the import
+paths in every existing test that constructed one changed.
+
+---
+
+## ADR-0032: `RiskLimits.risk_per_trade_pct` renamed to `allocation_per_trade_pct`
+
+**Status:** Accepted -- architecture review cleanup, pre-Sprint 6
+
+**Context:** The same architecture review flagged that
+`RiskLimits.risk_per_trade_pct` (ADR-0021) doesn't actually mean "risk"
+in the standard trading sense. What it controls is "what fraction of
+account equity gets committed to a new position" -- capital allocation.
+True risk-per-trade normally means something computed from a maximum
+acceptable loss divided by the distance to a stop
+(`position_size = max_loss / stop_distance`), so that risk is expressed
+in dollars-that-could-be-lost, not dollars-committed. This codebase has
+no stop-loss or risk-distance model at all -- `PositionSizer` (ADR-0021)
+was deliberately scoped to fixed-fraction-of-equity sizing, with
+confidence-scaling and anything stop-based explicitly deferred. Calling
+the existing field "risk per trade" implies a loss-based guarantee this
+platform does not make: a position sized at `risk_per_trade_pct=0.10`
+can lose far more or far less than 10% of equity depending on how far
+price moves against it, since nothing here caps the loss directly. Left
+unfixed, this is exactly the kind of misleading terminology that
+becomes dangerous once real automated trading is on the table -- a
+false sense of protection is worse than an honestly-named, more modest
+guarantee.
+
+**Decision:** Rename the field to `allocation_per_trade_pct` in
+`RiskLimits` (`src/risk/models.py`), `PositionSizer` (`src/risk/engine.py`,
+including its `reason` strings, e.g. `"sized at full per-trade risk"` ->
+`"sized at full per-trade allocation"`), and every call site and test.
+The mathematical behavior is completely unchanged -- still a fixed
+fraction of equity, applied identically regardless of
+`Signal.confidence`, still respecting `max_portfolio_exposure_pct` the
+same way. `RiskLimits`'s docstring now states explicitly, in its own
+paragraph, that this setting is capital allocation/exposure, **not**
+maximum loss, and that true risk-based sizing (stop distance,
+volatility, correlation) is a distinct, unbuilt capability -- not
+implemented here specifically because inventing a stop-loss model just
+to make the terminology fit would be worse than admitting the gap
+honestly (the same posture ADR-0019 took toward session-of-day
+attribution: deliberately incomplete rather than silently wrong).
+`tests/test_risk.py` gained a test
+(`test_risk_limits_is_not_a_maximum_loss_model`) asserting `RiskLimits`
+has no stop-distance/max-loss-shaped field, specifically so a future
+change can't silently start treating `allocation_per_trade_pct` as a
+loss guarantee again without that test forcing a conscious decision.
+
+**Consequences:** Extension Cost (ADR-0014) for this rename: every file
+that referenced `risk_per_trade_pct` by name changed (`src/risk/models.py`,
+`src/risk/engine.py`, `tests/test_risk.py`,
+`tests/test_integration_paper_trading.py`) -- a pure rename, not a
+behavior change, so no test's expected numbers changed, only the
+keyword argument name and a couple of assertion strings. True
+risk-based sizing (stop distance, volatility-scaled sizing, correlation
+across open positions) remains explicitly deferred, tracked in
+`ROADMAP.md`/`PROJECT_STATE.md`, not designed or started here -- this
+ADR only fixes what the *existing* capability is honestly called.
+
+---
+
+## ADR-0033: `Signal` gains a first-class, required `symbol` field
+
+**Status:** Accepted -- architecture review cleanup, pre-Sprint 6
+
+**Context:** `Signal` (ADR-0015) has carried `timestamp`, `direction`,
+`confidence`, `metadata`, and `id` since Sprint 3, but never `symbol` --
+which instrument a decision was about lived only in whatever surrounding
+context happened to carry it (a candle DataFrame implicitly about one
+symbol, `PaperBroker.submit_signal`'s own separate `symbol` argument).
+This was a reasonable simplification while the platform only ever dealt
+with one instrument at a time end to end, but the architecture review
+flagged it as no longer safe to leave once `src/broker`, `src/execution`,
+and multiple real broker accounts (Alpaca, IG, Tiger) are all in play --
+a `Signal` read back in isolation (e.g. via
+`ExperimentRegistry.get_signal()`) had no way to say which instrument it
+was about, and nothing stopped two signals for different symbols from
+being conflated once they left their original DataFrame/backtest
+context.
+
+**Decision:** Add `symbol: str` to `Signal` (`src/signals/models.py`) as
+a required, non-default, first-class field -- not a `metadata` key, and
+not optional -- placed right after `timestamp`. Every producer and
+consumer of `Signal` was updated in the same controlled migration:
+`BaseStrategy` (`src/strategies/sdk.py`) now takes a required `symbol`
+constructor argument alongside `name`, stores it, and `emit_signal()`
+attaches it to every `Signal` it builds automatically -- matching how a
+`Strategy` instance already runs against exactly one instrument's
+candles per `Backtester.run()`/`PaperBroker.submit_signal()` call, so
+this is not a new constraint, just naming the one that already existed.
+`EMACrossStrategy` threads `symbol` through to `BaseStrategy.__init__`.
+`Backtester` needed no code change at all -- it already passes
+`Signal` objects through into `BacktestResult.signals` untouched, so
+`symbol` survives a backtest run for free. `ExperimentRegistry`
+(`src/experiments/registry.py`) gained a `symbol` column on the
+`signals` table, included in `save_signals()`'s INSERT and
+`_row_to_signal()`'s reconstruction. `Trade` (`src/backtesting/models.py`)
+was deliberately **not** changed to carry its own `symbol` -- a `Trade`
+already traces back to the `Signal`s that opened/closed it via
+`entry_signal_id`/`exit_signal_id`, and those signals (available via
+`BacktestResult.signals`) already carry `symbol`; duplicating it onto
+`Trade` too wasn't needed to close the actual gap this ADR targets.
+`PaperBroker.submit_signal()`'s own separate `symbol` argument is
+untouched -- the two are expected to agree in practice, but this round
+doesn't add validation enforcing that, to avoid an unrequested behavior
+change; a future round could add that check.
+
+**Consequences:** Extension Cost (ADR-0014) for this addition is real
+and intentionally not minimized: `Signal` being required (not defaulted)
+means every existing call site across `src/strategies/sdk.py`,
+`src/strategies/ema_cross.py`, `src/experiments/registry.py`, and every
+test that constructed a `Signal` or a `BaseStrategy`/`EMACrossStrategy`
+subclass needed a `symbol=` argument added -- a wide but shallow,
+mechanical migration, not a design change at any call site. A pre-ADR-
+0033 `experiments.db` file has no `symbol` column (`CREATE TABLE IF NOT
+EXISTS` doesn't retrofit existing tables) -- a known, accepted gap
+matching this codebase's existing no-migration-tooling posture (ADR-0004);
+a fresh database picks up the column, an old one needs a manual `ALTER
+TABLE` or to be recreated. `tests/test_architecture.py` now asserts
+`Signal(...)` without `symbol` raises `TypeError`, and separately proves
+the full lineage claim -- a `Signal` emitted by a real strategy, run
+through a real `Backtester`, saved into and read back from a real
+`ExperimentRegistry`, keeps both its `symbol` and its `id` intact.
+`BaseStrategy` still only supports one symbol per strategy instance --
+a strategy that genuinely wants to decide across multiple instruments in
+a single run isn't supported by this SDK, tracked as a gap, not solved
+here.
+
+---
+
+## ADR-0034: Research reporter surfaces LLM renderer failure instead of concealing it
+
+**Status:** Accepted -- architecture review cleanup, pre-Sprint 6
+
+**Context:** `ResearchReporter.run()` (ADR-0020) already had a
+`rendered_by` field on `ResearchReport` distinguishing `"fallback"` from
+`"claude"`, and already caught any exception from a
+`ClaudeNarrativeRenderer` and fell back to the deterministic
+`FallbackNarrativeRenderer` rather than losing the report. The
+architecture review flagged that these two states -- "Claude was never
+attempted because no API key/package was available" and "Claude was
+attempted and actually failed (bad key, network error, malformed
+response, timeout, API outage)" -- both collapsed to the identical
+`rendered_by == "fallback"` value, with the actual exception silently
+discarded in the `except` block. An operator watching this platform run
+could not tell "everything is fine, Claude just isn't configured" apart
+from "something is actually broken with the Claude integration" just by
+looking at a `ResearchReport`.
+
+**Decision:** Add `renderer_error: str | None = None` to `ResearchReport`
+(`src/research/models.py`). `ResearchReporter.run()` (`src/research/reporter.py`)
+now captures `str(exc)` into `renderer_error` in the `except` branch,
+leaving it `None` on every other path (renderer succeeded, or the
+fallback was chosen normally because no renderer was configured/available
+in `_default_renderer()` -- that path never enters the `try`/`except` at
+all). `rendered_by` and the deterministic `findings` are completely
+unaffected by this change -- the fallback still always succeeds, `run()`
+still never raises just because the optional AI prose failed, and the
+LLM still cannot alter what facts exist, only how they're phrased
+(ADR-0017, ADR-0020's own constraint, both preserved exactly). No new
+dependency was added -- `anthropic` remains a lazy, optional import, not
+in `requirements.txt`.
+
+**Consequences:** Extension Cost (ADR-0014) for this fix: 2 files
+changed (`src/research/models.py`, `src/research/reporter.py`), both
+purely additive (`renderer_error` is a new field with a default, so no
+existing caller of `ResearchReport(...)` or `ResearchReporter.run()`
+breaks). `tests/test_research.py` gained coverage for: a successful
+`ClaudeNarrativeRenderer` render end to end (`rendered_by == "claude"`,
+`renderer_error is None`), the normal no-key fallback path
+(`renderer_error is None`), a renderer that raises
+(`renderer_error == str(exc)`), and a dedicated test proving the
+deterministic `findings` are byte-for-byte identical whether or not the
+renderer failed. Nothing yet *reads* `renderer_error` downstream (no
+CLI/dashboard surfaces it to a human today) -- this ADR makes the
+information available and tested, not necessarily acted upon yet;
+wiring it into `atp doctor` or a future dashboard is a natural next
+step, not built here.

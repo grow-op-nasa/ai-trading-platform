@@ -75,13 +75,13 @@ def run_signals_through_pipeline(signals, candles, sizer, broker, symbol=SYMBOL)
 
 def test_full_pipeline_runs_without_error():
     candles = make_candles(CLOSES)
-    strategy = EMACrossStrategy(fast=2, slow=4)
+    strategy = EMACrossStrategy(symbol=SYMBOL, fast=2, slow=4)
     signals = strategy.generate_signals(strategy.prepare(candles))
 
     assert any(s.direction is SignalDirection.LONG for s in signals)
     assert any(s.direction is SignalDirection.FLAT for s in signals)
 
-    sizer = PositionSizer(RiskLimits(risk_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50))
+    sizer = PositionSizer(RiskLimits(allocation_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50))
     broker = PaperBroker(starting_cash=100_000)
 
     steps = run_signals_through_pipeline(signals, candles, sizer, broker)
@@ -93,12 +93,24 @@ def test_full_pipeline_runs_without_error():
             assert decision.approved is True
 
 
-def test_first_open_is_sized_at_ten_percent_of_starting_equity():
+def test_strategy_emitted_signals_carry_the_symbol_they_were_created_for():
+    # Symbol lineage (DECISIONS.md, ADR-0033): a Signal is independently
+    # identifiable without needing the surrounding pipeline context.
     candles = make_candles(CLOSES)
-    strategy = EMACrossStrategy(fast=2, slow=4)
+    strategy = EMACrossStrategy(symbol=SYMBOL, fast=2, slow=4)
+
     signals = strategy.generate_signals(strategy.prepare(candles))
 
-    sizer = PositionSizer(RiskLimits(risk_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50))
+    assert signals  # sanity check
+    assert all(s.symbol == SYMBOL for s in signals)
+
+
+def test_first_open_is_sized_at_ten_percent_of_starting_equity():
+    candles = make_candles(CLOSES)
+    strategy = EMACrossStrategy(symbol=SYMBOL, fast=2, slow=4)
+    signals = strategy.generate_signals(strategy.prepare(candles))
+
+    sizer = PositionSizer(RiskLimits(allocation_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50))
     broker = PaperBroker(starting_cash=100_000)
     steps = run_signals_through_pipeline(signals, candles, sizer, broker)
 
@@ -111,7 +123,7 @@ def test_first_open_is_sized_at_ten_percent_of_starting_equity():
 
 def test_closing_realizes_pnl_matching_the_actual_fill_prices():
     candles = make_candles(CLOSES)
-    strategy = EMACrossStrategy(fast=2, slow=4)
+    strategy = EMACrossStrategy(symbol=SYMBOL, fast=2, slow=4)
     signals = strategy.generate_signals(strategy.prepare(candles))
 
     sizer = PositionSizer(RiskLimits())
@@ -138,10 +150,10 @@ def test_account_state_after_a_round_trip_resizes_the_next_signal_off_updated_eq
     # round trip should be sized off the UPDATED equity (reflecting
     # realized P&L from that round trip), not the original starting_cash.
     candles = make_candles(CLOSES)
-    strategy = EMACrossStrategy(fast=2, slow=4)
+    strategy = EMACrossStrategy(symbol=SYMBOL, fast=2, slow=4)
     signals = strategy.generate_signals(strategy.prepare(candles))
 
-    limits = RiskLimits(risk_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
+    limits = RiskLimits(allocation_per_trade_pct=0.10, max_portfolio_exposure_pct=0.50)
     sizer = PositionSizer(limits)
     broker = PaperBroker(starting_cash=100_000)
     run_signals_through_pipeline(signals, candles, sizer, broker)
@@ -150,7 +162,10 @@ def test_account_state_after_a_round_trip_resizes_the_next_signal_off_updated_eq
     assert equity_after_round_trip != 100_000  # the round trip had a nonzero price move
 
     next_signal = Signal(
-        timestamp=pd.Timestamp("2024-02-01"), direction=SignalDirection.LONG, confidence=0.9
+        timestamp=pd.Timestamp("2024-02-01"),
+        symbol=SYMBOL,
+        direction=SignalDirection.LONG,
+        confidence=0.9,
     )
     decision = sizer.size(next_signal, broker.account_state, price=50.0)
 
@@ -160,7 +175,7 @@ def test_account_state_after_a_round_trip_resizes_the_next_signal_off_updated_eq
 
 def test_signal_ids_are_traceable_through_the_whole_pipeline():
     candles = make_candles(CLOSES)
-    strategy = EMACrossStrategy(fast=2, slow=4)
+    strategy = EMACrossStrategy(symbol=SYMBOL, fast=2, slow=4)
     signals = strategy.generate_signals(strategy.prepare(candles))
 
     sizer = PositionSizer(RiskLimits())

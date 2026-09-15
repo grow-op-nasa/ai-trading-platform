@@ -24,6 +24,7 @@ graph TD
     attribution[attribution: PerformanceAttributor]
     experiments[experiments: ExperimentRegistry + Signal storage]
     research[research: ResearchReporter]
+    portfolio[portfolio: AccountState]
     risk[risk: PositionSizer]
     execution[execution: PaperBroker]
     broker[broker: BrokerConnection + AlpacaBroker + IBKRBroker + IGBroker + TigerBroker]
@@ -52,9 +53,11 @@ graph TD
     utils --> research
     signals --> risk
     signals --> execution
+    portfolio --> risk
+    portfolio --> execution
+    portfolio --> broker
     risk --> execution
     execution --> broker
-    risk --> broker
     execution --> reconciliation
     broker --> reconciliation
     strategies --> analytics
@@ -82,23 +85,34 @@ and recommendation (a research artifact for a person to read), while
 trading decision on its own behalf (ADR-0017) -- `research` explicitly
 never will, since its output is prose for a person, not a `Signal`.
 
+`portfolio` holds the neutral `AccountState` domain model and depends
+on nothing else in this codebase (`DECISIONS.md`, ADR-0031) --
+`broker`, `risk`, and `execution` all depend on it instead of on each
+other for account state. This corrected an original dependency-
+direction mistake: `AccountState` used to live in `src/risk`, which
+meant `src/broker` (foundational connectivity infrastructure) had to
+import from `src/risk` (a downstream consumer of account state) just
+to describe an account. There is no `broker --> risk` edge, and there
+never should be one again -- `tests/test_architecture.py` enforces
+this with a static source check, not just a docstring promise.
+
 `risk --> execution` reflects a real dependency: `PaperBroker` consumes
 `PositionSizer`'s `SizingDecision` directly to size an opening order
 (`DECISIONS.md`, ADR-0022), closing the loop ADR-0021 left open.
 Neither `risk` nor `execution` depend on, or get called by,
 `backtesting` -- `Backtester` still sizes every trade as a single unit
-(ADR-0011), unchanged. `risk --> broker` is also real: `AlpacaBroker`
-returns `src.risk.AccountState` directly from `get_account()`, the same
-currency `PaperBroker.account_state` already produces (`DECISIONS.md`,
-ADR-0023) -- a live broker and the paper broker are interchangeable
-account-state sources from `PositionSizer`'s point of view. `execution
---> broker` is still aspirational, though: `broker` doesn't call
-`execution` or vice versa today -- they're sibling account-state
-sources, not a dependency chain, until a future orchestration layer
-picks one and drives `PositionSizer` from it. `broker --> cli`
-reflects `atp doctor`'s Broker Connection check calling `AlpacaBroker`
-directly, the same way it already calls into `data`/`utils`/
-`experiments`.
+(ADR-0011), unchanged. `AlpacaBroker` (and every other concrete broker)
+returns `src.portfolio.AccountState` directly from `get_account()`, the
+same currency `PaperBroker.account_state` already produces
+(`DECISIONS.md`, ADR-0023, ADR-0031) -- a live broker and the paper
+broker are interchangeable account-state sources from
+`PositionSizer`'s point of view. `execution --> broker` is still
+aspirational, though: `broker` doesn't call `execution` or vice versa
+today -- they're sibling account-state sources, not a dependency chain,
+until a future orchestration layer picks one and drives `PositionSizer`
+from it. `broker --> cli` reflects `atp doctor`'s Broker Connection
+check calling `AlpacaBroker` directly, the same way it already calls
+into `data`/`utils`/`experiments`.
 
 `cli` is drawn separately from the main pipeline on purpose: it's a
 diagnostic tool that reaches into several capabilities to check their
@@ -265,14 +279,17 @@ actually produces: not an order, not a market event, a decision.
 - **Inputs:** none -- `Signal` is a plain data model, constructed
   directly by whatever produces one (a `Strategy`, today; possibly
   other sources later).
-- **Outputs:** `Signal` (frozen dataclass: `timestamp`, `direction`,
-  `confidence`, `metadata`, `id`) and `SignalDirection` (`LONG` /
-  `SHORT` / `FLAT`).
+- **Outputs:** `Signal` (frozen dataclass: `timestamp`, `symbol`,
+  `direction`, `confidence`, `metadata`, `id`) and `SignalDirection`
+  (`LONG` / `SHORT` / `FLAT`).
 - **Key files:**
-  - `models.py` -- `Signal`, `SignalDirection`. `confidence` is
-    validated to `[0.0, 1.0]` at construction; `id` is a `UUID`
-    assigned client-side (`uuid4()`), not by a database, so a signal
-    can be referenced before it's ever persisted.
+  - `models.py` -- `Signal`, `SignalDirection`. `symbol` is a required,
+    first-class field (`DECISIONS.md`, ADR-0033) -- not a `metadata`
+    workaround -- so a `Signal` is always independently identifiable
+    without inspecting an untyped dict. `confidence` is validated to
+    `[0.0, 1.0]` at construction; `id` is a `UUID` assigned client-side
+    (`uuid4()`), not by a database, so a signal can be referenced before
+    it's ever persisted.
 - **Does not:** carry a price -- a Signal says what position the
   portfolio should move toward, not at what price to transact (that's
   execution's job, later). Does not know it will eventually be stored
@@ -296,10 +313,16 @@ for profitability) -- only the interface is defined here.
   - `sdk.py` -- `BaseStrategy` (ADR-0018), an optional `ABC` strategies
     may subclass for `self.indicator(...)`, `self.log`,
     `self.require_columns(...)`, and `self.emit_signal(...)`.
-    `prepare()`/`generate_signals()` stay abstract -- the SDK never
-    decides when or how often to emit a signal, only removes setup
-    boilerplate. A strategy can still implement `Strategy` directly,
-    with no base class, exactly as before.
+    `__init__(name, symbol)` takes a required `symbol` alongside `name`
+    (`DECISIONS.md`, ADR-0033) -- one strategy instance trades one
+    instrument at a time, matching `Backtester.run()`'s existing
+    single-instrument assumption -- and `emit_signal()` attaches it to
+    every `Signal` it constructs, so a strategy author never has to pass
+    `symbol` by hand at every call site. `prepare()`/`generate_signals()`
+    stay abstract -- the SDK never decides when or how often to emit a
+    signal, only removes setup boilerplate. A strategy can still
+    implement `Strategy` directly, with no base class, exactly as
+    before (`Strategy` the Protocol was not changed).
 - **Does not:** contain any concrete strategy yet. Does not compute
   indicators or regimes itself -- a conforming strategy's `prepare()`
   is expected to call `IndicatorEngine`/`MarketRegimeEngine`. Does not
@@ -333,6 +356,13 @@ ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
     `Signal` objects -- see ADR-0015/ADR-0016), `BacktestResult`.
   - `metrics.py` -- `calculate_metrics()`, `sharpe_ratio()`,
     `max_drawdown()`, each independently testable.
+
+  `Signal` gaining a required `symbol` field (`DECISIONS.md`, ADR-0033)
+  required zero changes here -- `Backtester` passes `Signal` objects
+  through into `BacktestResult.signals` untouched, so the new field
+  survives automatically; `tests/test_architecture.py` proves the
+  symbol (and the signal's UUID identity) survives strategy -> backtest
+  -> registry end to end.
 - **Does not:** model realistic execution (partial fills, slippage,
   transaction costs) -- that's `src/execution`'s job later, deliberately
   out of scope here. Does not decide position sizing beyond a single
@@ -388,13 +418,19 @@ note under the dependency diagram above.
 **Purpose:** turn a completed backtest + attribution report into an
 evidence-grounded research summary -- a recommendation for a person to
 weigh, never a trading decision (ADR-0017). Sprint 3 Module 4
-(`DECISIONS.md`, ADR-0020). Distinct from the Sprint 7+ `src/ai`
+(`DECISIONS.md`, ADR-0020; renderer-failure transparency added by
+ADR-0034). Distinct from the Sprint 7+ `src/ai`
 scope -- see the note under the dependency diagram above.
 
 - **Inputs:** a `BacktestResult` and the `AttributionReport` produced
   from it (`PerformanceAttributor.run(result, candles)`).
 - **Outputs:** a `ResearchReport` (`findings: ResearchFindings`,
-  `narrative: str`, `rendered_by: "fallback" | "claude"`).
+  `narrative: str`, `rendered_by: "fallback" | "claude"`,
+  `renderer_error: str | None` -- `None` on the normal fallback path
+  (no `ANTHROPIC_API_KEY`/`anthropic` configured), the stringified
+  exception when `ClaudeNarrativeRenderer` was attempted and actually
+  failed (`DECISIONS.md`, ADR-0034); the deterministic `findings` are
+  identical either way).
 - **Key files:**
   - `compiler.py` -- `compile_findings(result, attribution) ->
     ResearchFindings`. Fully deterministic: extracts only what the
@@ -413,8 +449,14 @@ scope -- see the note under the dependency diagram above.
   - `reporter.py` -- `ResearchReporter.run(result, attribution)`. Picks
     `ClaudeNarrativeRenderer` when `ANTHROPIC_API_KEY` is set and
     `anthropic` is importable, `FallbackNarrativeRenderer` otherwise;
-    catches any renderer exception and falls back to the deterministic
-    renderer rather than losing the report.
+    catches any renderer exception (missing dependency, bad
+    credentials, network/API failure, malformed response, timeout) and
+    falls back to the deterministic renderer rather than losing the
+    report or raising -- but now records `str(exc)` into
+    `renderer_error` when that happens, so the failure is observable
+    rather than silently indistinguishable from "Claude wasn't
+    configured" (`DECISIONS.md`, ADR-0034). `run()` never raises merely
+    because the optional AI prose failed.
   - `models.py` -- `Finding`, `ResearchFindings`, `ResearchReport`.
 - **Does not:** reason about session-of-day timing (deferred pending
   ADR-0006). Does not persist its output -- a `ResearchReport` is
@@ -429,28 +471,71 @@ scope -- see the note under the dependency diagram above.
   `src/utils/formatting.py` (new), `src/cli/checks.py`. See ADR-0020 for
   why this is proportionate rather than a violation.
 
+### `src/portfolio`
+
+**Purpose:** the neutral account/domain model every capability that
+needs to know "how much equity does this account have, how much is
+already committed" depends on -- without any of them depending on each
+other to get it. Extracted from `src/risk` during the Pre-Sprint 6
+architecture review cleanup (`DECISIONS.md`, ADR-0031), the same way
+`src/data`'s `DataProvider` interface keeps every data vendor
+interchangeable.
+
+- **Inputs:** none -- `AccountState` is a plain data model, constructed
+  directly by whatever needs to describe an account (a broker's
+  `get_account()`, `PaperBroker.account_state`, a test).
+- **Outputs:** `AccountState` (`equity: float` validated `> 0`,
+  `open_exposure: float` validated `>= 0`, defaults to `0.0`).
+- **Key files:**
+  - `models.py` -- `AccountState`, moved here verbatim from
+    `src/risk/models.py` -- same fields, same `__post_init__`
+    validation, no behavior change.
+- **Does not:** know anything about brokers, risk limits, position
+  sizing, or execution -- it is a value object, nothing more. Does not
+  import from `src/broker`, `src/risk`, or `src/execution` -- if it
+  ever did, the whole point of extracting it would be defeated;
+  `tests/test_architecture.py` enforces this with a static source
+  check, not just this docstring.
+- **Depends on:** nothing else in `src/` -- like `src/signals` and
+  `src/utils`, it's foundational infrastructure other capabilities
+  build on, not the other way around. Extension Cost (ADR-0014): the
+  move itself touched `src/risk/models.py`, `src/risk/engine.py`,
+  `src/risk/__init__.py`, `src/broker/base.py` and all four concrete
+  brokers, and `src/execution/engine.py` (7 files, all import-path
+  updates only, no behavior change) -- proportionate for a
+  dependency-direction correction that fixes an actual architectural
+  mistake, not routine churn.
+
 ### `src/risk`
 
 **Purpose:** decide how large a position to take for a signal -- and
 whether to take one at all -- given the account's current state.
 Sprint 4 (`DECISIONS.md`, ADR-0021).
 
-- **Inputs:** a `Signal` (must be `LONG` or `SHORT`), an `AccountState`
-  (`equity`, `open_exposure`), and the instrument's current `price`.
+- **Inputs:** a `Signal` (must be `LONG` or `SHORT`), an
+  `src.portfolio.AccountState` (`equity`, `open_exposure`), and the
+  instrument's current `price`.
 - **Outputs:** a `SizingDecision` (`approved`, `position_size`,
   `capital_allocated`, `reason`).
 - **Key files:**
   - `engine.py` -- `PositionSizer.size(signal, account, price)`. Sizes
-    at a **fixed** fraction of equity (`RiskLimits.risk_per_trade_pct`,
-    default 10%) regardless of `Signal.confidence`. Sizes down to
-    whatever portfolio exposure headroom remains
+    at a **fixed** fraction of equity
+    (`RiskLimits.allocation_per_trade_pct`, default 10% -- renamed from
+    `risk_per_trade_pct` by ADR-0032, since it is capital allocation,
+    not a maximum-loss guarantee) regardless of `Signal.confidence`.
+    Sizes down to whatever portfolio exposure headroom remains
     (`RiskLimits.max_portfolio_exposure_pct`, default 50% of equity)
     rather than rejecting outright when the full allocation doesn't
     fit; only rejects (`approved=False`) when there's no headroom left
     at all. `LONG` and `SHORT` sized identically.
-  - `models.py` -- `RiskLimits` (validated percentages, `(0, 1]`),
-    `AccountState` (validated `equity > 0`, `open_exposure >= 0`),
-    `SizingDecision`.
+  - `models.py` -- `RiskLimits` (validated percentages, `(0, 1]`;
+    `allocation_per_trade_pct`'s docstring states explicitly this is
+    capital allocation/exposure, not maximum loss -- true stop-based
+    risk sizing is a distinct, unbuilt capability), `SizingDecision`.
+    `AccountState` no longer lives here -- see `src/portfolio` above
+    (`DECISIONS.md`, ADR-0031); `src/risk/__init__.py` still re-exports
+    it from `src.portfolio.models` so existing external imports of
+    `src.risk.AccountState` keep working.
 - **Does not:** scale size by `Signal.confidence` -- deliberately
   deferred, since there's no validated relationship yet between a
   confidence score and how much capital it should be trusted with.
@@ -459,12 +544,16 @@ Sprint 4 (`DECISIONS.md`, ADR-0021).
   whole-share/lot rounding -- fractional `position_size` is allowed;
   rounding to a tradable lot is an execution-layer concern, deferred
   the same way ADR-0011 deferred realistic execution mechanics out of
-  `Backtester`. Is not wired into `Backtester` or a real strategy loop
-  -- `src/execution` (below) consumes its output directly, but only in
-  tests that construct a `SizingDecision` and hand it to `PaperBroker`,
-  not a real end-to-end run yet.
-- **Depends on:** `src/signals` (for `Signal`/`SignalDirection`).
-  Extension Cost (ADR-0014): 0 -- purely additive, nothing in
+  `Backtester`. Does not implement true risk-based (stop-distance)
+  position sizing -- `allocation_per_trade_pct` was renamed to describe
+  what it actually does, not redefined to do something new (ADR-0032).
+  Is not wired into `Backtester` or a real strategy loop -- `src/execution`
+  (below) consumes its output directly, but only in tests that
+  construct a `SizingDecision` and hand it to `PaperBroker`, not a real
+  end-to-end run yet.
+- **Depends on:** `src/signals` (for `Signal`/`SignalDirection`),
+  `src/portfolio` (for `AccountState`, since ADR-0031). Extension Cost
+  (ADR-0014): 0 originally -- purely additive, nothing in
   `src/backtesting`, `src/strategies`, or `src/signals` was changed.
 
 ### `src/execution`
@@ -477,7 +566,8 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
 - **Inputs:** a `Signal`, a `symbol`, a `fill_price`, and (for
   `LONG`/`SHORT`) an approved `SizingDecision` from `src/risk`.
 - **Outputs:** a `Fill` per call to `submit_signal()`; an
-  `account_state` property returning a real `src.risk.AccountState`.
+  `account_state` property returning a real
+  `src.portfolio.AccountState`.
 - **Key files:**
   - `engine.py` -- `PaperBroker.submit_signal(signal, symbol,
     fill_price, sizing_decision=None)`. `LONG`/`SHORT` -> `BUY`/`SELL`
@@ -488,10 +578,15 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
     uniform by order side (`BUY` pays cash out, `SELL` brings cash in)
     regardless of long/short, which is what makes both directions work
     through the same code path. `account_state` computes `equity` as
-    cash plus each position's *signed* value at its own entry price
-    (correctly netting a short's liability) and `open_exposure` as the
-    sum of *unsigned* cost basis, matching what
-    `RiskLimits.max_portfolio_exposure_pct` caps.
+    cash plus each position's *signed* value at its own **entry**
+    price (correctly netting a short's liability) and `open_exposure`
+    as the sum of *unsigned* cost basis, matching what
+    `RiskLimits.max_portfolio_exposure_pct` caps -- the module
+    docstring and this property's own docstring both now state
+    explicitly, in multiple places, that this is entry-price valuation,
+    not a realistic live mark-to-market of the portfolio
+    (`DECISIONS.md`, ADR-0022, reaffirmed by ADR-0031's cleanup; pinned
+    by `tests/test_architecture.py`'s structural tripwire test).
   - `models.py` -- `OrderSide` (`BUY`/`SELL`), `Order` (validated
     `quantity > 0`, carries `signal_id`/`timestamp` for traceability),
     `Fill` (`order`, `fill_price`, `cash_delta`), `Position` (signed
@@ -499,17 +594,23 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
 - **Does not:** mark positions to market -- an open position's
   contribution to `equity` is frozen at its entry price until closed;
   there is no ongoing price feed to mark against (like `PositionSizer`,
-  every price is supplied by the caller). Does not support more than
-  one open position per symbol at a time -- opening a second raises
-  rather than averaging into it. Does not model limit orders, partial
-  fills, slippage, or commission. Is not wired into `Backtester` --
-  `tests/test_integration_paper_trading.py` proves it composes with a
-  real strategy's signals, but only as a test, not as production
-  wiring.
+  every price is supplied by the caller), and no method exists on
+  `PaperBroker` that would let one be supplied (no `mark_to_market`,
+  `update_price`, `set_price`, or `revalue`) -- this absence is itself
+  asserted by a test, not just described in prose. Does not support
+  more than one open position per symbol at a time -- opening a second
+  raises rather than averaging into it. Does not model limit orders,
+  partial fills, slippage, or commission. Does not validate that
+  `submit_signal()`'s own `symbol` argument matches `signal.symbol`
+  (ADR-0033) -- a deliberately deferred follow-up, not an oversight. Is
+  not wired into `Backtester` -- `tests/test_integration_paper_trading.py`
+  proves it composes with a real strategy's signals, but only as a
+  test, not as production wiring.
 - **Depends on:** `src/signals` (for `Signal`/`SignalDirection`),
-  `src/risk` (for `AccountState`/`SizingDecision`). Extension Cost
-  (ADR-0014): 0 -- purely additive, nothing in `src/risk`,
-  `src/signals`, `src/backtesting`, or `src/strategies` was changed.
+  `src/portfolio` (for `AccountState`, since ADR-0031), `src/risk` (for
+  `SizingDecision`). Extension Cost (ADR-0014): 0 originally -- purely
+  additive, nothing in `src/risk`, `src/signals`, `src/backtesting`, or
+  `src/strategies` was changed.
 
 ### `src/broker`
 
@@ -518,7 +619,9 @@ account state, and submit market orders (Alpaca: submit/check/cancel;
 IG: submit only, resolved synchronously). Sprint 5 (`DECISIONS.md`,
 ADR-0023 connectivity/account state, ADR-0024 order submission, ADR-0025
 order cancellation, ADR-0026 second broker, ADR-0028 third broker,
-ADR-0029 IG order submission).
+ADR-0029 IG order submission, ADR-0030 fourth broker, ADR-0031
+dependency-direction correction moving `AccountState` to
+`src/portfolio`).
 
 - **Inputs:** API credentials -- three different shapes across the
   three concrete brokers: `ALPACA_API_KEY`/`ALPACA_API_SECRET` for
@@ -527,7 +630,7 @@ ADR-0029 IG order submission).
   `IGBroker` (exchanged once for session tokens). `OrderRequest`
   (`symbol`, `side`, `quantity`) for order submission; a
   `broker_order_id` for status checks and cancellation.
-- **Outputs:** `get_account() -> src.risk.AccountState`,
+- **Outputs:** `get_account() -> src.portfolio.AccountState`,
   `submit_order(request) -> BrokerOrder`, `get_order(id) -> BrokerOrder`,
   `cancel_order(id) -> None`.
 - **Key files:**
@@ -540,7 +643,24 @@ ADR-0029 IG order submission).
     `DataProvider`: `get_account()`, `submit_order()`, `get_order()`,
     `cancel_order()`. Nothing outside `src/broker` should import a
     specific broker directly -- depend on this interface so swapping
-    brokers never touches strategies, risk, or execution.
+    brokers never touches strategies, risk, or execution. Imports
+    `AccountState` from `src.portfolio`, not `src.risk` (`DECISIONS.md`,
+    ADR-0031) -- broker is foundational connectivity infrastructure and
+    must not depend on risk to describe an account.
+    `BrokerConnection`'s docstring now names three distinct reasons a
+    concrete broker's method can raise `NotImplementedError`, so a
+    reader can tell which applies without guessing: (1) genuinely not
+    yet implemented, a real gap pending its own design pass (e.g.
+    `IBKRBroker.submit_order`, `TigerBroker.submit_order`); (2)
+    intentionally impossible given that broker's own API model, not a
+    gap to fill later (e.g. `IGBroker.get_order`/`cancel_order` -- IG
+    has no live status endpoint to poll on a resolved market order); (3)
+    genuinely unsupported by this interface's shape entirely (no current
+    example, but a broker whose model doesn't fit `OrderRequest`/
+    `BrokerOrder` at all would land here rather than being forced into
+    one of the other two categories). No interface redesign was made to
+    accommodate this distinction -- it is a documentation clarification
+    of behavior that already existed.
   - `alpaca.py` -- `AlpacaBroker(BrokerConnection)`. Raises
     `BrokerAuthenticationError` immediately in `__init__` if
     credentials are missing, before any network call. Defaults to
@@ -641,8 +761,10 @@ ADR-0029 IG order submission).
   four brokers remains tested only against a fake HTTP session or fake
   SDK client, the same posture `src/data` already takes toward
   `YFinanceProvider` (there's no `test_yfinance_provider.py` either).
-- **Depends on:** `src/risk` (for `AccountState`). Extension Cost
-  (ADR-0014): connectivity slice was 1 (`src/cli/checks.py`); order
+- **Depends on:** `src/portfolio` (for `AccountState`, since ADR-0031
+  -- not `src/risk`; broker is foundational infrastructure and must not
+  depend on the risk capability that consumes account state). Extension
+  Cost (ADR-0014): connectivity slice was 1 (`src/cli/checks.py`); order
   submission and order cancellation were each 0; the second broker
   (`IBKRBroker`) was 1 (`src/broker/__init__.py`, exports); the third
   broker (`IGBroker`) was also 1 (same file); IG order submission was 0;
@@ -709,13 +831,24 @@ ADR-0009, ADR-0012); also owns `Signal` storage as of Sprint 3
   - `registry.py` -- `ExperimentRegistry`, backed by SQLite (stdlib
     `sqlite3`). `changed`/`metrics_before`/`metrics_after` stored as
     JSON text columns; a second `signals` table stores `Signal` rows,
-    keyed by their own `id` (UUID) and looked up by `experiment_id`.
+    keyed by their own `id` (UUID) and looked up by `experiment_id`, now
+    including a `symbol` column (`DECISIONS.md`, ADR-0033) -- note that
+    `CREATE TABLE IF NOT EXISTS` does not retrofit this column onto a
+    pre-existing `experiments.db` file created before the migration,
+    a known, accepted gap. The module's docstring also documents that
+    its scope is deliberately stable: a full reproducible experiment
+    lineage (strategy name/version, parameters, dataset version, trades,
+    metrics, attribution, research report all linked together) is
+    future evolution, not built this round (see `ROADMAP.md`, "Ongoing,
+    not sprint-scoped").
   - `models.py` -- `Experiment` dataclass.
 - **Does not:** know about `BacktestResult` or `Trade` -- it stores
   whatever metric dicts it's given, and `Signal`s are saved as a
   separate, deliberate call (`save_signals()`), not a parameter on
   `log_experiment()`, so that method's signature stays untouched. Does
-  not run backtests itself.
+  not run backtests itself. Does not yet build the complete experiment
+  artifact graph (trades/attribution/reports linked to an experiment) --
+  intentionally out of scope for this round's cleanup.
 - **Depends on:** `src/signals` (for `Signal`/`SignalDirection` -- see
   ADR-0016 for why this narrows, but doesn't eliminate, this module's
   previous independence from backtesting internals).

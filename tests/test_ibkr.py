@@ -16,7 +16,7 @@ from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
 from src.broker.ibkr import IBKR_GATEWAY_BASE_URL, IBKRBroker
 from src.broker.models import OrderRequest, OrderSide
-from src.risk.models import AccountState
+from src.portfolio.models import AccountState
 
 
 class FakeResponse:

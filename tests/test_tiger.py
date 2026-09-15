@@ -17,7 +17,7 @@ from src.broker.base import BrokerConnection
 from src.broker.exceptions import BrokerAuthenticationError, BrokerConnectionError
 from src.broker.models import OrderRequest, OrderSide
 from src.broker.tiger import TigerBroker
-from src.risk.models import AccountState
+from src.portfolio.models import AccountState
 
 
 def make_portfolio(net_liquidation: float, gross_position_value: float | None) -> SimpleNamespace:

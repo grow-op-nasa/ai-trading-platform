@@ -24,6 +24,16 @@ Deliberately decoupled from `src/backtesting`: this module knows
 nothing about `BacktestResult` or `Trade` -- it stores whatever dicts
 it's given. The caller is responsible for turning two `BacktestResult`
 objects into `metrics_before`/`metrics_after` dicts.
+
+**Scope is deliberately stable.** Signals are the only artifact stored
+as first-class rows today (`DECISIONS.md`, ADR-0016); trades,
+attribution, and research reports remain in-memory, produced on demand
+from a `BacktestResult`/`AttributionReport` pair (ADR-0019, ADR-0020).
+A future evolution -- not built here -- could let one experiment retain
+a complete, reproducible lineage: strategy/version, parameters,
+dataset/version, signals, trades, metrics, attribution, and a research
+report, all queryable together. Tracked as future work in
+`ROADMAP.md`/`PROJECT_STATE.md`, not started this round.
 """
 
 from __future__ import annotations
@@ -65,11 +75,20 @@ CREATE TABLE IF NOT EXISTS signals (
     id TEXT PRIMARY KEY,
     experiment_id INTEGER NOT NULL,
     timestamp TEXT NOT NULL,
+    symbol TEXT NOT NULL DEFAULT '',
     direction TEXT NOT NULL,
     confidence REAL NOT NULL,
     metadata TEXT NOT NULL DEFAULT '{}'
 )
 """
+# `symbol` added in DECISIONS.md ADR-0033, alongside `Signal` itself
+# gaining the field. `CREATE TABLE IF NOT EXISTS` means an
+# `experiments.db` file created before ADR-0033 keeps its old schema
+# (no `symbol` column) rather than being migrated automatically -- this
+# codebase has no schema-migration tooling yet (a known, accepted gap;
+# see `DECISIONS.md`, ADR-0004's package-layout migration for the same
+# "tracked, not yet built" posture). A fresh database picks up the new
+# column; an existing one needs a manual `ALTER TABLE` or to be recreated.
 
 
 class ExperimentRegistry:
@@ -171,13 +190,14 @@ class ExperimentRegistry:
         with self._connect() as conn:
             conn.executemany(
                 "INSERT OR REPLACE INTO signals "
-                "(id, experiment_id, timestamp, direction, confidence, metadata) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(id, experiment_id, timestamp, symbol, direction, confidence, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         str(signal.id),
                         experiment_id,
                         signal.timestamp.isoformat(),
+                        signal.symbol,
                         signal.direction.value,
                         signal.confidence,
                         json.dumps(signal.metadata),
@@ -213,6 +233,7 @@ def _row_to_signal(row: sqlite3.Row) -> Signal:
     return Signal(
         id=UUID(row["id"]),
         timestamp=pd.Timestamp(row["timestamp"]),
+        symbol=row["symbol"],
         direction=SignalDirection(row["direction"]),
         confidence=row["confidence"],
         metadata=json.loads(row["metadata"]),

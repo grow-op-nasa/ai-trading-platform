@@ -3,7 +3,7 @@
 Every broker implements one interface, `BrokerConnection`, analogous to
 `src/data`'s `DataProvider` -- a new broker is an extension, not a
 rewrite (`DECISIONS.md`, ADR-0000). `get_account()` returns a real
-`src.risk.AccountState`, the same currency `PositionSizer` already
+`src.portfolio.AccountState`, the same currency `PositionSizer` already
 consumes from `PaperBroker` (`src/execution`), so a live broker slots
 into the existing sizing pipeline without a new account model.
 
@@ -18,6 +18,11 @@ that boundary would run the dependency the wrong direction.
 `None`, confirming the broker accepted the cancellation request, not
 that the order actually ended up canceled -- call `get_order()`
 afterward for the resulting status.
+
+`AccountState` itself lives in `src/portfolio`, not here (ADR-0031) --
+`src/broker` is foundational connectivity infrastructure and shouldn't
+have to depend on `src/risk` just to describe an account. Every
+concrete broker below imports it from `src.portfolio.models`.
 
 `IBKRBroker` (ADR-0026) is the platform's second concrete broker --
 proof `BrokerConnection` is actually swappable, not just designed to

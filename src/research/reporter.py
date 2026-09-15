@@ -15,6 +15,13 @@ when `ANTHROPIC_API_KEY` is set and `anthropic` is installed, and a
 an API key to produce a research report, only to make its prose read a
 little more naturally. A research report is a recommendation for a
 person to weigh, never a trading decision (ADR-0017).
+
+A `ClaudeNarrativeRenderer` failure still falls back to the
+deterministic renderer -- `run()` never raises just because the
+optional AI prose failed -- but the failure is recorded, not hidden:
+`ResearchReport.renderer_error` is set whenever the fallback happened
+*because of* a real failure, and stays `None` when it's simply the
+normal, unconfigured-Claude path (`DECISIONS.md`, ADR-0034).
 """
 
 from __future__ import annotations
@@ -44,19 +51,32 @@ class ResearchReporter:
     ) -> ResearchReport:
         findings = compile_findings(result, attribution)
         renderer = self._renderer or self._default_renderer()
+        renderer_error: str | None = None
 
         try:
             narrative = renderer.render(findings)
             rendered_by = "fallback" if isinstance(renderer, FallbackNarrativeRenderer) else "claude"
-        except Exception:
+        except Exception as exc:
             # A renderer failure (missing package, network error, bad
-            # key, API outage) falls back rather than losing the report
-            # entirely -- the deterministic findings always matter more
-            # than the prose describing them.
+            # key, API outage, malformed response, timeout) falls back
+            # rather than losing the report entirely -- the deterministic
+            # findings always matter more than the prose describing them.
+            # The failure is not swallowed, though (DECISIONS.md,
+            # ADR-0034): `renderer_error` records what went wrong, so an
+            # operator can tell "fallback because no API key was
+            # configured" apart from "fallback because Claude actually
+            # failed" -- both currently look identical from `rendered_by`
+            # alone.
             narrative = FallbackNarrativeRenderer().render(findings)
             rendered_by = "fallback"
+            renderer_error = str(exc)
 
-        return ResearchReport(findings=findings, narrative=narrative, rendered_by=rendered_by)
+        return ResearchReport(
+            findings=findings,
+            narrative=narrative,
+            rendered_by=rendered_by,
+            renderer_error=renderer_error,
+        )
 
     def _default_renderer(self) -> NarrativeRenderer:
         api_key = os.environ.get("ANTHROPIC_API_KEY")

@@ -25,15 +25,17 @@ nothing about `BacktestResult` or `Trade` -- it stores whatever dicts
 it's given. The caller is responsible for turning two `BacktestResult`
 objects into `metrics_before`/`metrics_after` dicts.
 
-**Scope is deliberately stable.** Signals are the only artifact stored
-as first-class rows today (`DECISIONS.md`, ADR-0016); trades,
-attribution, and research reports remain in-memory, produced on demand
-from a `BacktestResult`/`AttributionReport` pair (ADR-0019, ADR-0020).
-A future evolution -- not built here -- could let one experiment retain
-a complete, reproducible lineage: strategy/version, parameters,
-dataset/version, signals, trades, metrics, attribution, and a research
-report, all queryable together. Tracked as future work in
-`ROADMAP.md`/`PROJECT_STATE.md`, not started this round.
+**Scope grows deliberately, one artifact at a time.** Signals are
+stored as first-class rows (`DECISIONS.md`, ADR-0016); as of Sprint 6,
+one `ExperimentSpec` per experiment is too (`save_spec()`/`get_spec()`,
+ADR-0035) -- the reproducible starting-point of the long-term chain
+this registry is working toward: strategy/version -> parameters ->
+dataset/version -> signals -> trades -> metrics -> attribution ->
+report. Trades, attribution, and research reports still remain
+in-memory, produced on demand from a `BacktestResult`/`AttributionReport`
+pair (ADR-0019, ADR-0020) -- linking those into the registry too is
+real future work, not started this round. Tracked as future work in
+`ROADMAP.md`/`PROJECT_STATE.md`.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from uuid import UUID
 import pandas as pd
 
 from src.experiments.models import Experiment
+from src.experiments.spec import ExperimentSpec
 from src.signals.models import Signal, SignalDirection
 
 DEFAULT_DB_PATH = Path("data/experiments.db")
@@ -90,6 +93,29 @@ CREATE TABLE IF NOT EXISTS signals (
 # "tracked, not yet built" posture). A fresh database picks up the new
 # column; an existing one needs a manual `ALTER TABLE` or to be recreated.
 
+# One `ExperimentSpec` per experiment -- unlike signals, there's exactly
+# one specification per experiment, so `experiment_id` is the primary
+# key rather than a foreign key column (`DECISIONS.md`, ADR-0035).
+# `strategy_params`/`risk_config`/`backtest_config` are JSON text
+# columns, the same convention `changed`/`metrics_before`/
+# `metrics_after` already use on `experiments` above.
+_SPECS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS experiment_specs (
+    experiment_id INTEGER PRIMARY KEY,
+    strategy_name TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    strategy_params TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    interval TEXT NOT NULL,
+    dataset_start TEXT NOT NULL,
+    dataset_end TEXT NOT NULL,
+    dataset_source TEXT NOT NULL,
+    dataset_fingerprint TEXT NOT NULL,
+    risk_config TEXT NOT NULL,
+    backtest_config TEXT NOT NULL
+)
+"""
+
 
 class ExperimentRegistry:
     """SQLite-backed store of experiment records.
@@ -105,6 +131,7 @@ class ExperimentRegistry:
         with self._connect() as conn:
             conn.execute(_SCHEMA)
             conn.execute(_SIGNALS_SCHEMA)
+            conn.execute(_SPECS_SCHEMA)
 
     def log_experiment(
         self,
@@ -223,6 +250,48 @@ class ExperimentRegistry:
             ).fetchone()
         return _row_to_signal(row) if row is not None else None
 
+    def save_spec(self, experiment_id: int, spec: ExperimentSpec) -> None:
+        """Persist `spec` as `experiment_id`'s specification.
+
+        Deliberately separate from `log_experiment()` rather than a new
+        parameter on it (`DECISIONS.md`, ADR-0035) -- the same reasoning
+        `save_signals()` is separate (ADR-0016): `log_experiment()`'s
+        signature, and every existing test against it, stays untouched.
+        `INSERT OR REPLACE` -- calling this again for the same
+        `experiment_id` overwrites, it doesn't duplicate.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO experiment_specs "
+                "(experiment_id, strategy_name, strategy_version, strategy_params, "
+                "symbol, interval, dataset_start, dataset_end, dataset_source, "
+                "dataset_fingerprint, risk_config, backtest_config) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    experiment_id,
+                    spec.strategy_name,
+                    spec.strategy_version,
+                    json.dumps(spec.strategy_params),
+                    spec.symbol,
+                    spec.interval,
+                    spec.dataset_start.isoformat(),
+                    spec.dataset_end.isoformat(),
+                    spec.dataset_source,
+                    spec.dataset_fingerprint,
+                    json.dumps(spec.risk_config),
+                    json.dumps(spec.backtest_config),
+                ),
+            )
+
+    def get_spec(self, experiment_id: int) -> ExperimentSpec | None:
+        """Fetch `experiment_id`'s specification, or None if none was saved."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM experiment_specs WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+        return _row_to_spec(row) if row is not None else None
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
@@ -237,6 +306,22 @@ def _row_to_signal(row: sqlite3.Row) -> Signal:
         direction=SignalDirection(row["direction"]),
         confidence=row["confidence"],
         metadata=json.loads(row["metadata"]),
+    )
+
+
+def _row_to_spec(row: sqlite3.Row) -> ExperimentSpec:
+    return ExperimentSpec(
+        strategy_name=row["strategy_name"],
+        strategy_version=row["strategy_version"],
+        strategy_params=json.loads(row["strategy_params"]),
+        symbol=row["symbol"],
+        interval=row["interval"],
+        dataset_start=pd.Timestamp(row["dataset_start"]),
+        dataset_end=pd.Timestamp(row["dataset_end"]),
+        dataset_source=row["dataset_source"],
+        dataset_fingerprint=row["dataset_fingerprint"],
+        risk_config=json.loads(row["risk_config"]),
+        backtest_config=json.loads(row["backtest_config"]),
     )
 
 

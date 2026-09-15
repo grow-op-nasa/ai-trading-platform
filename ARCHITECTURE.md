@@ -22,7 +22,7 @@ graph TD
     strategies[strategies: Strategy interface + BaseStrategy SDK]
     backtesting[backtesting: Backtester]
     attribution[attribution: PerformanceAttributor]
-    experiments[experiments: ExperimentRegistry + Signal storage]
+    experiments[experiments: ExperimentRegistry + Signal + ExperimentSpec storage]
     research[research: ResearchReporter]
     portfolio[portfolio: AccountState]
     risk[risk: PositionSizer]
@@ -45,6 +45,10 @@ graph TD
     signals --> backtesting
     backtesting --> experiments
     signals --> experiments
+    strategies --> experiments
+    risk --> experiments
+    utils --> strategies
+    utils --> experiments
     backtesting --> attribution
     regime --> attribution
     utils --> attribution
@@ -70,14 +74,14 @@ graph TD
     broker --> cli
 ```
 
-`attribution` is not the same thing as the planned `analytics` (Sprint 6,
+`attribution` is not the same thing as the planned `analytics` (Sprint 7,
 still not built): `attribution` explains a single completed backtest
 (which regime/session it did well or badly in), while `analytics` is
 scoped for cross-experiment and live P&L tracking. If that boundary
 ever gets blurry when `analytics` is actually built, revisit here
 rather than letting the two quietly duplicate each other.
 
-`research` is also distinct from the Sprint 7+ `ai` module: `research`
+`research` is also distinct from the Sprint 8+ `ai` module: `research`
 turns one completed backtest's evidence into a human-readable summary
 and recommendation (a research artifact for a person to read), while
 `ai` (not yet built) will generate trading *signals* consumed by
@@ -123,7 +127,25 @@ generic key/DataFrame persistence with no idea what a "candle" or
 "symbol" is, so any future capability that fetches from an external
 source (news, options chains, VIX, macro data, earnings, forex) can
 depend on it the same way `data` does, without depending on `data`
-itself.
+itself. `utils --> strategies` and `utils --> experiments` (Sprint 6)
+follow the same shape: `hashing.py`'s `sha256_hex()`/
+`dataframe_fingerprint()` don't know what a "strategy" or a "dataset"
+is either, so both `src/strategies` (for `strategy_version`) and
+`src/experiments` (for `ExperimentSpec.dataset_fingerprint`) depend on
+`utils` for hashing without depending on each other for it.
+
+`strategies --> experiments` and `risk --> experiments` are both new in
+Sprint 6, and both exist for exactly one reason: `ExperimentSpec`
+(`src/experiments/spec.py`) needs `Strategy`'s type, `strategy_version`,
+`get_strategy_class` from `src/strategies`, and `RiskLimits`'s type
+from `src/risk`, to describe what an experiment's strategy and risk
+configuration actually were. Both edges point the same direction as
+every other edge into `experiments` (`backtesting --> experiments`,
+`signals --> experiments`) -- `experiments` consumes from upstream
+capabilities to build its records, and neither `src/strategies` nor
+`src/risk` gained any dependency on `src/experiments` in return
+(verified by `tests/test_pipeline_contract.py` composing all of them
+together without a cycle).
 
 `ai` feeds into `strategies` as one input among several -- it is not a
 parent of the whole system. That's deliberate: an AI-generated signal
@@ -193,25 +215,40 @@ depends on for historical price data.
 ### `src/utils`
 
 **Purpose:** shared infrastructure used across capabilities -- not
-owned by any single one. Today: `CacheManager`. Will eventually also
-hold logging/config helpers that don't belong to a specific capability.
+owned by any single one. Today: `CacheManager` and generic content
+hashing (`DECISIONS.md`, ADR-0035). Will eventually also hold logging/
+config helpers that don't belong to a specific capability.
 
 - **Inputs:** `CacheManager.get(key)` takes a string key;
   `CacheManager.set(key, data)` takes a string key and a
-  `pandas.DataFrame`.
+  `pandas.DataFrame`. `hashing.sha256_hex(data)` takes raw `bytes`;
+  `hashing.dataframe_fingerprint(df)` takes a `pandas.DataFrame`.
 - **Outputs:** `CacheManager.get(key)` returns a `DataFrame` or `None`
   if nothing is cached under that key. Persists to CSV under a
-  configurable directory.
+  configurable directory. `dataframe_fingerprint()` returns a
+  deterministic hex digest of a DataFrame's actual values, index, and
+  column names -- a content identity, not a descriptive one.
 - **Key files:**
   - `cache.py` -- `CacheManager`, a generic key -> DataFrame on-disk
     cache. Has no concept of symbols, intervals, or market data at all
     -- that's precisely the point, since news, options chains, VIX,
     macro data, and earnings are all expected to reuse it later
     (`DECISIONS.md`, ADR-0008).
-- **Does not:** know what it's caching or why. Does not decide *when*
-  to use the cache -- that's each capability's own call (e.g.
-  `MarketDataService` decides whether a given request should hit the
-  cache; `CacheManager` just serves the read/write).
+  - `hashing.py` (Sprint 6) -- `sha256_hex()` and
+    `dataframe_fingerprint()`. The shared basis for both identity seams
+    established in `DECISIONS.md` ADR-0035: strategy version
+    (`src/strategies/identity.py`, hashes source code) and dataset
+    identity (this module, hashes candle values) both reduce to "hash
+    these bytes, deterministically" -- kept here once rather than
+    duplicated, the same reasoning `CacheManager` lives here instead of
+    inside `src/data`.
+- **Does not:** know what it's caching, hashing, or why. Does not
+  decide *when* to use the cache -- that's each capability's own call
+  (e.g. `MarketDataService` decides whether a given request should hit
+  the cache; `CacheManager` just serves the read/write). `hashing.py`
+  has no idea what a "strategy" or a "candle" is -- exactly what lets
+  both `src/strategies` and `src/experiments` depend on it without
+  depending on each other.
 - **Depends on:** nothing else in `src/` -- it's foundational, same
   tier as `src/config`.
 
@@ -320,18 +357,43 @@ for profitability) -- only the interface is defined here.
     every `Signal` it constructs, so a strategy author never has to pass
     `symbol` by hand at every call site. `prepare()`/`generate_signals()`
     stay abstract -- the SDK never decides when or how often to emit a
-    signal, only removes setup boilerplate. A strategy can still
-    implement `Strategy` directly, with no base class, exactly as
-    before (`Strategy` the Protocol was not changed).
+    signal, only removes setup boilerplate. `params` (Sprint 6,
+    `DECISIONS.md` ADR-0035) is a new optional property, defaulting to
+    `{}`, that a subclass overrides to expose its own tunable
+    constructor arguments -- read by `ExperimentSpec.capture()`
+    (`src/experiments/spec.py`) to record what an experiment actually
+    ran with. A strategy can still implement `Strategy` directly, with
+    no base class, exactly as before (`Strategy` the Protocol was not
+    changed by either ADR-0033 or ADR-0035).
+  - `identity.py` (Sprint 6) -- `strategy_version(cls)`: a SHA-256 hash
+    of a strategy class's own Python source
+    (`src.utils.hashing.sha256_hex`), used by `ExperimentSpec` as the
+    strategy-identity seam (`DECISIONS.md`, ADR-0035). Automatic --
+    changing a strategy's implementation changes its version with no
+    action from the author -- at the cost of also changing on a purely
+    cosmetic edit (a comment, a docstring): a source-identity hash, not
+    a semantic-identity one.
+  - `registry.py` (Sprint 6) -- `@register_strategy("name")` /
+    `get_strategy_class(name)` / `available_strategies()`, the same
+    `@register_x` pattern `src/indicators/registry.py` and
+    `src/cli/registry.py` already use. `EMACrossStrategy` registers
+    itself as `"ema_cross"`. This is what makes
+    `ExperimentSpec.reconstruct_strategy()` possible -- look a class up
+    by name, rather than every caller needing to import every strategy
+    module by hand.
 - **Does not:** contain any concrete strategy yet. Does not compute
   indicators or regimes itself -- a conforming strategy's `prepare()`
   is expected to call `IndicatorEngine`/`MarketRegimeEngine`. Does not
   emit one `Signal` per candle -- only at genuine decision points.
   `BaseStrategy` does not own the signal-emission loop or pick a
-  direction/confidence on a strategy's behalf.
+  direction/confidence on a strategy's behalf. Registration
+  (`registry.py`) is optional, not required -- an unregistered strategy
+  still works everywhere it always did, it just can't be looked up by
+  name for `ExperimentSpec` reconstruction until it registers.
 - **Depends on:** `src/signals` (for the `Signal` return type);
   `sdk.py` also depends on `src/indicators` (for `IndicatorEngine`) and
-  `src/data` (for `REQUIRED_COLUMNS`).
+  `src/data` (for `REQUIRED_COLUMNS`); `identity.py` depends on
+  `src/utils` (for `sha256_hex`).
 
 ### `src/backtesting`
 
@@ -377,7 +439,7 @@ ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
 **Purpose:** explain a completed backtest, not just report its win
 rate -- trade counts, average hold time, and which market regime
 trades did best/worst in. Sprint 3 Module 3 (`DECISIONS.md`, ADR-0019).
-Not the same thing as the planned `src/analytics` (Sprint 6) -- see the
+Not the same thing as the planned `src/analytics` (Sprint 7) -- see the
 note under the dependency diagram above.
 
 - **Inputs:** a `BacktestResult` and the same candles it was produced
@@ -419,7 +481,7 @@ note under the dependency diagram above.
 evidence-grounded research summary -- a recommendation for a person to
 weigh, never a trading decision (ADR-0017). Sprint 3 Module 4
 (`DECISIONS.md`, ADR-0020; renderer-failure transparency added by
-ADR-0034). Distinct from the Sprint 7+ `src/ai`
+ADR-0034). Distinct from the Sprint 8+ `src/ai`
 scope -- see the note under the dependency diagram above.
 
 - **Inputs:** a `BacktestResult` and the `AttributionReport` produced
@@ -587,6 +649,13 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
     not a realistic live mark-to-market of the portfolio
     (`DECISIONS.md`, ADR-0022, reaffirmed by ADR-0031's cleanup; pinned
     by `tests/test_architecture.py`'s structural tripwire test).
+    `submit_signal()` now raises `ValueError` immediately if its
+    `symbol` argument disagrees with `signal.symbol` -- checked first,
+    before `fill_price` validation or any side effect (Sprint 6,
+    `DECISIONS.md` ADR-0036). The separate `symbol` parameter is kept,
+    not removed -- this validates agreement between the two rather than
+    collapsing them into one, avoiding an interface change to a public
+    method with many existing call sites.
   - `models.py` -- `OrderSide` (`BUY`/`SELL`), `Order` (validated
     `quantity > 0`, carries `signal_id`/`timestamp` for traceability),
     `Fill` (`order`, `fill_price`, `cash_delta`), `Position` (signed
@@ -600,12 +669,10 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
   asserted by a test, not just described in prose. Does not support
   more than one open position per symbol at a time -- opening a second
   raises rather than averaging into it. Does not model limit orders,
-  partial fills, slippage, or commission. Does not validate that
-  `submit_signal()`'s own `symbol` argument matches `signal.symbol`
-  (ADR-0033) -- a deliberately deferred follow-up, not an oversight. Is
-  not wired into `Backtester` -- `tests/test_integration_paper_trading.py`
-  proves it composes with a real strategy's signals, but only as a
-  test, not as production wiring.
+  partial fills, slippage, or commission. Is not wired into
+  `Backtester` -- `tests/test_integration_paper_trading.py` and
+  `tests/test_pipeline_contract.py` prove it composes with a real
+  strategy's signals, but only as tests, not as production wiring.
 - **Depends on:** `src/signals` (for `Signal`/`SignalDirection`),
   `src/portfolio` (for `AccountState`, since ADR-0031), `src/risk` (for
   `SizingDecision`). Extension Cost (ADR-0014): 0 originally -- purely
@@ -811,47 +878,83 @@ ADR-0027).
 ### `src/experiments`
 
 **Purpose:** every backtest run becomes a permanent, queryable record --
-what changed, what happened to the metrics, what was decided. The
-payoff compounds: hundreds of experiments after a year of use, all
-queryable. Part of the Sprint 2 research engine (`DECISIONS.md`,
-ADR-0009, ADR-0012); also owns `Signal` storage as of Sprint 3
-(ADR-0016).
+what changed, what happened to the metrics, what was decided, and (as
+of Sprint 6) what specification actually produced it. The payoff
+compounds: hundreds of experiments after a year of use, all queryable.
+Part of the Sprint 2 research engine (`DECISIONS.md`, ADR-0009,
+ADR-0012); also owns `Signal` storage as of Sprint 3 (ADR-0016) and
+`ExperimentSpec` storage as of Sprint 6 (ADR-0035) -- the platform's
+reproducibility seam.
 
 - **Inputs:** `log_experiment(changed, metrics_before, metrics_after,
   decision, strategy_name=None, notes="")` -- plain dicts, not
   `BacktestResult` objects (see "Does not," below).
   `save_signals(experiment_id, signals)` separately persists a
-  `list[Signal]` under an experiment.
+  `list[Signal]` under an experiment. `save_spec(experiment_id, spec)`
+  separately persists one `ExperimentSpec` under an experiment.
 - **Outputs:** `get_experiment(id)` / `list_experiments(decision=...,
   strategy_name=...)` return `Experiment` records (with a
   `.summary()` method for the human-readable "Experiment #18" view).
   `get_signals(experiment_id)` / `get_signal(signal_id)` return
-  `Signal` objects.
+  `Signal` objects. `get_spec(experiment_id)` returns the
+  `ExperimentSpec` saved for that experiment, or `None`.
 - **Key files:**
   - `registry.py` -- `ExperimentRegistry`, backed by SQLite (stdlib
     `sqlite3`). `changed`/`metrics_before`/`metrics_after` stored as
-    JSON text columns; a second `signals` table stores `Signal` rows,
-    keyed by their own `id` (UUID) and looked up by `experiment_id`, now
-    including a `symbol` column (`DECISIONS.md`, ADR-0033) -- note that
-    `CREATE TABLE IF NOT EXISTS` does not retrofit this column onto a
-    pre-existing `experiments.db` file created before the migration,
-    a known, accepted gap. The module's docstring also documents that
-    its scope is deliberately stable: a full reproducible experiment
-    lineage (strategy name/version, parameters, dataset version, trades,
-    metrics, attribution, research report all linked together) is
-    future evolution, not built this round (see `ROADMAP.md`, "Ongoing,
-    not sprint-scoped").
+    JSON text columns; a `signals` table stores `Signal` rows, keyed by
+    their own `id` (UUID) and looked up by `experiment_id`, including a
+    `symbol` column (`DECISIONS.md`, ADR-0033); a new `experiment_specs`
+    table (Sprint 6, ADR-0035) stores one `ExperimentSpec` per
+    experiment, `experiment_id` itself as the primary key -- unlike
+    `signals`, there's exactly one spec per experiment. Both new-column/
+    new-table additions share the same accepted gap: `CREATE TABLE IF
+    NOT EXISTS` does not retrofit a pre-existing `experiments.db` file
+    created before the migration.
+  - `spec.py` (Sprint 6) -- `ExperimentSpec` itself; see `src/experiments/spec.py`
+    below the dependency diagram is where the type lives, but the
+    registry is where it's persisted. `ExperimentSpec.capture()`,
+    `.reconstruct_strategy()`, `.verify_strategy_version()`, and
+    `.verify_dataset()` are documented under this module's own section
+    further down (see "The experiment specification").
   - `models.py` -- `Experiment` dataclass.
 - **Does not:** know about `BacktestResult` or `Trade` -- it stores
-  whatever metric dicts it's given, and `Signal`s are saved as a
-  separate, deliberate call (`save_signals()`), not a parameter on
-  `log_experiment()`, so that method's signature stays untouched. Does
-  not run backtests itself. Does not yet build the complete experiment
-  artifact graph (trades/attribution/reports linked to an experiment) --
-  intentionally out of scope for this round's cleanup.
-- **Depends on:** `src/signals` (for `Signal`/`SignalDirection` -- see
-  ADR-0016 for why this narrows, but doesn't eliminate, this module's
-  previous independence from backtesting internals).
+  whatever metric dicts it's given, and `Signal`s/`ExperimentSpec`s are
+  saved via separate, deliberate calls (`save_signals()`/`save_spec()`),
+  not parameters on `log_experiment()`, so that method's signature stays
+  untouched. Does not run backtests itself. Does not yet build the
+  complete experiment artifact graph (trades/attribution/reports linked
+  to an experiment) -- intentionally out of scope for Sprint 6, tracked
+  as future work in `ROADMAP.md`'s "Ongoing, not sprint-scoped".
+- **Depends on:** `src/signals` (for `Signal`/`SignalDirection`);
+  as of Sprint 6, also `src/strategies` and `src/risk` (both only via
+  `ExperimentSpec`'s own type -- see "The experiment specification"
+  below).
+
+**The experiment specification** (`src/experiments/spec.py`, Sprint 6,
+`DECISIONS.md` ADR-0035): `ExperimentSpec` is an immutable dataclass
+capturing `strategy_name`, `strategy_version`, `strategy_params`,
+`symbol`, `interval`, `dataset_start`/`dataset_end` (from the actual
+candles used, not the requested range), `dataset_source`,
+`dataset_fingerprint`, `risk_config`, and a currently-always-empty
+`backtest_config` placeholder (`Backtester.run()` takes no
+configuration today, ADR-0011). `ExperimentSpec.capture(strategy,
+candles, risk_limits, symbol=..., interval=..., dataset_source=...)`
+builds one from a strategy instance and the candles it ran against --
+`strategy_version` comes from `src.strategies.identity.strategy_version`,
+`dataset_fingerprint` from `src.utils.hashing.dataframe_fingerprint`,
+and `strategy_params` from the strategy's own `params` property
+(`BaseStrategy`, above) unless overridden. `reconstruct_strategy()`
+looks the class back up via `src.strategies.registry.get_strategy_class`
+and constructs it with `symbol=self.symbol, **self.strategy_params` --
+the "reconstructed from its stored definition" requirement.
+`verify_strategy_version()` and `verify_dataset(candles)` each return
+`bool`, not raise -- a `False` (implementation or data has drifted
+since capture) is an expected, meaningful answer, not an error. Depends
+on `src/strategies` (for `Strategy`, `strategy_version`,
+`get_strategy_class`), `src/risk` (for `RiskLimits`'s type), and
+`src/utils` (for `dataframe_fingerprint`) -- all upstream, so this
+introduces no cycle; neither `src/strategies` nor `src/risk` gained any
+dependency on `src/experiments` in return.
 
 ### `src/cli`
 

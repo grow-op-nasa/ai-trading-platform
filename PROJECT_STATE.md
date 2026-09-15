@@ -43,7 +43,26 @@ change needed there), and the Experiment Registry (ADR-0033);
 swallowed (ADR-0034); and `PaperBroker`'s not-marked-to-market
 limitation is now stated explicitly in multiple docstrings and pinned
 by a structural test. Confirmed via real `pytest` on the dev machine
-(Python 3.14.6): **329 passed**, all green._
+(Python 3.14.6): **329 passed**, all green.
+
+**Sprint 6 (Research Pipeline & Experiment Integrity) is in progress.**
+Part 1 is built: `ExperimentSpec` (`src/experiments/spec.py`) captures
+an immutable, reproducible record of what an experiment actually was --
+strategy name/version, parameters, dataset identity, risk config
+(`DECISIONS.md`, ADR-0035); strategy version is a hash of the
+strategy's own source (`src/strategies/identity.py`), dataset identity
+is a content hash of the actual candles used (`src/utils/hashing.py`);
+a new strategy registry (`src/strategies/registry.py`) makes
+`ExperimentSpec.reconstruct_strategy()` possible; `ExperimentRegistry`
+gained `save_spec()`/`get_spec()`; and `PaperBroker.submit_signal()` now
+rejects a `symbol`/`signal.symbol` mismatch (`DECISIONS.md`, ADR-0036).
+A new end-to-end contract test
+(`tests/test_pipeline_contract.py`) proves the whole chain -- Strategy
+-> Signal -> Backtest -> Risk -> Execution -> Trade -> Performance ->
+Attribution -> Experiment Registry -> spec -> reconstruction --
+composes and reproduces identical decisions. Confirmed via real
+`pytest` on the dev machine (Python 3.14.6): **364 passed**, all
+green._
 
 This file is a snapshot, not a history. It should always describe where
 the project stands right now. For how we got here, see `CHANGELOG.md`.
@@ -347,6 +366,35 @@ For why things were built the way they were, see `DECISIONS.md`.
   (Python 3.14.6): 329 passed, all green. See `DECISIONS.md`, ADR-0031
   through ADR-0034; `CHANGELOG.md`, "Pre-Sprint 6 -- Architecture
   Review Cleanup."
+- ✅ Sprint 6 part 1 -- Research Pipeline & Experiment Integrity: the
+  reproducibility seam. `ExperimentSpec` (`src/experiments/spec.py`) is
+  an immutable record of strategy name/version, parameters, symbol,
+  interval, dataset identity, and risk config -- the first links of the
+  platform's long-term chain (strategy/version -> parameters ->
+  dataset/version -> signals -> trades -> metrics -> attribution ->
+  report), not the entire schema. Strategy version
+  (`src/strategies/identity.py`) is a SHA-256 hash of a strategy
+  class's own source -- automatic, not Git-commit hashing or a
+  manually maintained version string. Dataset identity
+  (`src/utils/hashing.py`'s `dataframe_fingerprint()`) is a content
+  hash of the actual candles used -- distinguishes "this exact data"
+  from "symbol + dates" without a full versioning system. A new
+  strategy registry (`src/strategies/registry.py`,
+  `EMACrossStrategy` registered as `"ema_cross"`) makes
+  `ExperimentSpec.reconstruct_strategy()` possible;
+  `verify_strategy_version()`/`verify_dataset()` detect drift.
+  `ExperimentRegistry` gained `save_spec()`/`get_spec()`, additive and
+  separate from `log_experiment()` (same reasoning as `save_signals()`,
+  ADR-0016). `PaperBroker.submit_signal()` now rejects a
+  `symbol`/`signal.symbol` mismatch -- the gap flagged as deferred in
+  ADR-0033, closed before it becomes dangerous under multi-asset
+  trading. One new end-to-end contract test
+  (`tests/test_pipeline_contract.py`) proves the whole chain -- Strategy
+  -> Signal -> Backtest -> Risk -> Execution -> Trade -> Performance ->
+  Attribution -> Experiment Registry -> spec -> reconstruction --
+  composes and reproduces identical decisions from a strategy rebuilt
+  purely from its stored definition. See `DECISIONS.md`, ADR-0035,
+  ADR-0036.
 
 ## Current Module
 
@@ -357,8 +405,17 @@ connectivity, order submission, and order cancellation for Alpaca,
 synchronous order submission), and `TigerBroker` (connectivity +
 account state) were all confirmed at 305/305 via real `pytest` on the
 dev machine (Python 3.14.6) before the cleanup began. The cleanup
-itself is now likewise confirmed via real `pytest` on the dev machine:
-**329 passed in 1.26s**, all green -- Sprint 6 is unblocked.
+itself is likewise confirmed via real `pytest` on the dev machine:
+329 passed in 1.26s, all green.
+
+**Sprint 6 (Research Pipeline & Experiment Integrity) is in progress.**
+Part 1 -- `ExperimentSpec`, strategy identity/registry, dataset
+fingerprinting, `ExperimentRegistry.save_spec()`/`get_spec()`, the
+`PaperBroker` symbol invariant, and the end-to-end pipeline contract
+test -- is built and confirmed via real `pytest` on the dev machine
+(Python 3.14.6): **364 passed in 0.87s**, all green (see `ROADMAP.md`'s
+Sprint 6 section for what's still open before the sprint closes: a
+worked example script and a second registered strategy).
 
 What's left on the Market Data Service (moved to Roadmap, not
 blocking Sprint 2 through 5, or the cleanup): no data validation beyond
@@ -368,8 +425,11 @@ suite against the live yfinance API.
 
 ## Next Task
 
-Start Sprint 6 (Analytics & Dashboard, see `ROADMAP.md`) -- the
-cleanup's 329 tests are confirmed via real `pytest` on the dev machine.
+Close out Sprint 6: a worked example wiring an actual experiment run
+through the full chain, and a second registered strategy proving the
+registry seam accepts a real extension (see `ROADMAP.md`'s Sprint 6
+section) -- part 1's 364 tests are confirmed via real `pytest` on the
+dev machine. Sprint 7 (Analytics & Dashboard) is next after that.
 Separately available, none yet explicitly requested: setting
 `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
 `TigerBroker.get_account()` against a real Tiger paper account; setting
@@ -444,15 +504,19 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
 - `PaperBroker` supports only one open position per symbol at a time --
   opening a second raises rather than averaging/scaling into it. Also
   deferred: limit orders, partial fills, slippage, commission.
-  `PaperBroker.submit_signal()`'s own `symbol` argument is not validated
-  against the `Signal.symbol` it's handed (ADR-0033) -- a caller could
-  in principle pass a signal for one symbol and a different `symbol`
-  string; deliberately not added this round to avoid an unrequested
-  behavior change, noted as a candidate follow-up in ADR-0033. `Trade`
+  `PaperBroker.submit_signal()`'s own `symbol` argument disagreeing with
+  the `Signal.symbol` it's handed is now rejected with `ValueError`
+  (Sprint 6, `DECISIONS.md` ADR-0036) -- no longer open debt. `Trade`
   (`src/backtesting/models.py`) still has no `symbol` field of its own
   -- it traces back to symbol-carrying `Signal`s via
   `entry_signal_id`/`exit_signal_id`, which was judged sufficient rather
   than duplicative.
+- Sprint 6's identity seams (`DECISIONS.md`, ADR-0035) are deliberately
+  partial: `strategy_version` hashes a strategy's source but doesn't
+  archive the source itself, and `dataset_fingerprint` detects when
+  data has changed but doesn't snapshot or store prior versions of it.
+  Both are the seam, not the system -- see `ROADMAP.md`'s
+  "Ongoing, not sprint-scoped" section.
 - `AlpacaBroker.get_account()` is now confirmed against Alpaca's real
   paper-trading API (`atp doctor`'s Broker Connection check passes with
   real `ALPACA_API_KEY`/`ALPACA_API_SECRET` credentials) -- the first
@@ -489,18 +553,19 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 329 passed (7 config + 15 market data + 6 cache
-                          # + 11 indicators + 10 regime + 12 backtesting + 17 experiments
+pytest                    # should show 364 passed (7 config + 15 market data + 6 cache
+                          # + 11 indicators + 10 regime + 12 backtesting + 21 experiments
                           # + 29 cli/doctor + 13 signals + 13 strategy_sdk + 8 attribution
-                          # + 17 research + 11 ema_cross_strategy + 17 risk + 18 execution
+                          # + 17 research + 11 ema_cross_strategy + 17 risk + 19 execution
                           # + 6 integration_paper_trading + 34 broker + 15 ibkr
                           # + 11 reconciliation + 31 ig + 15 tiger + 8 architecture
-                          # + 5 portfolio)
+                          # + 5 portfolio + 6 hashing + 9 strategy_registry
+                          # + 12 experiment_spec + 3 pipeline_contract)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until
                           # ALPACA_API_KEY/ALPACA_API_SECRET are set)
 ```
 
-Confirmed via real `pytest` on the dev machine (Python 3.14.6): 329
-passed in 1.26s, all green.
+Confirmed via real `pytest` on the dev machine (Python 3.14.6): 364
+passed in 0.87s, all green.

@@ -91,6 +91,22 @@ def test_opening_requires_sizing_decision():
         broker.submit_signal(make_signal(SignalDirection.LONG), "SPY", fill_price=100.0)
 
 
+def test_submit_signal_rejects_symbol_mismatch_against_signal_symbol():
+    # DECISIONS.md, ADR-0035/ADR-0033: signal.symbol is the source of
+    # truth -- a caller passing a different symbol string must not
+    # silently execute against the wrong instrument.
+    broker = PaperBroker(starting_cash=100_000)
+    decision = make_sizing_decision(position_size=10.0)
+    mismatched_signal = make_signal(SignalDirection.LONG)  # symbol="SPY"
+
+    with pytest.raises(ValueError, match="symbol mismatch"):
+        broker.submit_signal(mismatched_signal, "QQQ", fill_price=100.0, sizing_decision=decision)
+
+    # No side effects from the rejected call.
+    assert "QQQ" not in broker.positions
+    assert broker.cash == pytest.approx(100_000.0)
+
+
 def test_opening_rejects_unapproved_sizing_decision():
     broker = PaperBroker(starting_cash=100_000)
     decision = make_sizing_decision(approved=False)

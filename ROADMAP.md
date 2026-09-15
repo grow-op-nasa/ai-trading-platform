@@ -248,7 +248,7 @@ is a judgment call, not a fixed scope -- e.g. a reusable orchestration
 layer (a `PaperTradingLoop` or similar) only becomes worth building
 once there's a second real caller that needs one.
 
-## Sprint 5 -- Broker Connectivity (in progress)
+## Sprint 5 -- Broker Connectivity ✅ Complete
 
 - ✅ `src/broker/`: `BrokerConnection` (analogous to `DataProvider`) +
   `AlpacaBroker` -- `get_account() -> src.risk.AccountState`, reusing
@@ -374,7 +374,69 @@ deferred -- none of that scope moved.
 Confirmed via real `pytest` on the dev machine: see `PROJECT_STATE.md`
 for the exact count.
 
-## Sprint 6 -- Analytics & Dashboard (planned)
+## Sprint 6 -- Research Pipeline & Experiment Integrity (in progress)
+
+Connecting the pieces already built, rather than adding another
+isolated feature. Target: a researcher can run an experiment
+(strategy + symbol + dataset + parameters + risk allocation) and have
+it flow signals -> backtest -> risk -> trades -> performance ->
+attribution -> experiment record -> research report, with the
+experiment reproducible from its stored definition. Not a rewrite --
+every existing capability boundary (`ARCHITECTURE.md`) stays exactly
+where it is; this sprint is about composition, not redesign.
+
+**Part 1 -- the reproducibility seam ✅ Complete:**
+
+- ✅ **Experiment specification**: `ExperimentSpec`
+  (`src/experiments/spec.py`) -- an immutable record of strategy
+  name/version, parameters, symbol, interval, dataset identity, and
+  risk config, capturing the first links of the long-term chain
+  (strategy/version -> parameters -> dataset/version -> ...) without
+  building the entire final schema. See `DECISIONS.md`, ADR-0035.
+- ✅ **Strategy identity**: `strategy_version()`
+  (`src/strategies/identity.py`) hashes a strategy class's own source --
+  automatic, not Git-commit hashing or package versioning (both
+  explicitly deferred). A new strategy registry
+  (`src/strategies/registry.py`) makes reconstruction by name possible;
+  `EMACrossStrategy` registers itself as `"ema_cross"`. See ADR-0035.
+- ✅ **Dataset identity**: `dataframe_fingerprint()`
+  (`src/utils/hashing.py`) hashes the actual candle values a backtest
+  ran against -- distinguishes "this exact data" from "symbol + dates",
+  without building a full dataset-versioning system. See ADR-0035.
+- ✅ **End-to-end contract test**: `tests/test_pipeline_contract.py` --
+  one deterministic, fixture-driven test proving Strategy -> Signal ->
+  Backtest -> Risk -> Execution -> Trade -> Performance -> Attribution
+  -> Experiment Registry -> spec -> reconstruction all compose, and
+  that a strategy rebuilt purely from its stored spec reproduces
+  identical decisions.
+- ✅ **Symbol/execution invariant**: `PaperBroker.submit_signal()` now
+  rejects a `symbol` argument that disagrees with `signal.symbol` --
+  the exact gap flagged as deferred in ADR-0033/`PROJECT_STATE.md`'s
+  Technical Debt, closed before multi-asset trading makes it dangerous
+  rather than theoretical. See `DECISIONS.md`, ADR-0036.
+
+**Explicitly not built in Sprint 6** (per the planning review that
+scoped this sprint): live trading of any kind (Alpaca/IG/Tiger
+connectivity exists, but the research -> decision -> execution chain
+isn't trusted with real money yet); ML prediction models; portfolio
+optimization; more indicators; sophisticated (stop-based) risk models;
+live market data streaming; real mark-to-market; a dashboard; AI
+agents; automatic strategy discovery. All either already tracked
+elsewhere in this file or explicitly out of scope for now.
+
+**What's left before Sprint 6 can close:**
+
+- ⬜ A worked example wiring an actual experiment run (strategy pick,
+  symbol, dataset fetch, parameters, risk allocation) through the full
+  chain via a single call or short script, rather than only through a
+  test -- `tests/test_pipeline_contract.py` proves the pipeline
+  composes; nothing yet gives a person a one-line way to run it
+  themselves.
+- ⬜ A second registered strategy (e.g. an RSI mean-reversion strategy)
+  to prove the registry/`ExperimentSpec` seam genuinely accepts a new
+  strategy as an extension, not just in theory -- not started.
+
+## Sprint 7 -- Analytics & Dashboard (planned)
 
 - `src/analytics/`: backtest performance metrics (Sharpe, drawdown,
   win rate) and live P&L tracking.
@@ -382,7 +444,7 @@ for the exact count.
   `analytics` -- a way to see the system running, not a place where
   new logic lives.
 
-## Sprint 7+ -- AI (planned)
+## Sprint 8+ -- AI (planned)
 
 - `src/ai/`: ML/LLM-based signal generation, consumed by
   `src/strategies` as one signal source among others (see
@@ -397,13 +459,35 @@ for the exact count.
   exists and returns a real exit code) on every push -- not set up yet.
 - Documentation set (`PROJECT_STATE.md`, `ARCHITECTURE.md`,
   `CHANGELOG.md`, `DECISIONS.md`, `ROADMAP.md`) updated every sprint.
-- **Full experiment lineage** (`src/experiments/`): today only signals
-  are first-class rows (`DECISIONS.md`, ADR-0016); trades, attribution,
-  and research reports stay in-memory, produced on demand from a
+- **Full experiment lineage** (`src/experiments/`): signals
+  (`DECISIONS.md`, ADR-0016) and, as of Sprint 6, one `ExperimentSpec`
+  per experiment (ADR-0035) are first-class rows; trades, attribution,
+  and research reports still stay in-memory, produced on demand from a
   `BacktestResult`/`AttributionReport` pair. A future evolution could
-  let one experiment retain a complete, reproducible lineage --
-  strategy/version, parameters, dataset/version, signals, trades,
-  metrics, attribution, and a research report, all queryable together.
-  Deliberately not built in the pre-Sprint 6 architecture cleanup or
-  any sprint so far -- noted here so the shape isn't lost, not because
-  it's scheduled.
+  link those into the registry too, so one experiment retains a
+  complete, reproducible lineage -- strategy/version, parameters,
+  dataset/version, signals, trades, metrics, attribution, and a research
+  report, all queryable together. Not started this round -- noted here
+  so the shape isn't lost, not because it's scheduled.
+- **Dataset snapshotting/archival**: Sprint 6's `dataset_fingerprint`
+  (ADR-0035) detects when the underlying data behind a dataset
+  descriptor has changed, but doesn't store or version the data itself
+  -- there's no way to retrieve "the exact candles experiment #42 used"
+  after the fact, only to tell whether a fresh fetch matches them. A
+  real dataset-versioning system would close this; explicitly deferred
+  as "don't build a massive data-versioning system yet" in the Sprint 6
+  planning review.
+- **Strategy source archival**: similarly, `strategy_version` (ADR-0035)
+  hashes a strategy's source but doesn't store the source itself -- if
+  `EMACrossStrategy` changes later, an old experiment's
+  `verify_strategy_version()` will correctly report `False`, but there's
+  no way to recover exactly what the old implementation was from the
+  spec alone (only from version control, which this ADR deliberately
+  does not integrate with yet).
+- **`PositionSizer`/`Backtester` wiring**: `Backtester` still sizes every
+  trade as a single unit (ADR-0011); `PositionSizer` and `PaperBroker`
+  compose correctly (`tests/test_integration_paper_trading.py`,
+  `tests/test_pipeline_contract.py`) but only as a second, parallel path
+  driven by the same signals, not as part of `Backtester.run()` itself.
+  Wiring these together is real future work, deliberately not done in
+  Sprint 6 (out of scope: "sophisticated risk models").

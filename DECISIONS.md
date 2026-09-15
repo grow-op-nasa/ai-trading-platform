@@ -1862,3 +1862,178 @@ CLI/dashboard surfaces it to a human today) -- this ADR makes the
 information available and tested, not necessarily acted upon yet;
 wiring it into `atp doctor` or a future dashboard is a natural next
 step, not built here.
+
+## ADR-0035: Experiment specification, strategy version, and dataset identity
+
+**Status:** Accepted -- Sprint 6
+
+**Context:** The platform's long-term target (`ROADMAP.md`) is a
+reproducible chain: experiment -> strategy/version -> parameters ->
+dataset/version -> signals -> trades -> metrics -> attribution ->
+report. Before Sprint 6, `ExperimentRegistry.log_experiment()` stored
+`changed`/`metrics_before`/`metrics_after`/`decision`/`strategy_name` as
+free-form dicts and a string, with no structured record of *what
+produced* those numbers -- which exact strategy implementation, with
+which parameters, against which exact data. Two concrete gaps made this
+non-reproducible in practice, both explicitly raised in a Sprint 6
+planning review:
+
+1. **Strategy identity.** "EMA Cross, fast=12, slow=26" recorded today
+   and the same label recorded after `EMACrossStrategy`'s
+   implementation changes six months from now look identical in the
+   registry, even though they are not the same experiment. Nothing
+   distinguished "same name and parameters" from "same code".
+2. **Dataset identity.** "SPY, 2020-01-01 to 2025-01-01" recorded today
+   and the same descriptor recorded after the underlying vendor data is
+   revised (or a stale cache serves different values) also look
+   identical, even though the actual candles used may differ.
+
+**Decision:** Establish the reproducibility seam, not the complete
+system:
+
+- **`ExperimentSpec`** (`src/experiments/spec.py`) -- a new, immutable
+  dataclass capturing `strategy_name`, `strategy_version`,
+  `strategy_params`, `symbol`, `interval`, `dataset_start`/
+  `dataset_end` (from the actual candles used, not the requested
+  range), `dataset_source`, `dataset_fingerprint`, `risk_config`
+  (`RiskLimits`' two fields), and a currently-always-empty
+  `backtest_config` placeholder (`Backtester.run()` takes no
+  configuration today, ADR-0011; the field exists so adding one later
+  doesn't widen `ExperimentSpec`'s shape). `ExperimentSpec.capture(strategy,
+  candles, risk_limits, symbol=..., interval=..., dataset_source=...)`
+  builds one from a strategy instance and the candles it ran against.
+- **Strategy version = a hash of the strategy's own source**
+  (`src/strategies/identity.py`, `strategy_version(cls)` ->
+  SHA-256 of `inspect.getsource(cls)`). Considered and rejected: Git
+  commit hashing (ties strategy identity to repository state, which the
+  Sprint 6 review explicitly asked not to build yet) and a manually
+  maintained `VERSION` string (relies on an author remembering to bump
+  it -- exactly the failure mode motivating this ADR in the first
+  place). A source hash is automatic and can't be forgotten, at the
+  documented cost of also changing on a purely cosmetic edit (a
+  comment, a docstring) -- a source-identity hash, not a
+  semantic-identity one. This is a real, accepted trade-off, not
+  something to silently work around later.
+- **Dataset identity = a content hash of the actual candles used**
+  (`src.utils.hashing.dataframe_fingerprint`, via
+  `pandas.util.hash_pandas_object` over values + index + column names).
+  Considered and rejected: a plain `(symbol, interval, start, end,
+  source)` descriptor with no hashing, which cannot detect the exact
+  failure mode this ADR exists for (identical descriptor, silently
+  different underlying values); and a full dataset-versioning/snapshot
+  system (explicitly out of scope -- "don't build a massive
+  data-versioning system yet"). A content hash is the smallest thing
+  that actually distinguishes "this exact data" from "this description
+  of data," with no new storage.
+- **Strategy registry** (`src/strategies/registry.py`,
+  `@register_strategy("name")` / `get_strategy_class(name)` /
+  `available_strategies()`) -- the same `@register_x` pattern already
+  used by `src/indicators/registry.py` and `src/cli/registry.py`.
+  `EMACrossStrategy` registers itself as `"ema_cross"`. This is what
+  makes `ExperimentSpec.reconstruct_strategy()` possible: look up the
+  class by the spec's stored `strategy_name`, construct it with
+  `symbol=spec.symbol, **spec.strategy_params`.
+- **`BaseStrategy.params`** (`src/strategies/sdk.py`) -- a new optional
+  property, defaulting to `{}`, that a subclass overrides to expose its
+  own tunable constructor arguments (`EMACrossStrategy.params` returns
+  `{"fast": ..., "slow": ..., "confidence": ...}`). Deliberately not
+  introspected automatically from `__init__`'s signature, and
+  deliberately not added to the `Strategy` Protocol itself
+  (`src/strategies/base.py`, untouched) -- both would be a real
+  interface change forced onto every existing and future strategy;
+  overriding one optional property is enough for a strategy that wants
+  to participate in `ExperimentSpec.capture()`. A strategy that doesn't
+  override it, or doesn't subclass `BaseStrategy` at all, still works
+  everywhere it always did -- it just can't have its params
+  auto-captured (`ExperimentSpec.capture()`'s `strategy_params=`
+  argument lets a caller supply them explicitly instead).
+- **Persistence**: `ExperimentRegistry.save_spec(experiment_id, spec)` /
+  `get_spec(experiment_id)` (`src/experiments/registry.py`), a new
+  `experiment_specs` table keyed by `experiment_id` (one spec per
+  experiment, unlike the many-per-experiment `signals` table).
+  Deliberately additive and separate from `log_experiment()`, the same
+  reasoning `save_signals()` is separate (ADR-0016) -- `log_experiment()`'s
+  signature and every existing test against it stay untouched.
+- **Verification methods** on `ExperimentSpec`:
+  `verify_strategy_version()` (does the currently-registered class for
+  `strategy_name` still hash to the stored `strategy_version`?) and
+  `verify_dataset(candles)` (does `candles` still fingerprint to the
+  stored `dataset_fingerprint`?). Both return `bool` rather than raising
+  -- a `False` is an expected, meaningful answer ("this drifted"), not
+  an error condition.
+
+**Explicitly not built this round** (the seam, not the system): no
+dataset snapshotting, archival, or storage of prior fingerprints; no
+strategy source-code archival (only its hash is kept, not the source
+itself); no Git or package-version integration; no automatic re-run
+scheduling or CI wiring; `Trade` still carries no `symbol` field of its
+own (unchanged from ADR-0033 -- it still traces to symbol-carrying
+`Signal`s); `PositionSizer`/`Backtester` remain unwired to each other
+(ADR-0011/ADR-0021, unchanged); the complete experiment artifact graph
+(trades, attribution, and research reports linked into the registry)
+remains future work (`src/experiments/registry.py`'s own docstring,
+`ROADMAP.md`).
+
+**Consequences:** New files: `src/utils/hashing.py`,
+`src/strategies/identity.py`, `src/strategies/registry.py`,
+`src/experiments/spec.py`. Extension Cost (ADR-0014): 6 existing files
+touched -- `src/utils/__init__.py` (exports), `src/strategies/sdk.py`
+(`params` property), `src/strategies/ema_cross.py` (`@register_strategy`
++ `params` override), `src/experiments/__init__.py` (exports),
+`src/experiments/registry.py` (`_SPECS_SCHEMA` + `save_spec`/`get_spec`),
+and this file. New dependency edges: `src/experiments` now depends on
+`src/strategies` and `src/risk` (for `ExperimentSpec`'s type
+references) in addition to its existing `src/signals` dependency;
+`src/strategies` and `src/experiments` both now depend on `src/utils`
+for hashing. All three are downstream-depends-on-upstream, matching the
+existing dependency direction -- no cycle, and neither `src/strategies`
+nor `src/risk` gained any dependency on `src/experiments`
+(`tests/test_pipeline_contract.py` and static review both confirm this).
+`tests/test_hashing.py` (6 tests), `tests/test_strategy_registry.py` (9
+tests), and `tests/test_experiment_spec.py` (12 tests) cover the new
+modules directly; `tests/test_pipeline_contract.py` (3 tests) is the
+single end-to-end contract test proving the whole chain -- Strategy ->
+Signal -> Backtest -> Risk -> Execution -> Trade -> Performance ->
+Attribution -> Experiment Registry -> spec -> reconstruction -- composes
+and is reproducible, including a strategy rebuilt purely from its
+stored `strategy_name`/`strategy_params` producing the identical
+sequence of decisions (timestamp, symbol, direction, confidence) as the
+original run.
+
+## ADR-0036: `PaperBroker.submit_signal()` rejects a symbol/`Signal.symbol` mismatch
+
+**Status:** Accepted -- Sprint 6
+
+**Context:** ADR-0033 gave `Signal` a first-class, required `symbol`
+field, but deliberately did not add validation that
+`PaperBroker.submit_signal(signal, symbol, ...)`'s own `symbol`
+argument actually agreed with `signal.symbol` -- flagged at the time as
+a scope boundary, not an oversight, and reported as a known gap in
+`PROJECT_STATE.md`'s Technical Debt. A Sprint 6 planning review called
+this out directly: as the platform moves toward multi-asset trading,
+silently allowing `submit_signal(signal_for_SPY, symbol="QQQ")` to
+execute against the wrong instrument is exactly the kind of invariant
+that becomes dangerous rather than theoretical.
+
+**Decision:** `PaperBroker.submit_signal()` (`src/execution/engine.py`)
+now raises `ValueError` immediately if `symbol != signal.symbol`,
+before any other validation or side effect. The check runs first, ahead
+of the existing `fill_price` validation, so a mismatched call never
+touches cash or positions. The separate `symbol` parameter itself is
+kept, not removed or made optional -- removing it would be an
+interface change to a public method with many existing call sites, and
+was explicitly out of scope ("no unnecessary redesign of existing
+interfaces"); this ADR closes the gap by validating agreement between
+the two, not by collapsing them into one.
+
+**Consequences:** Extension Cost (ADR-0014): 1 file changed
+(`src/execution/engine.py`), plus this entry. No existing caller breaks
+-- every current call site across `src/`, `tests/`, and the examples in
+docstrings already passes a `symbol` matching `signal.symbol` (verified
+by grep before making this change); the new check only rejects inputs
+that were already a latent bug. `tests/test_execution.py` gained
+`test_submit_signal_rejects_symbol_mismatch_against_signal_symbol`,
+asserting both the raised `ValueError` and that no cash/position side
+effects occur on the rejected call. This closes the last item explicitly
+flagged as deferred-not-forgotten in ADR-0033 and `PROJECT_STATE.md`'s
+Technical Debt.

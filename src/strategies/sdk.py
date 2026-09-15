@@ -94,6 +94,23 @@ class BaseStrategy(ABC):
     def symbol(self) -> str:
         return self._symbol
 
+    @property
+    def params(self) -> dict:
+        """This strategy instance's tunable constructor parameters.
+
+        Optional -- defaults to `{}`. Override to expose whatever a
+        subclass's `__init__` actually takes (e.g. `{"fast": 12, "slow":
+        26}`), so `ExperimentSpec.capture()` (`src/experiments/spec.py`,
+        `DECISIONS.md` ADR-0035) can record them and later reconstruct
+        an equivalent instance via `strategy_cls(symbol=..., **params)`.
+        Deliberately not required, and not introspected automatically
+        from `__init__`'s signature -- that would be a real interface
+        change to `Strategy`/`BaseStrategy` for every existing and
+        future subclass; overriding this one property is enough for a
+        strategy that wants to participate in experiment capture.
+        """
+        return {}
+
     @abstractmethod
     def prepare(self, data: pd.DataFrame) -> pd.DataFrame:
         """Enrich `data` with whatever this strategy needs to decide.

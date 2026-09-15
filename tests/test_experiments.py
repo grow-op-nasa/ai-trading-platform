@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from src.experiments.registry import ExperimentRegistry
+from src.experiments.spec import ExperimentSpec
 from src.signals.models import Signal, SignalDirection
 
 
@@ -287,3 +288,68 @@ def test_signals_persist_across_reconnects(tmp_path):
     assert fetched is not None
     assert fetched.metadata == signal.metadata
     assert fetched.symbol == signal.symbol
+
+
+def make_spec(**overrides) -> ExperimentSpec:
+    defaults = dict(
+        strategy_name="ema_cross",
+        strategy_version="deadbeef",
+        strategy_params={"fast": 12, "slow": 26, "confidence": 0.7},
+        symbol="SPY",
+        interval="1d",
+        dataset_start=pd.Timestamp("2024-01-01"),
+        dataset_end=pd.Timestamp("2024-01-10"),
+        dataset_source="yfinance",
+        dataset_fingerprint="cafebabe",
+        risk_config={"allocation_per_trade_pct": 0.1, "max_portfolio_exposure_pct": 0.5},
+    )
+    defaults.update(overrides)
+    return ExperimentSpec(**defaults)
+
+
+def test_get_spec_returns_none_when_none_saved(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_id = registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+    assert registry.get_spec(experiment_id) is None
+
+
+def test_save_and_get_spec_round_trips(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_id = registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+    spec = make_spec()
+
+    registry.save_spec(experiment_id, spec)
+    fetched = registry.get_spec(experiment_id)
+
+    assert fetched == spec
+
+
+def test_save_spec_twice_replaces_rather_than_duplicates(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_id = registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+
+    registry.save_spec(experiment_id, make_spec(symbol="SPY"))
+    registry.save_spec(experiment_id, make_spec(symbol="QQQ"))
+
+    assert registry.get_spec(experiment_id).symbol == "QQQ"
+
+
+def test_spec_persists_across_reconnects(tmp_path):
+    db_path = tmp_path / "experiments.db"
+    first_registry = ExperimentRegistry(db_path=db_path)
+    experiment_id = first_registry.log_experiment(
+        changed={}, metrics_before={}, metrics_after={}, decision="KEEP"
+    )
+    spec = make_spec()
+    first_registry.save_spec(experiment_id, spec)
+
+    second_registry = ExperimentRegistry(db_path=db_path)
+    fetched = second_registry.get_spec(experiment_id)
+
+    assert fetched == spec

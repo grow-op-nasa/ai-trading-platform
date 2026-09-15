@@ -9,6 +9,12 @@ chance of explaining anything more complex. This is a research vehicle
 for exercising the platform end to end (Strategy SDK -> Backtester ->
 Performance Attribution -> AI Research Reporter), not a strategy meant
 to be traded as-is.
+
+Registered under `"ema_cross"` via `@register_strategy`
+(`src/strategies/registry.py`, `DECISIONS.md` ADR-0035) -- this is what
+lets `ExperimentSpec.reconstruct_strategy()` rebuild an equivalent
+instance from a stored experiment's `strategy_name` + `params` alone,
+without this module needing to be imported by name anywhere else.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.signals.models import Signal, SignalDirection
+from src.strategies.registry import register_strategy
 from src.strategies.sdk import BaseStrategy
 
 DEFAULT_FAST_PERIOD = 12
@@ -23,6 +30,7 @@ DEFAULT_SLOW_PERIOD = 26
 DEFAULT_CONFIDENCE = 0.7
 
 
+@register_strategy("ema_cross")
 class EMACrossStrategy(BaseStrategy):
     """Long while EMA(fast) > EMA(slow), flat otherwise.
 
@@ -65,6 +73,13 @@ class EMACrossStrategy(BaseStrategy):
         self._fast = fast
         self._slow = slow
         self._confidence = confidence
+
+    @property
+    def params(self) -> dict:
+        """`fast`/`slow`/`confidence` -- everything `__init__` needs
+        besides `symbol` to reconstruct an equivalent instance. Read by
+        `ExperimentSpec.capture()` (`DECISIONS.md`, ADR-0035)."""
+        return {"fast": self._fast, "slow": self._slow, "confidence": self._confidence}
 
     def prepare(self, data: pd.DataFrame) -> pd.DataFrame:
         self.require_columns(data)

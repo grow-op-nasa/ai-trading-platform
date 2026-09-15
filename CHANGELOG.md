@@ -11,6 +11,107 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 6 -- 2026-09-15, Research Pipeline & Experiment Integrity (part 1)
+
+The first step toward the platform's long-term reproducibility target
+(`ROADMAP.md`): experiment -> strategy/version -> parameters ->
+dataset/version -> signals -> trades -> metrics -> attribution ->
+report. Not the entire chain -- the reproducible starting point of it,
+plus proof (one deliberately thorough end-to-end test, not thirty
+superficial ones) that every existing module actually composes.
+
+### Added
+
+- `src/experiments/spec.py` -- `ExperimentSpec` (`DECISIONS.md`,
+  ADR-0035): an immutable record of `strategy_name`,
+  `strategy_version`, `strategy_params`, `symbol`, `interval`,
+  `dataset_start`/`dataset_end`, `dataset_source`,
+  `dataset_fingerprint`, `risk_config`, and a reserved
+  `backtest_config` placeholder. `ExperimentSpec.capture(strategy,
+  candles, risk_limits, symbol=..., interval=..., dataset_source=...)`
+  builds one from a strategy instance and the candles it ran against.
+  `reconstruct_strategy()` rebuilds an equivalent strategy instance
+  purely from the stored name + params; `verify_strategy_version()` and
+  `verify_dataset(candles)` each return `False` when the recorded
+  identity no longer matches current reality.
+- `src/strategies/identity.py` -- `strategy_version(cls)`: SHA-256 of a
+  strategy class's own Python source. Automatic, not something an
+  author has to remember to bump -- change `EMACrossStrategy`'s logic
+  six months from now, and its version changes with it.
+- `src/strategies/registry.py` -- `@register_strategy("name")` /
+  `get_strategy_class(name)` / `available_strategies()`, the same
+  `@register_x` pattern `src/indicators/registry.py` and
+  `src/cli/registry.py` already use. `EMACrossStrategy` now registers
+  itself as `"ema_cross"` -- this is what makes
+  `ExperimentSpec.reconstruct_strategy()` possible.
+- `src/strategies/sdk.py` -- `BaseStrategy.params` (new optional
+  property, defaults to `{}`); `EMACrossStrategy.params` overrides it
+  to return `{"fast", "slow", "confidence"}`, read by
+  `ExperimentSpec.capture()`.
+- `src/utils/hashing.py` -- `sha256_hex()` and `dataframe_fingerprint()`
+  (hashes a DataFrame's actual values + index + columns via
+  `pandas.util.hash_pandas_object`) -- the shared basis for both
+  identity seams above.
+- `ExperimentRegistry.save_spec(experiment_id, spec)` /
+  `get_spec(experiment_id)` -- a new `experiment_specs` table, one row
+  per experiment, additive and separate from `log_experiment()` (same
+  reasoning as `save_signals()`, ADR-0016).
+- `PaperBroker.submit_signal()` now raises `ValueError` if its `symbol`
+  argument disagrees with `signal.symbol` (`DECISIONS.md`, ADR-0036) --
+  closes the gap flagged as deferred in ADR-0033/`PROJECT_STATE.md`'s
+  Technical Debt. Checked first, before any other validation or side
+  effect.
+- `tests/test_hashing.py` (6 tests), `tests/test_strategy_registry.py`
+  (9 tests), `tests/test_experiment_spec.py` (12 tests) -- direct
+  coverage of the new modules.
+- `tests/test_pipeline_contract.py` (3 tests) -- the single end-to-end
+  contract test: Strategy -> Signal -> Backtest -> Risk -> Execution ->
+  Trade -> Performance -> Attribution -> Experiment Registry -> spec ->
+  reconstruction, using the same known-good EMA-crossover candle
+  fixture already proven elsewhere in the suite. Asserts a strategy
+  rebuilt purely from its stored `strategy_name`/`strategy_params`
+  reproduces the identical sequence of decisions (timestamp, symbol,
+  direction, confidence) as the original run, and that both
+  `verify_strategy_version()` and `verify_dataset()` correctly detect
+  drift when the underlying code or data changes.
+- `tests/test_execution.py` -- new symbol-mismatch rejection test
+  (ADR-0036).
+
+### Decided
+
+- Strategy version = a hash of the strategy's own source, not Git
+  commit hashing (ties identity to repository state -- explicitly out
+  of scope) and not a manually maintained `VERSION` string (relies on
+  an author remembering to bump it -- the exact failure mode this ADR
+  exists to close). A source-identity hash, not a semantic-identity
+  one -- a purely cosmetic edit also changes the version. Accepted
+  trade-off, not a bug. See `DECISIONS.md`, ADR-0035.
+- Dataset identity = a content hash of the actual candles used, not a
+  plain `(symbol, interval, start, end, source)` descriptor (can't
+  detect silently-changed underlying values) and not a full dataset
+  versioning/snapshot system (explicitly out of scope this round). See
+  ADR-0035.
+- `BaseStrategy.params` is optional and defaults to `{}` -- not
+  introspected automatically from `__init__`, and not added to the
+  `Strategy` Protocol itself. Avoids forcing an interface change onto
+  every existing and future strategy.
+- `PaperBroker.submit_signal()`'s separate `symbol` parameter is kept,
+  not removed or folded into `signal.symbol` -- validated for
+  agreement instead. See ADR-0036.
+- Not built this round (the seam, not the system): dataset
+  snapshotting/archival, strategy source-code archival, Git/package
+  version integration, automatic re-run scheduling, `Trade.symbol`,
+  wiring `PositionSizer`/`Backtester` together, and the complete
+  experiment artifact graph (trades/attribution/reports linked into the
+  registry). All tracked as future work, not silently dropped.
+
+### Verified
+
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6):
+  **364 passed in 0.87s** -- all tests green, including
+  `test_python_version_passes_against_running_interpreter` -- up from
+  the Pre-Sprint 6 baseline of 329.
+
 ## Pre-Sprint 6 -- 2026-09-15, Architecture Review Cleanup
 
 A targeted correction pass ahead of Sprint 6, not a redesign -- four
@@ -114,7 +215,7 @@ real mark-to-market, Tiger/IB order lifecycles, IG's structural
   fails in the sandbox's Python 3.10 environment (this project requires
   >=3.12).
 
-## Sprint 5 (in progress) -- 2026-09-10, Broker Connectivity
+## Sprint 5 (complete) -- 2026-09-10, Broker Connectivity
 
 ### Added
 
@@ -501,6 +602,24 @@ real mark-to-market, Tiger/IB order lifecycles, IG's structural
 
 - Confirmed via real `pytest` on the dev machine (Python 3.14.6): **305
   passed**, 0 failed.
+
+### Sprint 5 close-out
+
+Sprint 5 is complete: four concrete brokers (`AlpacaBroker`,
+`IBKRBroker`, `IGBroker`, `TigerBroker`) implement `BrokerConnection`
+to varying depths (connectivity for all four; order submission and
+cancellation for Alpaca; synchronous order submission for IG), plus
+`src/reconciliation/` comparing simulated fills against real ones.
+305/305 tests passed on the dev machine at close-out.
+
+Before Sprint 6 could start, the four architectural inconsistencies
+this sprint's work had introduced were treated as a **gate, not an
+optional cleanup**: see "Pre-Sprint 6 -- Architecture Review Cleanup"
+above (`DECISIONS.md`, ADR-0031 through ADR-0034). That gate is now
+closed -- the combined Sprint 3/4/5 + cleanup suite stands at **329
+tests, confirmed passing via real `pytest`** on the dev machine (Python
+3.14.6). Sprint 6 does not begin against a suite with any known
+architectural debt from Sprint 5 left uncorrected.
 
 ## Sprint 4 -- 2026-09-10, End-to-End Proof (feature-complete)
 

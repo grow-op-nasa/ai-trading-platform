@@ -111,11 +111,22 @@ class PaperBroker:
             The resulting `Fill`.
 
         Raises:
-            ValueError: `fill_price` isn't positive; a `LONG`/`SHORT`
-                signal is missing an approved `sizing_decision`, or
-                `symbol` already has an open position; or a `FLAT`
-                signal is given for a `symbol` with no open position.
+            ValueError: `fill_price` isn't positive; `symbol` disagrees
+                with `signal.symbol`; a `LONG`/`SHORT` signal is missing
+                an approved `sizing_decision`, or `symbol` already has
+                an open position; or a `FLAT` signal is given for a
+                `symbol` with no open position.
         """
+        if symbol != signal.symbol:
+            raise ValueError(
+                f"symbol mismatch: submit_signal() was called with "
+                f"symbol={symbol!r} but signal.symbol={signal.symbol!r} -- "
+                f"a Signal always knows its own instrument (DECISIONS.md, "
+                f"ADR-0033/ADR-0035); silently executing a signal against a "
+                f"different symbol than the one it was decided for is "
+                f"exactly the kind of invariant multi-asset trading can't "
+                f"afford to leave unchecked."
+            )
         if fill_price <= 0:
             raise ValueError(f"fill_price must be positive, got {fill_price}")
 

@@ -68,4 +68,21 @@ def canonicalize_candles(df: pd.DataFrame) -> pd.DataFrame:
     canonical = canonical.astype(_CANONICAL_DTYPES)
     canonical = canonical.sort_index()
 
+    # DatetimeIndex.freq is pandas-internal bookkeeping metadata, not
+    # candle content: it is inferred lazily and inconsistently depending
+    # on which operations produced the index (a naive index run through
+    # tz_localize() vs. an already-aware index run through tz_convert()
+    # are not guaranteed, across pandas versions, to agree on whether to
+    # keep or clear it -- confirmed via a real pytest run where two
+    # canonicalization passes over identical data disagreed on freq
+    # alone: <Day> vs. None). Left alone, that makes freq an accidental,
+    # non-deterministic component of "canonical" output, which breaks
+    # both idempotence (`canonicalize(canonicalize(x)) != canonicalize(x)`
+    # under a freq-sensitive comparison) and the cache/fresh-fetch
+    # identity guarantee this module exists to provide. Pin it to None
+    # explicitly so canonical output can never carry inferred frequency
+    # metadata, regardless of what pandas happened to infer along the way.
+    if canonical.index.freq is not None:
+        canonical.index.freq = None
+
     return canonical

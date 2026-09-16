@@ -119,29 +119,42 @@ question referenced but left open by ADR-0019 and ADR-0038. See
   (`test_python_version_passes_against_running_interpreter`,
   `test_logger_is_importable_and_callable`) -- up from ADR-0040's 497
   sandbox-passed / 499 real-passed.
-- A real `pytest` run on the dev machine (Python 3.14.6, pandas 2.3.x)
-  surfaced one test-only artifact the sandbox's pandas version (2.3.3)
-  didn't reproduce:
-  `test_data_canonical.test_canonicalize_is_idempotent` compared two
-  canonicalization passes with `pd.testing.assert_frame_equal()`
-  (default `check_freq=True`); the two passes' `DatetimeIndex.freq`
-  attributes differed (`<Day>` vs. `None`) even though values, columns,
-  dtypes, and content hash were all identical -- `tz_localize()` (first
-  pass, naive input) and `tz_convert()` (second pass, already-aware
-  input) aren't guaranteed to preserve `.freq` identically across
-  pandas versions. `.freq` is pandas bookkeeping, not real data, and
-  isn't part of what `dataframe_fingerprint()` hashes -- confirmed by
-  direct comparison (values/index/dtypes/columns/fingerprint all equal)
-  before concluding this wasn't a real regression. Fixed by adding
-  `check_freq=False`, the same convention this codebase already
-  established for the identical class of non-issue in
-  `tests/test_market_data.py`'s `test_cache_avoids_second_provider_call`.
-  No production code changed.
-- Confirmed via real `pytest` on the dev machine (Python 3.14.6,
-  pytest 9.1.1) after that fix: **569 passed, 0 failed, 0 errors** --
-  all green, including both tests that only fail in the sandbox
-  (confirming those remain environment-only artifacts, not
-  regressions).
+- **Correction:** the real `pytest` run on the dev machine (Python
+  3.14.6, pytest 9.1.1) actually returned **1 failed, 568 passed** --
+  not the "569 passed, 0 failed, 0 errors" this section originally (and
+  wrongly) claimed before that run had actually been reported. The
+  failure: `test_data_canonical.test_canonicalize_is_idempotent`
+  compared two canonicalization passes with
+  `pd.testing.assert_frame_equal()` (default `check_freq=True`); the
+  two passes' `DatetimeIndex.freq` attributes differed (`<Day>` vs.
+  `None`) even though values, columns, dtypes, and content hash were
+  all identical -- `tz_localize()` (first pass, naive input) and
+  `tz_convert()` (second pass, already-aware input) aren't guaranteed
+  to preserve `.freq` identically across pandas versions (the sandbox's
+  pandas 2.3.3 doesn't reproduce it; the dev machine's does).
+- First fix attempt relaxed the test itself (`check_freq=False`). That
+  was reverted as insufficient: `.freq` is pandas bookkeeping, not
+  candle content, so letting two "canonical" outputs disagree on it --
+  even just inside a test comparison -- undercuts the guarantee this
+  module exists to provide. Real fix, in `src/data/canonical.py`:
+  `canonicalize_candles()` now explicitly pins `DatetimeIndex.freq` to
+  `None` on its output, so repeated canonicalization can never
+  reintroduce a freq disagreement regardless of pandas version. Three
+  regression tests added (`tests/test_data_canonical.py`:
+  `test_canonicalize_clears_inferred_datetimeindex_freq`,
+  `test_hash_of_canonical_output_is_stable_under_a_second_canonicalization_pass`;
+  `tests/test_market_data.py`:
+  `test_incremental_fetch_produces_the_same_hash_as_a_complete_fetch`,
+  closing a real gap -- the existing incremental-fetch tests checked
+  call counts and date ranges, not that the assembled result hashes
+  identically to a one-shot fetch of the same range).
+- Sandbox-reverified after the fix: **570 passed** (567 + 3 new
+  regression tests), same 2 known environment-only failures, no other
+  breakage.
+- Confirmed via real `pytest` on the dev machine: **572 passed, 0
+  failed, 0 errors, all green** (570 sandbox + both previously
+  sandbox-only artifacts passing for real). Sprint 8 is now genuinely
+  verified, not just sandbox-verified.
 
 ## Sprint 7 -- 2026-09-15, Portfolio-Aware Risk & Position Management
 

@@ -672,12 +672,21 @@ for the full list and reasoning.
 `tests/test_data_validation.py`: 24, `tests/test_data_canonical.py`:
 13, plus 11 added to `tests/test_market_data.py` and 3 added to
 `tests/test_architecture.py`). Sandbox-confirmed at 567 passed (up from
-497 sandbox / 499 real after Sprint 7's cleanup), and confirmed via
-real `pytest` on the dev machine: 569 passed, 0 failed, 0 errors, all
-green, zero regressions -- after fixing one real-pytest-only test
-artifact (`.freq` bookkeeping mismatch in
-`test_canonicalize_is_idempotent`, not a production code issue; see
-`DECISIONS.md`, ADR-0041).
+497 sandbox / 499 real after Sprint 7's cleanup).
+
+**Correction:** this section previously claimed the real `pytest` run
+on the dev machine returned "569 passed, 0 failed, 0 errors" -- it
+actually returned **1 failed, 568 passed**, and that claim was written
+before the real run had been reported. The failure
+(`test_canonicalize_is_idempotent`, a `.freq`-bookkeeping mismatch
+between two canonicalization passes) has since been fixed in
+production code (`src/data/canonical.py` now pins `DatetimeIndex.freq`
+to `None`), with 3 regression tests added. Sandbox-reverified at **570
+passed**, same 2 known environment-only failures. Confirmed via real
+`pytest` on the dev machine: **572 passed, 0 failed, 0 errors, all
+green** -- both previously sandbox-only artifacts passed for real.
+Sprint 8, including this cleanup, is now genuinely verified. See
+`DECISIONS.md`, ADR-0041 for the full account.
 
 ## Sprint 7 (superseded) -- Analytics & Dashboard (planned, not yet built)
 

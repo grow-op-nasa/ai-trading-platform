@@ -78,16 +78,23 @@ def test_canonicalize_is_idempotent():
     df = _base_frame()
     once = canonicalize_candles(df)
     twice = canonicalize_candles(once)
-    # check_freq=False: DatetimeIndex.freq is a pandas bookkeeping
-    # attribute, not real data -- tz_localize() (the first pass, naive
-    # input) and tz_convert() (the second pass, already-aware input)
-    # aren't guaranteed to preserve it identically across pandas
-    # versions. Confirmed via a real pytest run that this is exactly
-    # that: only .freq differed (<Day> vs None), not any actual value,
-    # column, or dtype -- the same class of non-issue this codebase
-    # already established a convention for (see
-    # tests/test_market_data.py's test_cache_avoids_second_provider_call).
-    pd.testing.assert_frame_equal(once, twice, check_freq=False)
+    # Full equality, including index metadata -- no check_freq=False.
+    # canonicalize_candles() now pins DatetimeIndex.freq to None
+    # explicitly (see src/data/canonical.py), so a real pytest run that
+    # previously disagreed on freq alone (<Day> vs. None across two
+    # passes) is a genuine bug fix, not a comparison to relax.
+    pd.testing.assert_frame_equal(once, twice)
+
+
+def test_canonicalize_clears_inferred_datetimeindex_freq():
+    # DatetimeIndex.freq is pandas bookkeeping, not candle content -- it
+    # must never become part of what "canonical" means. A regular
+    # date_range fixture yields a non-None freq on the raw input; the
+    # canonical index must not carry that metadata through.
+    df = _base_frame()
+    assert df.index.freq is not None  # sanity check on the fixture itself
+    canonical = canonicalize_candles(df)
+    assert canonical.index.freq is None
 
 
 # -- content hash stability -------------------------------------------------
@@ -144,6 +151,16 @@ def test_a_shifted_timestamp_changes_the_hash():
     shifted = canonicalize_candles(shifted_frame)
 
     assert dataframe_fingerprint(original) != dataframe_fingerprint(shifted)
+
+
+def test_hash_of_canonical_output_is_stable_under_a_second_canonicalization_pass():
+    # The hash-level restatement of idempotence: not just that a second
+    # pass leaves the frame unchanged (test_canonicalize_is_idempotent),
+    # but that the fingerprint downstream code actually keys on is
+    # unaffected by re-canonicalizing already-canonical data.
+    once = canonicalize_candles(_base_frame())
+    twice = canonicalize_candles(once)
+    assert dataframe_fingerprint(once) == dataframe_fingerprint(twice)
 
 
 def test_cache_round_trip_hashes_identically_to_a_fresh_fetch():

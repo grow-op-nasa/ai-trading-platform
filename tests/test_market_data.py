@@ -345,6 +345,28 @@ def test_a_requested_start_before_the_cached_range_falls_back_to_a_full_refetch(
     assert provider.calls[1][2] == date(2024, 1, 8)
 
 
+def test_incremental_fetch_produces_the_same_hash_as_a_complete_fetch(tmp_path):
+    # The call-count tests above prove the incremental path fetches only
+    # the missing tail. They don't prove the *result* is equivalent to a
+    # one-shot fetch of the same range -- that the merge-then-canonicalize
+    # step doesn't introduce drift (row order, dtype, index metadata).
+    # Hash equality is that proof.
+    history = make_candles(rows=10)  # 2024-01-02 .. 2024-01-11
+
+    incremental_service = MarketDataService(
+        provider=RangeAwareProvider(history), cache_dir=tmp_path / "incremental"
+    )
+    incremental_service.get_dataset("SPY", start=date(2024, 1, 2), end=date(2024, 1, 5))
+    incremental = incremental_service.get_dataset("SPY", start=date(2024, 1, 2), end=date(2024, 1, 8))
+
+    complete_service = MarketDataService(
+        provider=RangeAwareProvider(history), cache_dir=tmp_path / "complete"
+    )
+    complete = complete_service.get_dataset("SPY", start=date(2024, 1, 2), end=date(2024, 1, 8))
+
+    assert incremental.content_hash == complete.content_hash
+
+
 # -- Sprint 8: session filtering (DECISIONS.md, ADR-0041) --------------------
 
 

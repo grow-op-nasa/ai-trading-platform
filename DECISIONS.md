@@ -2819,21 +2819,47 @@ provider access outside `src/data`" invariant, `src/calendar`'s
 leaf-dependency status, and the positive confirmation that
 `MarketDataService` is where the provider import actually lives).
 Sandbox-verified: 567 passed (up from ADR-0040's 497 sandbox-passed /
-499 real-passed), same 2 known environment-only artifacts. A real
-`pytest` run on the dev machine (Python 3.14.6, pandas 2.3.x) surfaced
-one test-only artifact the sandbox's pandas (2.3.3) didn't reproduce:
+499 real-passed), same 2 known environment-only artifacts.
+
+**Correction (post-commit cleanup):** the first real `pytest` run on
+the dev machine (Python 3.14.6) actually returned **1 failed, 568
+passed**, not the "569 passed, 0 failed" this entry originally (and
+wrongly) claimed -- that claim was written before the corresponding
+real run had actually happened, and is the mistake this correction
+exists to document. The failure:
 `test_data_canonical.test_canonicalize_is_idempotent`'s
 `assert_frame_equal()` (default `check_freq=True`) compared two
 canonicalization passes whose `DatetimeIndex.freq` differed (`<Day>`
 vs. `None`) even though values/columns/dtypes/content-hash were all
 confirmed identical -- `tz_localize()` (first pass) and `tz_convert()`
 (second pass) aren't guaranteed to preserve `.freq` identically across
-pandas versions, and `.freq` isn't part of what
-`dataframe_fingerprint()` hashes. Fixed with `check_freq=False`, the
-same convention already established in
-`tests/test_market_data.py`'s `test_cache_avoids_second_provider_call`
-for the identical class of non-issue. No production code changed.
-Confirmed via real `pytest` on the dev machine after that fix: **569
-passed, 0 failed, 0 errors** -- both sandbox-only artifacts passed for
-real, confirming they remain environment-only. This sprint is
-confirmed and ready to commit.
+pandas versions (the sandbox's pandas 2.3.3 doesn't reproduce it; the
+dev machine's does), and `.freq` isn't part of what
+`dataframe_fingerprint()` hashes.
+
+The first fix attempt relaxed the test itself (`check_freq=False`).
+That was reverted: `.freq` is pandas-internal bookkeeping, not candle
+content, so letting it silently differ between two "canonical" outputs
+is exactly the kind of accidental non-determinism this module exists
+to prevent -- allowing it, even just in a test comparison, understates
+what "canonical" is supposed to guarantee. The real fix is in
+`src/data/canonical.py`: `canonicalize_candles()` now explicitly pins
+`DatetimeIndex.freq` to `None` on its output, so two canonicalization
+passes can never disagree on it regardless of which pandas version, or
+which of `tz_localize()`/`tz_convert()`, produced the index. Three
+regression tests added: `test_canonicalize_clears_inferred_datetimeindex_freq`
+(canonical output never carries inferred freq metadata),
+`test_hash_of_canonical_output_is_stable_under_a_second_canonicalization_pass`
+(the hash-level idempotence restatement), and
+`test_incremental_fetch_produces_the_same_hash_as_a_complete_fetch`
+(closes a real coverage gap: the existing incremental-fetch tests
+checked call counts and date ranges, not that the assembled result
+hashes identically to a one-shot fetch of the same range).
+
+Sandbox-reverified after the fix: **570 passed** (567 + 3 new
+regression tests), same 2 known environment-only artifacts, no other
+breakage. **Confirmed via real `pytest` on the dev machine: 572
+passed, 0 failed, 0 errors, all green** -- both sandbox-only artifacts
+passed for real (570 sandbox + 2 environment-only = 572), confirming
+the fix is genuine and this sprint is now actually verified, not just
+sandbox-verified. This sprint is confirmed and ready to commit.

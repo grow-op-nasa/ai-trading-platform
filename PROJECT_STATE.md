@@ -1,8 +1,35 @@
 # Project State
 
-_Last updated: 2026-09-15 -- **Sprint 7 (Portfolio-Aware Risk &
-Position Management) is implemented and sandbox-verified, pending
-real-`pytest` confirmation.** The platform moved from simple per-trade
+_Last updated: 2026-09-16 -- **Sprint 8 (Market Data Integrity &
+Session Awareness) is implemented and sandbox-verified, pending
+real-`pytest` confirmation.** Resolves two long-deferred ADRs (ADR-0006
+data validation, ADR-0007 incremental cache) and the timezone-policy
+question ADR-0019/ADR-0038 both referenced but left open. Internal
+candle timestamps are now timezone-aware UTC everywhere, always -- a
+full migration through `DataProvider`/`MarketDataService`'s contract,
+not a scoped-down partial fix (`DECISIONS.md`, ADR-0041). A new
+`src/data/validation.py` rejects structurally invalid or financially
+impossible candle data outright (`StructuralValidationError`/
+`FinancialSanityError`) and flags gaps/zero-volume as non-fatal
+`ValidationReport` entries, session-aware via a new top-level
+`src/calendar/` package (`TradingCalendar`/`NYSECalendar` -- regular
+US equity session, 09:30-16:00 America/New_York, holidays from a
+hand-rolled rule table rather than a calendar-library dependency).
+`src/data/canonical.py`'s `canonicalize_candles()` is now the single
+choke point both hashing (`dataframe_fingerprint()`) and caching run
+through, so a cache hit and a fresh fetch of identical data always
+fingerprint identically. The on-disk cache moved from exact-range keys
+to `(symbol, interval)`-keyed incremental fetch (fetch only the new
+tail when a request's range extends, per ADR-0007). `get_candles()`/
+`get_history()` keep their exact pre-Sprint-8 signatures; the new
+`get_dataset()` returns the full `CandleDataset` (candles plus
+identity/session/quality metadata) for callers that want it, and
+`Backtester.run()` gained an optional `dataset` parameter so a
+`BacktestResult` can carry a `dataset_identity` -- both purely
+additive, no existing call site required a change.
+
+**Sprint 7 (Portfolio-Aware Risk & Position Management) is complete and
+confirmed.** The platform moved from simple per-trade
 allocation toward genuine, stop-based position sizing plus
 portfolio-level exposure constraints: `PortfolioRiskEngine`
 (`src/risk/portfolio_risk.py`) sizes a position from a defined stop-loss
@@ -589,6 +616,37 @@ For why things were built the way they were, see `DECISIONS.md`.
   existing class modified. Confirmed via the sandbox stub-based test
   runner: **470 passed**, 2 known environment-only failures. Pending
   real-`pytest` confirmation on the dev machine.
+- ✅ Sprint 8 -- Market Data Integrity & Session Awareness
+  (`DECISIONS.md`, ADR-0041). Resolves ADR-0006 (validation) and
+  ADR-0007 (incremental cache), plus the timezone-policy question
+  ADR-0019/ADR-0038 left open. `src/calendar/` (new package) --
+  `TradingCalendar`/`NYSECalendar`, regular US equity session,
+  hand-rolled holiday rule table. `src/data/canonical.py`'s
+  `canonicalize_candles()` -- the single choke point for hashing and
+  caching, so a cache hit and a fresh fetch fingerprint identically.
+  `src/data/validation.py`'s `validate_candles()` -- structural/
+  financial-sanity checks raise (`StructuralValidationError`/
+  `FinancialSanityError`), gaps/zero-volume are non-fatal
+  `ValidationReport` entries. Internal timestamps are timezone-aware
+  UTC everywhere now -- a full migration through
+  `DataProvider`/`MarketDataService`'s contract. Cache re-keyed to
+  `(symbol, interval)` with incremental tail-only fetch.
+  `get_candles()`/`get_history()` signatures unchanged;
+  `get_dataset()` (new) returns the full `CandleDataset`;
+  `Backtester.run()` gained an optional `dataset` parameter for
+  `BacktestResult.dataset_identity` -- both additive, no existing call
+  site changed. 70 new tests (`tests/test_calendar.py`: 19,
+  `tests/test_data_validation.py`: 24, `tests/test_data_canonical.py`:
+  13, plus 11 added to `tests/test_market_data.py` and 3 added to
+  `tests/test_architecture.py`). Confirmed via the sandbox stub-based
+  test runner: **567 passed**, 2 known environment-only failures.
+  Confirmed via real `pytest` on the dev machine (Python 3.14.6,
+  pytest 9.1.1): **569 passed, 0 failed, 0 errors, all green** -- one
+  real-pytest run first caught a `.freq`-bookkeeping test artifact in
+  `test_canonicalize_is_idempotent` (values/dtypes/hash all identical,
+  only a pandas-internal `DatetimeIndex.freq` attribute differed across
+  two canonicalization passes), fixed with `check_freq=False` (no
+  production code changed), then reconfirmed all green.
 - ✅ Sprint 7 cleanup -- explicit close-path semantics, explicit
   short-margin representation, formalized Risk/Execution boundary
   (`DECISIONS.md`, ADR-0040). `PortfolioRiskEngine.decide_close()` is
@@ -613,9 +671,48 @@ For why things were built the way they were, see `DECISIONS.md`.
 
 ## Current Module
 
+**Sprint 8 (Market Data Integrity & Session Awareness) is implemented
+and confirmed in the sandbox, pending real-`pytest` confirmation.**
+Resolves ADR-0006 (data validation, proposed Sprint 1) and ADR-0007
+(incremental cache, proposed Sprint 1), plus the timezone-policy
+question ADR-0019 and ADR-0038 both referenced but left open --
+internal candle timestamps are timezone-aware UTC everywhere now, a
+full migration through `DataProvider`/`MarketDataService`'s contract
+(confirmed explicitly before implementation, not scoped down).
+`src/data/validation.py`'s `validate_candles()` rejects structurally
+invalid or financially impossible data outright and flags gaps/
+zero-volume as non-fatal `ValidationReport` entries -- session-aware
+via the new `src/calendar/` package (`TradingCalendar`/`NYSECalendar`,
+regular US equity session, holidays from a hand-rolled rule table, not
+a calendar-library dependency -- also confirmed explicitly before
+implementation). `src/data/canonical.py`'s `canonicalize_candles()` is
+the single choke point both `dataframe_fingerprint()` and the cache now
+run through, so a cache hit and a fresh fetch of identical data always
+hash identically. The cache moved from exact-range keys to
+`(symbol, interval)`-keyed incremental fetch. `get_candles()`/
+`get_history()` kept their exact pre-Sprint-8 signatures; the new
+`get_dataset()` returns the full `CandleDataset`, and
+`Backtester.run()`'s new optional `dataset` parameter populates
+`BacktestResult.dataset_identity` -- both additive, no existing call
+site required a change. Confirmed via real `pytest` on the dev machine
+(Python 3.14.6, pytest 9.1.1): **569 passed, 0 failed, 0 errors, all
+green** -- including both tests that fail only in the sandbox
+(`test_python_version_passes_against_running_interpreter`,
+`test_logger_is_importable_and_callable`), confirming those remain
+environment-only, not regressions -- up from the Pre-Sprint 7 baseline
+of 402 (470 after Sprint 7's initial implementation, 497 sandbox / 499
+real after its cleanup, 567 sandbox / 569 real after Sprint 8). One
+real-pytest-only test artifact was found and fixed along the way:
+`test_canonicalize_is_idempotent` compared two canonicalization passes
+whose `DatetimeIndex.freq` (a pandas bookkeeping attribute, not real
+data) differed across pandas versions, even though values, dtypes, and
+content hash were all confirmed identical -- fixed with
+`check_freq=False`, no production code changed. See `DECISIONS.md`,
+ADR-0041. Sprint 8 is confirmed and ready to commit.
+
 **Sprint 7 (Portfolio-Aware Risk & Position Management), including its
-ADR-0040 cleanup pass, is implemented and confirmed via real `pytest`
-on the dev machine.** `PortfolioRiskEngine` adds genuine, stop-based
+ADR-0040 cleanup pass, is complete and confirmed via real `pytest` on
+the dev machine.** `PortfolioRiskEngine` adds genuine, stop-based
 position sizing plus portfolio-level exposure constraints alongside
 (not replacing) `PositionSizer`'s allocation-only model;
 `Portfolio`/`Position` (`src/portfolio/`) give the risk layer a
@@ -673,22 +770,23 @@ experiment through the full pipeline) -- closes both items `ROADMAP.md`
 listed as blocking the sprint's close. Confirmed via real `pytest` on
 the dev machine (Python 3.14.6): **386 passed in 0.92s**, all green.
 
-What's left on the Market Data Service (moved to Roadmap, not
-blocking Sprint 2 through 5, or the cleanup): no data validation beyond
-required-column checks (ADR-0006); caching is CSV-only and re-fetches
-whole ranges on any cache-key miss (ADR-0007); no integration test
-suite against the live yfinance API.
+What was left on the Market Data Service as of Sprint 6 -- no data
+validation beyond required-column checks (ADR-0006), whole-range
+re-fetching on any cache-key miss (ADR-0007) -- is resolved by Sprint 8
+(`DECISIONS.md`, ADR-0041; see the Current Module entry above). Still
+outstanding, not addressed by Sprint 8 and not blocking it: caching
+remains CSV, not Parquet; no integration test suite against the live
+yfinance API; pre-market/after-hours session support is reserved
+(`SessionPolicy`) but unimplemented.
 
 ## Next Task
 
-Sprint 7 (Portfolio-Aware Risk & Position Management), including its
-ADR-0040 cleanup pass (explicit close-path semantics, explicit
-short-margin representation, formalized Risk/Execution boundary), is
-implemented and confirmed via real `pytest` on the dev machine (Python
-3.14.6, pytest 9.1.1): 499 passed in 1.18s, all green -- and the formal
-Sprint 7 completion report has already been delivered. Only the commit
-remains. Sprint 8 (or the re-sequenced Analytics & Dashboard scope, see
-`ROADMAP.md`) begins after that.
+Sprint 8 (Market Data Integrity & Session Awareness) is implemented
+and confirmed via real `pytest` on the dev machine (Python 3.14.6,
+pytest 9.1.1): 569 passed, 0 failed, 0 errors, all green -- and the
+formal Sprint 8 completion report has already been delivered. Only the
+commit remains. Sprint 9 (or the re-sequenced Analytics & Dashboard
+scope, see `ROADMAP.md`) begins after that.
 Separately available, none yet explicitly requested: setting
 `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
 `TigerBroker.get_account()` against a real Tiger paper account; setting
@@ -708,13 +806,6 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
 
 ## Technical Debt
 
-- No data validation beyond required-column checks -- timezone
-  consistency, duplicate/missing timestamps, negative prices, zero
-  volume, and sorted index are not verified, especially on the
-  cache-read path. Tracked as ADR-0006, next up.
-- Cache is keyed per exact `(symbol, interval, start, end)` range, so a
-  shifted date range fully misses the cache and re-fetches everything.
-  Tracked as ADR-0007, next up.
 - Cache is CSV, not Parquet -- fine at current data volumes, but slower
   and larger on disk once indicators/backtests pull years of intraday
   data. Now that `src/indicators/` exists, worth measuring once Module 3
@@ -729,11 +820,14 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
   someday concern.
 - No CI (GitHub Actions or similar) running the test suite on push yet.
 - Performance Attribution has no session-of-day breakdown (morning/
-  lunch/power hour) -- deliberately deferred since it would depend on
-  candle timestamps reliably being in market-local time, which isn't
-  guaranteed until ADR-0006 (timezone consistency) lands. Add once that
-  gap closes. The AI Research Reporter inherits this gap too -- it
-  cannot yet suggest anything session-related, only regime-related.
+  lunch/power hour) -- previously blocked on candle timestamps
+  reliably being in market-local time (ADR-0006), which Sprint 8
+  (`DECISIONS.md`, ADR-0041) now provides via `src/calendar`'s
+  `TradingCalendar.session_date()`. The blocker is gone; the
+  attribution feature itself is still not built -- natural next step,
+  not done this round. The AI Research Reporter inherits this gap too
+  -- it cannot yet suggest anything session-related, only
+  regime-related.
 - No `ResearchReport` persistence -- reports are produced on demand from
   a `BacktestResult` + `AttributionReport` pair, not saved back into
   `ExperimentRegistry`. Natural future step, not built this round.
@@ -854,22 +948,42 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
   explicit audit/boundary object but are not wired into `PaperBroker`
   -- `as_sizing_decision()` remains what `PaperBroker` actually
   consumes.
+- Sprint 8 (`DECISIONS.md`, ADR-0041) doesn't model pre-market/
+  after-hours sessions -- `SessionPolicy` reserves the concept
+  (`REGULAR`/`ALL` only), and `NYSECalendar` doesn't model NYSE's rare
+  unscheduled closures (a national day of mourning, say) or extend past
+  `SUPPORTED_YEARS` (2015-2035) without deliberately re-verifying and
+  widening it. Gap detection isn't built for weekly/monthly bars --
+  how many weekly bars *should* exist across a holiday-shortened week
+  isn't well-defined without more calendar work than this round
+  scoped. Incremental cache fetch only extends a cached span's upper
+  bound; a request whose `start` moves earlier falls back to a full
+  refetch rather than fetching just the missing prefix. `get_dataset()`
+  exists alongside `get_candles()`/`get_history()` but nothing in the
+  codebase has been migrated to prefer it yet -- `ExperimentSpec.capture()`
+  and `Backtester.run()`'s new `dataset` parameter both still take a
+  plain DataFrame/optional dataset, additively, not a required one.
 
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 499 passed (7 config + 15 market data + 6 cache
-                          # + 11 indicators + 10 regime + 12 backtesting + 21 experiments
-                          # + 29 cli/doctor + 13 signals + 13 strategy_sdk + 8 attribution
-                          # + 17 research + 11 ema_cross_strategy + 17 risk + 19 execution
-                          # + 6 integration_paper_trading + 34 broker + 15 ibkr
-                          # + 11 reconciliation + 31 ig + 15 tiger + 11 architecture
-                          # + 5 portfolio + 6 hashing + 9 strategy_registry
-                          # + 12 experiment_spec + 3 pipeline_contract
-                          # + 14 rsi_mean_reversion_strategy + 8 run_experiment_script
-                          # + 6 timeframe_agnostic + 9 intraday_acceptance
+pytest                    # should show 569 passed on the real dev machine
+                          # (14 architecture + 8 attribution + 12 backtesting
+                          # + 34 broker + 6 cache + 19 calendar + 29 cli/doctor
+                          # + 7 config + 13 data_canonical + 24 data_validation
+                          # + 11 ema_cross_strategy + 19 execution
+                          # + 12 experiment_spec + 21 experiments + 6 hashing
+                          # + 15 ibkr + 31 ig + 11 indicators
+                          # + 6 integration_paper_trading + 9 intraday_acceptance
+                          # + 26 market_data + 3 pipeline_contract + 5 portfolio
                           # + 27 portfolio_position + 58 portfolio_risk
-                          # + 10 sprint7_integration)
+                          # + 11 reconciliation + 10 regime + 17 research + 17 risk
+                          # + 14 rsi_mean_reversion_strategy + 8 run_experiment_script
+                          # + 13 signals + 10 sprint7_integration + 9 strategy_registry
+                          # + 13 strategy_sdk + 15 tiger + 6 timeframe_agnostic)
+                          # -- the sandbox's own stub-based runner shows 567
+                          # (cli/doctor 28/29, config 6/7 -- 2 known
+                          # environment-only failures there, see below).
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until
@@ -877,21 +991,30 @@ python -m src.cli doctor  # should print one line per check and end with "Everyt
 ```
 
 Confirmed via the sandbox stub-based test runner
-(`PYTHONPATH=/tmp/stubs:. python3 /tmp/runner_all.py`): **497 passed**,
+(`PYTHONPATH=/tmp/stubs:. python3 /tmp/runner_all.py`): **567 passed**,
 2 known environment-only failures --
 `test_python_version_passes_against_running_interpreter` (sandbox
 Python 3.10 vs. the dev machine's pinned newer version) and
 `test_logger_is_importable_and_callable` (the sandbox's `loguru` stub
 is a no-op and doesn't write to stdout the way real `loguru` does).
 **Confirmed via real `pytest` on the dev machine (Python 3.14.6,
-pytest 9.1.1): 499 passed in 1.18s, all green** -- both sandbox
-artifacts above passed for real, confirming they were
-environment-only, not regressions. Real-`pytest` confirmation is
-complete
-(including its ADR-0040 cleanup) as of this entry -- update this
-section once that run completes.
+pytest 9.1.1): 569 passed, 0 failed, 0 errors, all green** -- both
+sandbox-only artifacts above passed for real, confirming they remain
+environment-only, not regressions. One real-pytest-only artifact was
+found and fixed first:
+`test_data_canonical.test_canonicalize_is_idempotent` compared two
+canonicalization passes' `DatetimeIndex.freq` (pandas bookkeeping, not
+real data, and not part of what `dataframe_fingerprint()` hashes),
+which differed across pandas versions even though values/dtypes/hash
+were all confirmed identical -- fixed with `check_freq=False`, no
+production code changed. Sprint 8's real-`pytest` confirmation is
+complete.
 
-_Historical: sandbox-confirmed at 470 passed immediately after the
+_Historical: Sprint 7 (including its ADR-0040 cleanup) was confirmed
+via real `pytest` on the dev machine (Python 3.14.6, pytest 9.1.1):
+**499 passed in 1.18s, all green** -- both sandbox-only artifacts
+passed for real, confirming they were environment-only, not
+regressions. Sandbox-confirmed at 470 passed immediately after the
 initial Sprint 7 implementation (ADR-0039), before the ADR-0040
 cleanup added 27 more tests. Confirmed via real `pytest` on the dev
 machine (Python 3.14.6, pytest 9.1.1) as of the Pre-Sprint 7 entry:

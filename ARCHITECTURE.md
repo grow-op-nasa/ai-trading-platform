@@ -92,7 +92,7 @@ constraints (`DECISIONS.md`, ADR-0039). `src/analytics` and
 `src/dashboard` remain unbuilt, tracked in `ROADMAP.md`, not abandoned
 -- they were re-sequenced, not replaced.
 
-`research` is also distinct from the Sprint 8+ `ai` module: `research`
+`research` is also distinct from the Sprint 9+ `ai` module: `research`
 turns one completed backtest's evidence into a human-readable summary
 and recommendation (a research artifact for a person to read), while
 `ai` (not yet built) will generate trading *signals* consumed by
@@ -219,39 +219,116 @@ symbols, or defaults.
 
 ### `src/data`
 
-**Purpose:** "give me candles for a symbol" -- the one abstraction every
-downstream component (backtests, live trading, dashboards, AI research)
-depends on for historical price data.
+**Purpose:** "give me trustworthy candles for a symbol" -- the one
+abstraction every downstream component (backtests, live trading,
+dashboards, AI research) depends on for historical price data. As of
+Sprint 8 (`DECISIONS.md`, ADR-0041), "trustworthy" is load-bearing: the
+architectural invariant is that no strategy, backtest, or experiment
+consumes raw provider data directly -- everything passes through this
+package's validated, canonicalized, session-aware boundary first.
 
 - **Inputs:** a ticker symbol, a date range or period string, a candle
-  interval.
-- **Outputs:** a `pandas.DataFrame` indexed by a `timestamp`
-  `DatetimeIndex`, with columns `open, high, low, close, volume` --
-  sorted ascending, no duplicate rows. Guaranteed shape regardless of
-  which provider is behind it.
+  interval, an optional `SessionPolicy`.
+- **Outputs:** `get_candles()`/`get_history()` return a
+  `pandas.DataFrame` indexed by a timezone-aware, UTC `timestamp`
+  `DatetimeIndex`, columns `open, high, low, close, volume` -- sorted
+  ascending, no duplicate rows, validated. `get_dataset()` (new)
+  returns a full `CandleDataset` (candles plus symbol/interval/
+  provider/timezone/session-policy/requested-range/dataset-range/
+  content-hash/validation-report). Guaranteed shape regardless of which
+  provider is behind it.
 - **Key files:**
   - `base.py` -- the `DataProvider` abstract interface and `Interval`
     enum. This is the seam: new data vendors implement this interface
-    and nothing else in the codebase needs to change.
+    and nothing else in the codebase needs to change. A provider may
+    return either a timezone-naive index (treated as already UTC -- the
+    right convention for a date-only daily/weekly/monthly bar) or a
+    timezone-aware one in its own vendor convention; `MarketDataService`
+    canonicalizes either way.
   - `yfinance_provider.py` -- the only concrete `DataProvider` today,
-    backed by Yahoo Finance via the `yfinance` package.
-  - `service.py` -- `MarketDataService`, the public facade. Two entry
-    points: `get_candles(symbol, start, end, interval)` for explicit
-    date ranges, and `get_history(symbol, period, interval)` for
-    yfinance-style relative periods (defaults come from
-    `config.settings`). Owns only the domain logic (what to fetch, when
-    to consult the cache); actual caching is delegated to
-    `CacheManager` (see `src/utils` below and `DECISIONS.md`, ADR-0008).
+    backed by Yahoo Finance via the `yfinance` package. No longer
+    strips the timezone-aware intraday timestamps yfinance actually
+    returns (Sprint 8; it used to).
+  - `canonical.py` (Sprint 8) -- `canonicalize_candles()`: pins row
+    order, column order, numeric dtype (float64), and timezone (UTC).
+    The single choke point everything hashed via
+    `src.utils.hashing.dataframe_fingerprint()` and everything cached
+    now passes through first, so a cache hit and a fresh fetch of
+    identical data always fingerprint identically.
+  - `validation.py` (Sprint 8) -- `validate_candles()`: structural
+    checks (missing/duplicate/unordered timestamps, naive index,
+    missing columns/values, empty symbol) raise
+    `StructuralValidationError`; financial-sanity checks (`high <
+    max(open, close)`, `low > min(open, close)`, `high < low`, negative
+    volume) raise `FinancialSanityError`. Gap detection (given a
+    `src.calendar.TradingCalendar`) and zero-volume flags are
+    non-fatal, recorded on the returned `ValidationReport` -- not an
+    anomaly detector, just the checks `DECISIONS.md` ADR-0006 named.
+  - `models.py` (Sprint 8) -- `SessionPolicy` (`REGULAR`/`ALL`),
+    `GapReport`, `ValidationReport`, `DatasetIdentity`, `CandleDataset`
+    -- the shapes the sections above and `service.py` produce.
+  - `service.py` -- `MarketDataService`, the public facade.
+    `get_candles(symbol, start, end, interval, session=...)` and
+    `get_history(symbol, period, interval, session=...)` keep their
+    pre-Sprint-8 signatures (defaults come from `config.settings`);
+    `get_dataset(...)` (new) returns the full `CandleDataset`. Owns the
+    orchestration: canonicalize -> validate -> cache -> session-filter
+    -> return, on every call, cache hit or fresh fetch alike. Caching
+    itself is delegated to `CacheManager` (see `src/utils` below and
+    `DECISIONS.md`, ADR-0008), now keyed per `(symbol, interval)`
+    rather than per exact range -- a request extending past the cached
+    span fetches only the new tail (`DECISIONS.md`, ADR-0007, ADR-0041).
   - `exceptions.py` -- `DataProviderError` (the provider failed) vs.
-    `NoDataError` (the request was valid but empty) as distinct cases,
-    since callers usually want to handle them differently (retry vs.
-    treat as "no signal").
+    `NoDataError` (the request was valid but empty), plus (Sprint 8)
+    `DataValidationError` and its two subclasses above -- distinct
+    cases since callers usually want to handle them differently.
 - **Does not:** know about indicators, strategies, or any specific
   vendor beyond what's behind the `DataProvider` it's given. Does not
   read or write cache files directly -- that's `CacheManager`'s job.
-  Does not make trading decisions or hold any market opinion.
+  Does not make trading decisions or hold any market opinion. Does not
+  model pre-market/after-hours sessions (`SessionPolicy` reserves the
+  concept, implements only `REGULAR`/`ALL`) or a general-purpose
+  exchange calendar -- that's `src/calendar`'s narrow scope, not this
+  package's.
 - **Depends on:** `src/config` (for default period/interval),
-  `src/utils` (for `CacheManager`).
+  `src/utils` (for `CacheManager` and `dataframe_fingerprint()`),
+  `src/calendar` (Sprint 8, for session filtering and gap detection).
+
+### `src/calendar`
+
+**Purpose:** a market-session abstraction, so NYSE-hours assumptions
+(09:30-16:00 America/New_York, weekends, holidays) live in exactly one
+place rather than being scattered through `src/data`'s validation and
+gap-detection logic (`DECISIONS.md`, ADR-0041, Sprint 8). A leaf
+dependency -- `src/data` depends on it, it depends on nothing else in
+this codebase.
+
+- **Inputs:** a `date` (or a `date` range).
+- **Outputs:** `is_session(date) -> bool`; `session_open`/
+  `session_close(date) -> pd.Timestamp` (UTC); `sessions_between(start,
+  end) -> list[date]`; `session_date(timestamp) -> date` (converts a
+  UTC instant to the local trading-session date it belongs to).
+- **Key files:**
+  - `base.py` -- `TradingCalendar(ABC)`, analogous to `src.data.base
+    .DataProvider`: every current and future market calendar
+    implements this one interface.
+  - `nyse.py` -- `NYSECalendar`, the only concrete implementation:
+    regular session only (pre-market/after-hours are a documented
+    future capability, not built). Holidays come from a small,
+    explicit, rule-based table (`_nyse_holidays()`, e.g. "third Monday
+    in January", Good Friday via the standard Anonymous Gregorian
+    Easter algorithm) computed on demand for any year in the explicit,
+    bounded `SUPPORTED_YEARS` (2015-2035) -- not a hardcoded date list,
+    and not a calendar-library dependency, a deliberate trade-off given
+    the sprint's "don't build a full exchange-calendar platform"
+    scope. Does not model NYSE's rare unscheduled closures (a national
+    day of mourning, say) -- a documented limitation, not a silent gap.
+- **Does not:** know about candles, providers, or validation -- it only
+  answers "is this a trading day" and "when does the session
+  open/close." Does not model any market besides US equities via NYSE
+  hours, or any session besides the regular one.
+- **Depends on:** nothing else in `src/` -- same tier as `src/config`
+  and `src/utils`.
 
 ### `src/utils`
 
@@ -282,7 +359,13 @@ config helpers that don't belong to a specific capability.
     identity (this module, hashes candle values) both reduce to "hash
     these bytes, deterministically" -- kept here once rather than
     duplicated, the same reasoning `CacheManager` lives here instead of
-    inside `src/data`.
+    inside `src/data`. `dataframe_fingerprint()` itself is unchanged by
+    Sprint 8 -- it always hashed whatever DataFrame it was given; what
+    changed is that `src.data.canonical.canonicalize_candles()` is now
+    the only thing `MarketDataService` ever fingerprints, from both the
+    fresh-fetch and cache-hit paths, so "identical canonical content"
+    and "identical hash" are actually the same claim now
+    (`DECISIONS.md`, ADR-0041).
 - **Does not:** know what it's caching, hashing, or why. Does not
   decide *when* to use the cache -- that's each capability's own call
   (e.g. `MarketDataService` decides whether a given request should hit
@@ -458,17 +541,25 @@ candles: run strategy -> collect trades -> calculate metrics ->
 generate report. Part of the Sprint 2 research engine (`DECISIONS.md`,
 ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
 
-- **Inputs:** a `Strategy` and an OHLCV candles DataFrame.
+- **Inputs:** a `Strategy`, an OHLCV candles DataFrame, and (Sprint 8,
+  optional) the `CandleDataset` `candles` came from.
 - **Outputs:** a `BacktestResult` (`strategy_name`, `trades: list[Trade]`,
   `equity_curve: pd.Series`, `metrics: dict`, `signals: list[Signal]`,
-  plus a `.report()` method for a human-readable summary).
+  `dataset_identity: DatasetIdentity | None` (Sprint 8, `DECISIONS.md`
+  ADR-0041), plus a `.report()` method for a human-readable summary).
 - **Key files:**
-  - `engine.py` -- `Backtester.run()`. Consumes the sparse `list[Signal]`
-    from `strategy.generate_signals()`, holds each signal's direction
+  - `engine.py` -- `Backtester.run(strategy, candles, dataset=None)`.
+    Consumes the sparse `list[Signal]` from
+    `strategy.generate_signals()`, holds each signal's direction
     from its own bar forward until the next signal, then applies the
     no-lookahead shift once when computing the equity curve. Simplified
     execution model unchanged from ADR-0011: one unit of position size,
-    entries/exits at candle close, no costs/slippage.
+    entries/exits at candle close, no costs/slippage. The optional
+    `dataset` parameter (Sprint 8) is purely additive -- when supplied,
+    `result.dataset_identity` records which symbol/timeframe/content-
+    hash/session-convention the backtest actually ran against; every
+    existing call site (passing a synthetic or hand-built DataFrame)
+    omits it and is unaffected.
   - `models.py` -- `Trade` (references its opening/closing signals by
     `entry_signal_id`/`exit_signal_id: UUID`, not by embedding the
     `Signal` objects -- see ADR-0015/ADR-0016), `BacktestResult`.
@@ -504,7 +595,9 @@ ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
   job later. Does not persist results, and does not store `Signal`
   objects itself -- `ExperimentRegistry` owns that (ADR-0016).
 - **Depends on:** `src/strategies` (for the `Strategy` contract),
-  `src/signals` (for `Signal`/`SignalDirection`).
+  `src/signals` (for `Signal`/`SignalDirection`), `src/data` (Sprint 8,
+  only for `CandleDataset`/`DatasetIdentity` -- `Backtester` never
+  fetches data itself or imports a provider).
 
 ### `src/attribution`
 
@@ -553,7 +646,7 @@ note under the dependency diagram above.
 evidence-grounded research summary -- a recommendation for a person to
 weigh, never a trading decision (ADR-0017). Sprint 3 Module 4
 (`DECISIONS.md`, ADR-0020; renderer-failure transparency added by
-ADR-0034). Distinct from the Sprint 8+ `src/ai`
+ADR-0034). Distinct from the Sprint 9+ `src/ai`
 scope -- see the note under the dependency diagram above.
 
 - **Inputs:** a `BacktestResult` and the `AttributionReport` produced

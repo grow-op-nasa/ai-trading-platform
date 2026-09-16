@@ -43,6 +43,7 @@ import pandas as pd
 
 from src.backtesting.metrics import calculate_metrics
 from src.backtesting.models import BacktestResult, Trade
+from src.data.models import CandleDataset
 from src.signals.models import Signal, SignalDirection
 from src.strategies.base import Strategy
 
@@ -79,8 +80,26 @@ class Backtester:
         self._initial_cash = initial_cash
         self._periods_per_year = periods_per_year
 
-    def run(self, strategy: Strategy, candles: pd.DataFrame) -> BacktestResult:
+    def run(
+        self,
+        strategy: Strategy,
+        candles: pd.DataFrame,
+        dataset: CandleDataset | None = None,
+    ) -> BacktestResult:
         """Run `strategy` against `candles` and return the full result.
+
+        Args:
+            dataset: the `CandleDataset` `candles` came from, if any
+                (`src.data.MarketDataService.get_dataset()`). Purely
+                additive (Sprint 8 spec, section 11) -- when provided,
+                `result.dataset_identity` records which symbol/
+                timeframe/content-hash/session-convention this backtest
+                actually ran against; when omitted (every existing
+                caller passing a synthetic or hand-built DataFrame),
+                `result.dataset_identity` stays `None`, same as before
+                this parameter existed. Not validated against `candles`
+                -- callers are trusted to pass the dataset `candles`
+                actually came from.
 
         Raises:
             ValueError: `strategy.generate_signals()` doesn't return a
@@ -111,6 +130,7 @@ class Backtester:
             equity_curve=equity_curve,
             metrics=metrics,
             signals=signals,
+            dataset_identity=dataset.identity if dataset is not None else None,
         )
 
     def _extract_trades(self, candles: pd.DataFrame, signals: list[Signal]) -> list[Trade]:

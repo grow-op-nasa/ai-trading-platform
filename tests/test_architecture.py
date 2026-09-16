@@ -258,6 +258,66 @@ def test_second_strategy_required_no_changes_to_core_pipeline_modules():
     )
 
 
+# ---------------------------------------------------------------------------
+# Sprint 8 (DECISIONS.md, ADR-0041): "No strategy, backtest, or
+# experiment consumes raw provider data directly" -- everything passes
+# through MarketDataService's validated/canonicalized dataset boundary
+# first. And src/calendar is a leaf dependency: src/data depends on it,
+# never the other way around.
+# ---------------------------------------------------------------------------
+
+
+def test_strategies_backtesting_and_experiments_never_import_the_provider_directly():
+    provider_import_pattern = re.compile(
+        r"^\s*(?:from\s+src\.data\.yfinance_provider\s+import|"
+        r"import\s+src\.data\.yfinance_provider\b|"
+        r"from\s+src\.data(?:\.\w+)?\s+import\s+.*\bYFinanceProvider\b)",
+        re.MULTILINE,
+    )
+    consumer_packages = [
+        SRC_ROOT / "strategies",
+        SRC_ROOT / "backtesting",
+        SRC_ROOT / "experiments",
+    ]
+    offenders = []
+    for package in consumer_packages:
+        for path in package.glob("*.py"):
+            if provider_import_pattern.search(path.read_text()):
+                offenders.append(str(path))
+
+    assert offenders == [], (
+        f"Strategies, the backtester, and experiments must consume candles "
+        f"via MarketDataService (validated, canonicalized, session-aware), "
+        f"never the raw YFinanceProvider directly (DECISIONS.md, ADR-0041's "
+        f"architectural invariant). Offending files: {offenders}"
+    )
+
+
+def test_calendar_package_has_no_dependency_on_data_or_anything_else_in_this_codebase():
+    # src/calendar is a leaf: src/data depends on it for session
+    # filtering and gap detection, never the reverse (DECISIONS.md,
+    # ADR-0041). Checked via actual import statements, not prose --
+    # this module's own docstrings legitimately *mention* src.data to
+    # explain why the package exists.
+    import_pattern = re.compile(r"^\s*(?:from|import)\s+src\.(data|backtesting|strategies|experiments)\b", re.MULTILINE)
+    for path in (SRC_ROOT / "calendar").glob("*.py"):
+        text = path.read_text()
+        match = import_pattern.search(text)
+        assert match is None, (
+            f"{path.name} must stay a leaf dependency -- src.calendar depends "
+            f"on nothing else in this codebase, src.data depends on it "
+            f"(DECISIONS.md, ADR-0041). Found an import of src.{match.group(1) if match else ''}."
+        )
+
+
+def test_market_data_service_is_the_only_thing_that_imports_yfinance_provider():
+    # The provider is an implementation detail of src/data itself
+    # (DECISIONS.md, ADR-0002/ADR-0041) -- confirms the positive half of
+    # the invariant the test above checks the negative half of.
+    service_source = (SRC_ROOT / "data" / "service.py").read_text()
+    assert "yfinance_provider" in service_source
+
+
 def test_account_state_equity_is_computed_from_frozen_entry_price_only():
     from src.risk.models import SizingDecision
 

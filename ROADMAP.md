@@ -607,14 +607,85 @@ risk-computation symbols. 27 new tests. No partial-close support and
 no new `ExecutionResult` wrapper type were added -- both judged out of
 this cleanup's narrow scope. Sandbox-confirmed at 497 passed (up from
 470), and confirmed via real `pytest` on the dev machine: 499 passed in
-1.18s, all green, zero regressions. Previously reading "up from
-470), pending real-`pytest` confirmation.
+1.18s, all green, zero regressions.
+
+## Sprint 8 -- Market Data Integrity & Session Awareness ✅ Complete
+
+Objective: make market data trustworthy and reproducible enough for
+daily and minute-level research and trading. See `DECISIONS.md`,
+ADR-0041 for the full design and reasoning.
+
+- ✅ **Timezone policy resolved** (`DECISIONS.md`, ADR-0006, deferred
+  since Sprint 1; also referenced but left open by ADR-0019 and
+  ADR-0038): internal candle timestamps are timezone-aware UTC,
+  always. A full migration through `DataProvider`/`MarketDataService`'s
+  return contract, confirmed explicitly before implementation rather
+  than scoped down to new surfaces only. The actual test-fixture blast
+  radius was one file (`tests/test_market_data.py`) -- far smaller than
+  the ~15-25-file pre-implementation estimate, since every other
+  existing test builds candles directly and never routes through
+  `MarketDataService`.
+- ✅ **Validation implemented** (`DECISIONS.md`, ADR-0006):
+  `src/data/validation.py`'s `validate_candles()` rejects structurally
+  invalid data (`StructuralValidationError`) or financially impossible
+  records (`FinancialSanityError`) outright; gap detection (session-
+  aware) and zero-volume are non-fatal `ValidationReport` entries, not
+  raised.
+- ✅ **Session/calendar abstraction** (new): `src/calendar/` --
+  `TradingCalendar`/`NYSECalendar`, regular US equity session
+  (09:30-16:00 America/New_York). Holidays from a hand-rolled,
+  rule-based table (not a hardcoded date list, not a calendar-library
+  dependency) -- a deliberate trade-off confirmed before
+  implementation, given the sprint's own "don't build a full
+  exchange-calendar platform" instruction.
+- ✅ **Dataset identity hardened**: `src/data/canonical.py`'s
+  `canonicalize_candles()` is the single choke point both
+  `dataframe_fingerprint()` (`DECISIONS.md`, ADR-0035) and the cache now
+  run through -- a cache hit and a fresh fetch of identical data always
+  fingerprint identically.
+- ✅ **Incremental cache implemented** (`DECISIONS.md`, ADR-0007,
+  deferred since Sprint 1): cache re-keyed from `(symbol, interval,
+  start, end)` to `(symbol, interval)`, storing the widest span fetched
+  so far; a request extending past it fetches only the new tail. A
+  request whose start moves earlier falls back to a full refetch,
+  deliberately, rather than general interval-merge logic.
+- ✅ **Regular-session filtering**: `MarketDataService` gained a
+  `session: SessionPolicy` parameter (`REGULAR` default, `ALL`
+  opt-out) -- a no-op for daily+ intervals, filters intraday candles to
+  the regular session on actual trading days otherwise.
+- ✅ **Canonical Dataset**: `get_candles()`/`get_history()` keep their
+  exact pre-Sprint-8 signatures; the new `get_dataset()` returns the
+  full `CandleDataset`. `Backtester.run()` gained an optional `dataset`
+  parameter so a `BacktestResult` can carry a `dataset_identity` --
+  both purely additive, no existing call site required a change.
+
+**Explicitly not built this round** (per the sprint's own instruction):
+a market-data warehouse, tick or order-book data, corporate-actions
+infrastructure, a complete exchange-calendar platform, multiple
+commercial providers, real-time streaming, live trading orchestration,
+statistical anomaly detection, pre-market/after-hours session support,
+general interval-merge caching for a request whose start moves
+earlier, or weekly/monthly gap detection. See `DECISIONS.md`, ADR-0041
+for the full list and reasoning.
+
+70 new tests (`tests/test_calendar.py`: 19,
+`tests/test_data_validation.py`: 24, `tests/test_data_canonical.py`:
+13, plus 11 added to `tests/test_market_data.py` and 3 added to
+`tests/test_architecture.py`). Sandbox-confirmed at 567 passed (up from
+497 sandbox / 499 real after Sprint 7's cleanup), and confirmed via
+real `pytest` on the dev machine: 569 passed, 0 failed, 0 errors, all
+green, zero regressions -- after fixing one real-pytest-only test
+artifact (`.freq` bookkeeping mismatch in
+`test_canonicalize_is_idempotent`, not a production code issue; see
+`DECISIONS.md`, ADR-0041).
 
 ## Sprint 7 (superseded) -- Analytics & Dashboard (planned, not yet built)
 
 Originally slated for Sprint 7; re-sequenced (not abandoned) when the
-portfolio-aware risk requirement above took priority. Remains future
-work.
+portfolio-aware risk requirement took priority, then again when the
+market-data integrity requirement (Sprint 8, `DECISIONS.md` ADR-0041)
+took priority. Remains future work -- next up is Sprint 9, unless a
+subsequent review re-sequences it again.
 
 - `src/analytics/`: backtest performance metrics (Sharpe, drawdown,
   win rate) and live P&L tracking.
@@ -622,7 +693,7 @@ work.
   `analytics` -- a way to see the system running, not a place where
   new logic lives.
 
-## Sprint 8+ -- AI (planned)
+## Sprint 9+ -- AI (planned)
 
 - `src/ai/`: ML/LLM-based signal generation, consumed by
   `src/strategies` as one signal source among others (see

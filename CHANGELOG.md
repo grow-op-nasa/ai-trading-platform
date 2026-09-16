@@ -11,6 +11,138 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 8 -- 2026-09-16, Market Data Integrity & Session Awareness
+
+Makes market data trustworthy and reproducible enough for daily and
+minute-level research and trading: validated, timestamp-correct,
+session-normalized, identified, and cached before it reaches
+strategies/backtests. Resolves two long-deferred ADRs (ADR-0006 data
+validation, ADR-0007 incremental cache) and the timezone-policy
+question referenced but left open by ADR-0019 and ADR-0038. See
+`DECISIONS.md`, ADR-0041 for the full design and reasoning.
+
+### Added
+
+- `src/calendar/` (new top-level package) -- `TradingCalendar(ABC)`
+  (`is_session`, `session_open`/`session_close`, `sessions_between`,
+  `session_date`) and `NYSECalendar`, the first (and only) concrete
+  implementation: regular US equity session (09:30-16:00
+  America/New_York), holidays computed from a small, explicit,
+  rule-based table (`_nyse_holidays()`) rather than a hardcoded date
+  list or a calendar-library dependency, verified for
+  `SUPPORTED_YEARS` 2015-2035.
+- `src/data/canonical.py` (new) -- `canonicalize_candles()`: pins row
+  order, column order, numeric dtype (float64), and timezone (UTC) on
+  any candle DataFrame. The single choke point everything hashed via
+  `dataframe_fingerprint()` and everything cached now passes through
+  first.
+- `src/data/validation.py` (new) -- `validate_candles()`: structural
+  checks (missing/duplicate/unordered timestamps, naive index, missing
+  columns/values, empty symbol) raise `StructuralValidationError`;
+  financial-sanity checks (`high < max(open, close)`, `low >
+  min(open, close)`, `high < low`, negative volume) raise
+  `FinancialSanityError`; gap detection (session-aware, given a
+  `TradingCalendar`) and zero-volume flags are non-fatal, recorded on
+  the returned `ValidationReport`.
+- `src/data/models.py` (new) -- `SessionPolicy` (`REGULAR`/`ALL`),
+  `GapReport`, `ValidationReport`, `DatasetIdentity`, and
+  `CandleDataset` -- the "Canonical Dataset" everything downstream
+  should consume: candles plus symbol/interval/provider/timezone/
+  session-policy/requested-range/dataset-range/content-hash/
+  validation-report.
+- `src/data/exceptions.py` -- `DataValidationError` (base),
+  `StructuralValidationError`, `FinancialSanityError`.
+- `src/data/service.py` -- `MarketDataService.get_dataset()` (new,
+  additive alongside the unchanged `get_candles()`/`get_history()`
+  signatures): returns a full `CandleDataset`. Internally reworked:
+  candles are canonicalized and validated on every return path (fresh
+  fetch or cache hit); the cache key moved from `(symbol, interval,
+  start, end)` to `(symbol, interval)`, storing the widest span fetched
+  so far and fetching only the new tail when a request's `end` extends
+  past it (falling back to a full refetch when a request's `start`
+  moves earlier); a new `session: SessionPolicy` parameter (`REGULAR`
+  default) filters intraday candles to the regular session, a no-op
+  for daily+ intervals.
+- `src/data/base.py` -- `DataProvider.fetch_candles()`'s contract
+  loosened: a provider may return either a timezone-naive index
+  (treated as already UTC) or a timezone-aware one in its own vendor
+  convention; `MarketDataService` canonicalizes to UTC uniformly
+  either way.
+- `src/data/yfinance_provider.py` -- `_normalize()` no longer strips
+  timezone information from yfinance's response (it used to discard
+  the tz-aware intraday timestamps yfinance actually returns).
+- `src/backtesting/models.py` -- `BacktestResult.dataset_identity:
+  DatasetIdentity | None = None` (new, default `None` -- backward
+  compatible).
+- `src/backtesting/engine.py` -- `Backtester.run()` gained an optional
+  `dataset: CandleDataset | None` parameter to populate
+  `result.dataset_identity`; omitted, behavior is identical to before
+  this parameter existed.
+- `tests/test_calendar.py` (19 tests), `tests/test_data_validation.py`
+  (24 tests), `tests/test_data_canonical.py` (13 tests) -- new files.
+  11 tests added to `tests/test_market_data.py` (tz-aware output,
+  `get_dataset()`, incremental fetch's three branches, session
+  filtering's three cases, cache/fresh-fetch hash equivalence). 3 tests
+  added to `tests/test_architecture.py` (no raw-provider access outside
+  `src/data`, `src/calendar`'s leaf-dependency status).
+
+### Decided
+
+- Timezone policy resolved: internal candle timestamps are
+  timezone-aware UTC, always -- a full migration through
+  `DataProvider`/`MarketDataService`'s return contract, not scoped down
+  to new surfaces only, confirmed explicitly before implementation. The
+  actual test-fixture blast radius was one file
+  (`tests/test_market_data.py`), far smaller than the ~15-25-file
+  pre-implementation estimate, since every other existing test builds
+  candles directly and never routes through `MarketDataService`.
+- NYSE holidays: a hand-rolled, rule-based table, not a calendar-library
+  dependency -- confirmed explicitly before implementation, trading a
+  documented inability to model unscheduled closures for zero new
+  dependencies and no per-year maintenance.
+- Daily-bar gap detection compares raw UTC dates, not exchange-local
+  dates -- converting a date-only daily timestamp to exchange-local
+  time before taking `.date()` shifts it to the previous calendar day
+  for any exchange behind UTC, which would have produced spurious gaps
+  at month/holiday boundaries. Intraday gap detection does convert to
+  exchange-local time first, correctly, since those timestamps are real
+  instants.
+- `get_candles()`/`get_history()` keep their exact pre-Sprint-8
+  signatures; `get_dataset()` is new and additive. `Backtester.run()`'s
+  new `dataset` parameter is optional and additive. Nothing that
+  already called either had to change.
+
+### Verified
+
+- Sandbox-verified (`PYTHONPATH=/tmp/stubs:. python3 /tmp/runner_all.py`):
+  **567 passed**, 2 known environment-only failures
+  (`test_python_version_passes_against_running_interpreter`,
+  `test_logger_is_importable_and_callable`) -- up from ADR-0040's 497
+  sandbox-passed / 499 real-passed.
+- A real `pytest` run on the dev machine (Python 3.14.6, pandas 2.3.x)
+  surfaced one test-only artifact the sandbox's pandas version (2.3.3)
+  didn't reproduce:
+  `test_data_canonical.test_canonicalize_is_idempotent` compared two
+  canonicalization passes with `pd.testing.assert_frame_equal()`
+  (default `check_freq=True`); the two passes' `DatetimeIndex.freq`
+  attributes differed (`<Day>` vs. `None`) even though values, columns,
+  dtypes, and content hash were all identical -- `tz_localize()` (first
+  pass, naive input) and `tz_convert()` (second pass, already-aware
+  input) aren't guaranteed to preserve `.freq` identically across
+  pandas versions. `.freq` is pandas bookkeeping, not real data, and
+  isn't part of what `dataframe_fingerprint()` hashes -- confirmed by
+  direct comparison (values/index/dtypes/columns/fingerprint all equal)
+  before concluding this wasn't a real regression. Fixed by adding
+  `check_freq=False`, the same convention this codebase already
+  established for the identical class of non-issue in
+  `tests/test_market_data.py`'s `test_cache_avoids_second_provider_call`.
+  No production code changed.
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6,
+  pytest 9.1.1) after that fix: **569 passed, 0 failed, 0 errors** --
+  all green, including both tests that only fail in the sandbox
+  (confirming those remain environment-only artifacts, not
+  regressions).
+
 ## Sprint 7 -- 2026-09-15, Portfolio-Aware Risk & Position Management
 
 Moves the platform from simple per-trade allocation toward a

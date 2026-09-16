@@ -72,10 +72,12 @@ def _normalize(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df = df[REQUIRED_COLUMNS]
     df.index.name = "timestamp"
 
-    # yfinance sometimes returns a tz-aware index; strip it so every
-    # provider yields the same tz-naive timestamps.
-    if df.index.tz is not None:
-        df.index = df.index.tz_localize(None)
+    # yfinance returns intraday bars timezone-aware in the exchange's
+    # own local timezone, and daily+ bars timezone-naive (a date has no
+    # meaningful time-of-day/timezone). Both conventions are left as-is
+    # here -- `MarketDataService` canonicalizes to UTC uniformly
+    # (`src.data.canonical.canonicalize_candles`, `DECISIONS.md`
+    # ADR-0041) rather than each provider converting its own way.
 
     df = df[~df.index.duplicated(keep="last")]
     df = df.sort_index()

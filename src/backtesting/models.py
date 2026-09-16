@@ -11,6 +11,7 @@ from uuid import UUID
 
 import pandas as pd
 
+from src.data.models import DatasetIdentity
 from src.signals.models import Signal
 
 
@@ -47,13 +48,26 @@ class Trade:
 
 @dataclass
 class BacktestResult:
-    """Everything a single backtest run produced."""
+    """Everything a single backtest run produced.
+
+    Args:
+        dataset_identity: which candle dataset this backtest actually
+            ran against -- symbol, timeframe, content hash, session/
+            timezone convention (Sprint 8 spec, section 11: "a backtest
+            should be able to identify... dataset identity/hash").
+            `None` by default, and left `None` whenever `Backtester.run()`
+            is called without a `dataset` argument (e.g. every existing
+            caller passing a hand-built or synthetic DataFrame directly)
+            -- this field is additive, not a requirement placed on every
+            backtest (`DECISIONS.md`, ADR-0041).
+    """
 
     strategy_name: str
     trades: list[Trade] = field(default_factory=list)
     equity_curve: pd.Series = field(default_factory=pd.Series)
     metrics: dict = field(default_factory=dict)
     signals: list[Signal] = field(default_factory=list)
+    dataset_identity: DatasetIdentity | None = None
 
     def report(self) -> str:
         """A short, human-readable summary -- not a substitute for
@@ -63,6 +77,12 @@ class BacktestResult:
             f"Strategy: {self.strategy_name}",
             f"Trades: {self.metrics.get('total_trades', 0)}",
         ]
+        if self.dataset_identity is not None:
+            identity = self.dataset_identity
+            lines.append(
+                f"Dataset: {identity.symbol} {identity.interval.value}, "
+                f"hash {identity.content_hash[:12]}"
+            )
         win_rate = self.metrics.get("win_rate")
         if win_rate is not None:
             lines.append(f"Win rate: {win_rate:.1%}")

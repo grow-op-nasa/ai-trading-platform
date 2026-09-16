@@ -55,10 +55,23 @@ class DataProvider(ABC):
         """Fetch raw candles for `symbol` between `start` and `end`.
 
         Implementations must return a DataFrame that:
-          - is indexed by a tz-naive `DatetimeIndex` named "timestamp"
+          - is indexed by a `DatetimeIndex` named "timestamp", either
+            timezone-naive (treated as already representing UTC -- the
+            right convention for a date-only daily/weekly/monthly bar
+            with no meaningful time-of-day) or timezone-aware in
+            whatever zone the vendor actually reports (e.g. exchange-
+            local for intraday bars)
           - has exactly the columns in REQUIRED_COLUMNS (lowercase)
           - is sorted ascending by timestamp
           - contains no duplicate timestamps
+
+        Providers do not need to convert to UTC themselves --
+        `MarketDataService` canonicalizes every DataFrame it returns
+        (`src.data.canonical.canonicalize_candles`, `DECISIONS.md`
+        ADR-0041) to a timezone-aware UTC index regardless of which
+        convention a given provider's raw output uses. A provider only
+        needs to be honest about which convention its own raw
+        timestamps follow.
 
         Raises:
             NoDataError: the request was valid but no data was available.

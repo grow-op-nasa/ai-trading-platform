@@ -1,6 +1,57 @@
 # Project State
 
-_Last updated: 2026-09-15 -- **Pre-Sprint 7: the research/strategy
+_Last updated: 2026-09-15 -- **Sprint 7 (Portfolio-Aware Risk &
+Position Management) is implemented and sandbox-verified, pending
+real-`pytest` confirmation.** The platform moved from simple per-trade
+allocation toward genuine, stop-based position sizing plus
+portfolio-level exposure constraints: `PortfolioRiskEngine`
+(`src/risk/portfolio_risk.py`) sizes a position from a defined stop-loss
+distance (`risk_quantity = floor(equity * risk_pct_per_trade /
+abs(entry_price - stop_price))`, a hard ceiling) and then reduces that
+quantity -- never increases it -- against independently-computed
+capital, allocation, total-exposure, and symbol-exposure ceilings,
+returning a structured, fully-auditable `RiskDecision`
+(`src/risk/models.py`) rather than a boolean and a string. A new,
+neutral `Portfolio` domain model (`src/portfolio/models.py`) and
+platform-level `Position` (`src/portfolio/position.py`) track cash,
+open positions, and exposure, deliberately coexisting with (not
+replacing) `PaperBroker`'s own bookkeeping -- `src/execution/
+portfolio_sync.py`'s `apply_fill_to_portfolio()` is the small glue
+keeping the two in sync. `PositionSizer`, `RiskLimits`,
+`SizingDecision`, `AccountState`, `PaperBroker`, and every existing
+broker are byte-for-byte unchanged -- every Sprint 7 addition is new,
+standalone code (`DECISIONS.md`, ADR-0039). This superseded the
+`ROADMAP.md`-planned "Analytics & Dashboard" Sprint 7 scope, which is
+re-sequenced (not abandoned) below.
+
+A follow-up cleanup pass (`DECISIONS.md`, ADR-0040) made two review
+items explicit rather than implicit: (1) `PortfolioRiskEngine.
+decide_close()` is now the formal, symmetric counterpart to `decide()`
+for exit/close intent -- a lookup-and-permit operation, never
+risk-sized, never gated by exposure limits, returning
+`RejectionReason.NO_POSITION_TO_CLOSE` when there's nothing to close
+rather than raising or fabricating a close order; (2) a `SHORT`'s
+unmodeled capital/margin ceiling is now typed
+(`CapitalConstraintModel.NOT_MODELED`) rather than an ambiguous `None`
+a reader could misinterpret as "unlimited." The cleanup also formalized
+the Risk -> Execution handoff (`RiskDecision.to_trade_intent() ->
+ApprovedTradeIntent`, enforcing in code that execution can never be
+handed more than Risk approved) and added a static test confirming
+`src/execution` never imports the risk-computation symbols. Nothing
+existing was redesigned; `decide()` still raises on `FLAT`, unchanged.
+Confirmed via the sandbox stub-based test runner: **497 passed**, 2
+known environment-only failures
+(`test_python_version_passes_against_running_interpreter`,
+`test_logger_is_importable_and_callable`) -- up from ADR-0039's 470 and
+the Pre-Sprint 7 baseline of 402. **Confirmed via real `pytest` on the
+dev machine (Python 3.14.6, pytest 9.1.1): 499 passed in 1.18s, all
+green** -- including both tests that failed only in the sandbox,
+confirming they were genuinely environment-only artifacts (sandbox
+Python 3.10 vs. the project's pin; the sandbox's own no-op `loguru`
+stub), not real regressions. Sprint 7, including this cleanup, is
+confirmed and ready to commit._
+
+_Pre-Sprint 7: the research/strategy
 architecture is now confirmed timeframe-agnostic** (`DECISIONS.md`,
 ADR-0038). The platform architecturally supports daily/swing, intraday,
 and minute-scale trading using the same conceptual Strategy/Backtester/
@@ -502,7 +553,89 @@ For why things were built the way they were, see `DECISIONS.md`.
   purely from its stored definition. See `DECISIONS.md`, ADR-0035,
   ADR-0036.
 
+- ✅ Sprint 7 -- Portfolio-Aware Risk & Position Management
+  (`DECISIONS.md`, ADR-0039). `PortfolioRiskEngine.decide()`
+  (`src/risk/portfolio_risk.py`) sizes a `LONG`/`SHORT` signal from a
+  stop-loss distance (Stage A: `risk_quantity =
+  floor(equity * risk_pct_per_trade / abs(entry_price - stop_price))`,
+  a ceiling nothing may exceed) then applies independently-computed
+  capital/allocation/total-exposure/symbol-exposure ceilings (Stage B:
+  `min()`), returning a structured `RiskDecision`
+  (`src/risk/models.py`, 13-member `RejectionReason` enum) rather than
+  a boolean. Standalone from `PositionSizer` -- `RiskLimits`,
+  `SizingDecision`, and the existing allocation-only model are
+  untouched. New `Portfolio`/`Position` domain models
+  (`src/portfolio/models.py`, `src/portfolio/position.py`) track cash,
+  positions, and exposure, deliberately duplicating (not replacing)
+  `PaperBroker`'s own bookkeeping;
+  `src/execution/portfolio_sync.py::apply_fill_to_portfolio()` is the
+  glue keeping the two in sync, living on the allowed side of
+  `src/portfolio`'s dependency-isolation boundary. Position scaling
+  (adding to or partially reducing an existing position) stays
+  unsupported, matching `PaperBroker`; closing bypasses the risk engine
+  entirely, exactly as before. New tests:
+  `tests/test_portfolio_position.py` (27),
+  `tests/test_portfolio_risk.py` (36, including all six of the spec's
+  mandatory worked examples and the "approved quantity never exceeds
+  risk quantity" architectural invariant across five scenarios),
+  `tests/test_sprint7_integration.py` (6), plus a new
+  `tests/test_architecture.py` check confirming `src/risk` never
+  imports `src/broker`/`src/execution`. Extension Cost (ADR-0014):
+  three new files (`src/portfolio/position.py`,
+  `src/risk/portfolio_risk.py`, `src/execution/portfolio_sync.py`), new
+  classes appended to two existing files
+  (`src/portfolio/models.py`, `src/risk/models.py`), `__init__.py`
+  export updates in `src/portfolio`/`src/risk`/`src/execution` -- no
+  existing class modified. Confirmed via the sandbox stub-based test
+  runner: **470 passed**, 2 known environment-only failures. Pending
+  real-`pytest` confirmation on the dev machine.
+- ✅ Sprint 7 cleanup -- explicit close-path semantics, explicit
+  short-margin representation, formalized Risk/Execution boundary
+  (`DECISIONS.md`, ADR-0040). `PortfolioRiskEngine.decide_close()` is
+  the new, symmetric close/exit-intent counterpart to `decide()` --
+  never risk-sized, never gated by `max_portfolio_exposure_pct`/
+  `max_symbol_exposure_pct` (a close is permitted even over a breached
+  limit), returning `RejectionReason.NO_POSITION_TO_CLOSE` when nothing
+  is held and `UNSUPPORTED_POSITION_OPERATION` for any non-full
+  quantity (no partial-close support fabricated). `CapitalConstraintModel`
+  (`MODELED`/`NOT_MODELED`) makes a `SHORT`'s unmodeled capital ceiling
+  typed rather than an ambiguous `None`. `RiskDecision.to_trade_intent()
+  -> ApprovedTradeIntent` formalizes the Risk -> Execution handoff and
+  enforces `execution_quantity <= risk_approved_quantity` in code. No
+  existing behavior changed -- `decide()` still raises on `FLAT`,
+  `PaperBroker`/`Portfolio`/`RiskLimits`/`SizingDecision` untouched. 27
+  new tests (22 in `tests/test_portfolio_risk.py`, 4 in
+  `tests/test_sprint7_integration.py`, 1 in `tests/test_architecture.py`).
+  Confirmed via the sandbox stub-based test runner: **497 passed**, 2
+  known environment-only failures. Confirmed via real `pytest` on the
+  dev machine (Python 3.14.6, pytest 9.1.1): **499 passed in 1.18s, all
+  green.**
+
 ## Current Module
+
+**Sprint 7 (Portfolio-Aware Risk & Position Management), including its
+ADR-0040 cleanup pass, is implemented and confirmed via real `pytest`
+on the dev machine.** `PortfolioRiskEngine` adds genuine, stop-based
+position sizing plus portfolio-level exposure constraints alongside
+(not replacing) `PositionSizer`'s allocation-only model;
+`Portfolio`/`Position` (`src/portfolio/`) give the risk layer a
+neutral, broker-independent view of what the platform currently holds;
+`apply_fill_to_portfolio()` (`src/execution/portfolio_sync.py`) keeps
+that view in sync with `PaperBroker`'s own simulation.
+`PortfolioRiskEngine.decide_close()` (ADR-0040) is the formal,
+symmetric close/exit-intent path, and `RiskDecision.capital_model`/
+`to_trade_intent()` make the short-margin absence and the
+Risk->Execution quantity invariant explicit and typed rather than
+implicit. Confirmed via real `pytest` on the dev machine (Python
+3.14.6, pytest 9.1.1): **499 passed in 1.18s**, all green -- including
+both tests that failed only in the sandbox
+(`test_python_version_passes_against_running_interpreter`,
+`test_logger_is_importable_and_callable`), confirming those were
+genuinely environment-only artifacts, not real regressions -- up from
+the Pre-Sprint 7 baseline of 402 (470 after the initial Sprint 7
+implementation, 497 sandbox-passed / 499 real-passed after this
+cleanup). See `DECISIONS.md`, ADR-0039 and ADR-0040. Sprint 7 is
+confirmed and ready to commit.
 
 **Pre-Sprint 7: the research/strategy architecture is confirmed
 timeframe-agnostic.** `calculate_metrics()`/`sharpe_ratio()` no longer
@@ -548,9 +681,14 @@ suite against the live yfinance API.
 
 ## Next Task
 
-Pre-Sprint 7's timeframe-agnostic corrections and formal Acceptance
-Criteria evidence are confirmed (402 passed in 1.12s, all green via
-real `pytest`) -- begin Sprint 7 (Analytics & Dashboard).
+Sprint 7 (Portfolio-Aware Risk & Position Management), including its
+ADR-0040 cleanup pass (explicit close-path semantics, explicit
+short-margin representation, formalized Risk/Execution boundary), is
+implemented and confirmed via real `pytest` on the dev machine (Python
+3.14.6, pytest 9.1.1): 499 passed in 1.18s, all green -- and the formal
+Sprint 7 completion report has already been delivered. Only the commit
+remains. Sprint 8 (or the re-sequenced Analytics & Dashboard scope, see
+`ROADMAP.md`) begins after that.
 Separately available, none yet explicitly requested: setting
 `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
 `TigerBroker.get_account()` against a real Tiger paper account; setting
@@ -610,9 +748,12 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
   limit are deferred, not rejected -- see `DECISIONS.md`, ADR-0021.
   `allocation_per_trade_pct` (renamed from `risk_per_trade_pct` by
   ADR-0032) sizes a fixed fraction of equity regardless of stop
-  distance -- true risk-based (stop-loss-distance) sizing is a distinct,
-  unbuilt capability, not just a naming fix; deliberately not invented
-  this round.
+  distance -- true risk-based (stop-loss-distance) sizing is now built,
+  as of Sprint 7, in a separate, standalone engine
+  (`PortfolioRiskEngine`, `src/risk/portfolio_risk.py`, `DECISIONS.md`
+  ADR-0039) rather than by changing what `PositionSizer`/
+  `allocation_per_trade_pct` mean. `PortfolioRiskEngine` is likewise not
+  wired into `Backtester` -- see the new Sprint 7 debt entries below.
 - `PaperBroker` doesn't mark positions to market -- `equity` between
   fills can understate or overstate the account's true value whenever
   an open position has moved in price. No live price feed exists for
@@ -682,33 +823,77 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
   `tests/test_timeframe_agnostic.py` -- so intraday support is
   confirmed architecturally, not yet exercised end to end against real
   market data.
+- `PortfolioRiskEngine`/`Portfolio` (Sprint 7, `DECISIONS.md` ADR-0039)
+  don't support position scaling (adding to or partially reducing an
+  existing position) -- a same-symbol call is rejected outright
+  (`POSITION_SCALING_NOT_SUPPORTED`), matching `PaperBroker`'s existing
+  one-open-position-per-symbol limitation. Nor do they implement Kelly
+  criterion sizing, VaR/CVaR, correlation-aware exposure, portfolio
+  optimization, factor models, volatility targeting, dynamic hedging,
+  sophisticated margin modeling, market-impact modeling, order-book
+  simulation, or ML-based risk models -- all explicitly out of scope
+  for Sprint 7. `Portfolio`/`Position.current_price`/`unrealized_pnl`
+  exist but nothing sets `current_price` automatically -- no real
+  mark-to-market, the same limitation `PaperBroker.account_state` has
+  always had (ADR-0022). Like `PositionSizer` before it,
+  `PortfolioRiskEngine` composes with `PaperBroker`/`Portfolio` only via
+  tests (`tests/test_sprint7_integration.py`) -- `Backtester.run()`
+  itself still sizes every trade as a single unit (ADR-0011).
+- The ADR-0040 cleanup formalized the close path
+  (`PortfolioRiskEngine.decide_close()`) but did not add partial-close
+  support -- a `quantity` other than a held position's full size is
+  rejected with `RejectionReason.UNSUPPORTED_POSITION_OPERATION`,
+  exactly like a same-symbol scaling attempt through `decide()`. No
+  `ExecutionResult` wrapper type was introduced either: `Fill`
+  (execution) and `Portfolio`/`Position` (state) already are the
+  distinct structured outputs of those layers, and `PaperBroker.
+  submit_signal()` still reports failure by raising, unchanged --
+  adding a parallel result type with no actual consumer was judged
+  speculative and out of this cleanup's scope (`DECISIONS.md`,
+  ADR-0040). `ApprovedTradeIntent`/`to_trade_intent()` exist as an
+  explicit audit/boundary object but are not wired into `PaperBroker`
+  -- `as_sizing_decision()` remains what `PaperBroker` actually
+  consumes.
 
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 402 passed (7 config + 15 market data + 6 cache
+pytest                    # should show 499 passed (7 config + 15 market data + 6 cache
                           # + 11 indicators + 10 regime + 12 backtesting + 21 experiments
                           # + 29 cli/doctor + 13 signals + 13 strategy_sdk + 8 attribution
                           # + 17 research + 11 ema_cross_strategy + 17 risk + 19 execution
                           # + 6 integration_paper_trading + 34 broker + 15 ibkr
-                          # + 11 reconciliation + 31 ig + 15 tiger + 9 architecture
+                          # + 11 reconciliation + 31 ig + 15 tiger + 11 architecture
                           # + 5 portfolio + 6 hashing + 9 strategy_registry
                           # + 12 experiment_spec + 3 pipeline_contract
                           # + 14 rsi_mean_reversion_strategy + 8 run_experiment_script
-                          # + 6 timeframe_agnostic + 9 intraday_acceptance)
+                          # + 6 timeframe_agnostic + 9 intraday_acceptance
+                          # + 27 portfolio_position + 58 portfolio_risk
+                          # + 10 sprint7_integration)
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until
                           # ALPACA_API_KEY/ALPACA_API_SECRET are set)
 ```
 
-Confirmed via real `pytest` on the dev machine (Python 3.14.6,
-pytest 9.1.1): **402 passed in 1.12s**, all green. (Sandbox run,
-stub-based runner, showed 401 passed / 1 known environment-only
-failure -- `test_python_version_passes_against_running_interpreter`
-fails only when the sandbox's Python version differs from the dev
-machine's pin; confirmed passing for real here, as expected.)
+Confirmed via the sandbox stub-based test runner
+(`PYTHONPATH=/tmp/stubs:. python3 /tmp/runner_all.py`): **497 passed**,
+2 known environment-only failures --
+`test_python_version_passes_against_running_interpreter` (sandbox
+Python 3.10 vs. the dev machine's pinned newer version) and
+`test_logger_is_importable_and_callable` (the sandbox's `loguru` stub
+is a no-op and doesn't write to stdout the way real `loguru` does).
+**Confirmed via real `pytest` on the dev machine (Python 3.14.6,
+pytest 9.1.1): 499 passed in 1.18s, all green** -- both sandbox
+artifacts above passed for real, confirming they were
+environment-only, not regressions. Real-`pytest` confirmation is
+complete
+(including its ADR-0040 cleanup) as of this entry -- update this
+section once that run completes.
 
-_Historical: confirmed via real `pytest` on the dev machine (Python
-3.14.6) as of the prior (Sprint 6 part 2) entry: 386 passed in 0.92s,
-all green._
+_Historical: sandbox-confirmed at 470 passed immediately after the
+initial Sprint 7 implementation (ADR-0039), before the ADR-0040
+cleanup added 27 more tests. Confirmed via real `pytest` on the dev
+machine (Python 3.14.6, pytest 9.1.1) as of the Pre-Sprint 7 entry:
+**402 passed in 1.12s**, all green. As of the prior (Sprint 6 part 2)
+entry: 386 passed in 0.92s, all green._

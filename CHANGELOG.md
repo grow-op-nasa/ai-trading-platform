@@ -11,6 +11,206 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 7 -- 2026-09-15, Portfolio-Aware Risk & Position Management
+
+Moves the platform from simple per-trade allocation toward a
+portfolio-aware risk and position-management system: genuine,
+stop-based position sizing plus portfolio-level exposure constraints,
+connected to the existing execution layer without redesigning it. See
+`DECISIONS.md`, ADR-0039 for the full design and reasoning.
+
+### Added
+
+- `src/portfolio/position.py` (new) -- `PositionSide` (`LONG`/`SHORT`),
+  `PositionLifecycle` (`OPEN`/`CLOSED` only -- see the module docstring
+  for why there is no third `FLAT` member), `Position` (symbol, side,
+  signed quantity, entry price/timestamp, optional stop/current price,
+  lifecycle, realized/unrealized P&L). Broker-independent -- distinct
+  from, and does not replace, `src.execution.models.Position`.
+- `src/portfolio/models.py` -- new `Portfolio` class: cash plus open
+  `Position`s, `equity`/`total_exposure`/`symbol_exposure()`/
+  `position_count` computed properties, `open_position()`/
+  `close_position()` (signed cash accounting, one open position per
+  symbol), `to_account_state()` bridge to the existing `AccountState`.
+  `AccountState` itself is untouched.
+- `src/risk/models.py` -- `PortfolioRiskLimits` (`risk_pct_per_trade`,
+  `max_symbol_exposure_pct`, `max_concurrent_positions`, `min_quantity`
+  -- a class separate from `RiskLimits`, not new fields on it),
+  `RejectionReason(str, Enum)` (13 members), `RiskDecision` (frozen
+  dataclass carrying every intermediate quantity plus
+  `as_sizing_decision()` to adapt into the existing `SizingDecision`
+  shape). `RiskLimits`/`SizingDecision` themselves are untouched.
+- `src/risk/portfolio_risk.py` (new) -- `PortfolioRiskEngine.decide(signal,
+  portfolio, entry_price, stop_price) -> RiskDecision`: Stage A computes
+  a stop-based `risk_quantity` (`floor(equity * risk_pct /
+  abs(entry_price - stop_price))`); Stage B computes capital/allocation/
+  total-exposure/symbol-exposure ceilings independently and takes the
+  `min()` against `risk_quantity`, which is a hard ceiling the decision
+  can never exceed. Rejects a same-symbol call with
+  `POSITION_SCALING_NOT_SUPPORTED` (no add/reduce mechanism exists);
+  raises on a `FLAT` signal (closing is never risk-gated).
+- `src/execution/portfolio_sync.py` (new) -- `apply_fill_to_portfolio(portfolio,
+  fill, stop_price=None) -> Position`: reads a `Fill` `PaperBroker`
+  already produced and opens or closes the matching `Portfolio`
+  position. The glue that keeps `PaperBroker`'s own bookkeeping and the
+  new `Portfolio` in sync without either wrapping or modifying the
+  other.
+- `tests/test_portfolio_position.py` (27 tests) -- `Position`
+  validation/computed properties/`close()`; `Portfolio` construction,
+  long/short open/close cash math, multi-position support, defensive
+  copies, `to_account_state()`.
+- `tests/test_portfolio_risk.py` (36 tests) -- `PortfolioRiskLimits`
+  validation, the spec's own worked sizing example, invalid-stop and
+  zero-stop-distance cases, floor-not-round rounding, every individual
+  constraint, the position-scaling/concurrent-position distinction,
+  `RiskDecision` field contents (approved and rejected), all six
+  mandatory worked examples, and the architectural invariant
+  (`final_approved_quantity <= risk_quantity`) across five scenarios.
+- `tests/test_sprint7_integration.py` (6 tests) -- the full Signal ->
+  `PortfolioRiskEngine` -> `PaperBroker` -> `Fill` ->
+  `apply_fill_to_portfolio` -> `Portfolio` pipeline for an approved
+  trade and a full closure; a rejected decision that never reaches
+  execution; the pre-existing symbol-mismatch invariant holding with a
+  `RiskDecision` in the loop; three concurrent positions opened end to
+  end; and existing exposure correctly constraining a new trade.
+- `tests/test_architecture.py::test_risk_modules_do_not_import_src_broker_or_src_execution`
+  -- confirms `src/risk` stays dependent only on `src/portfolio`/
+  `src/signals`, never reaching into `src/broker`/`src/execution`
+  itself.
+
+### Changed
+
+- None of `RiskLimits`, `SizingDecision`, `PositionSizer`,
+  `AccountState`, `PaperBroker`, `src.execution.models.Position`,
+  `Order`, or `Fill` changed -- every Sprint 7 addition is a new class,
+  file, or optional-defaulted field.
+- `src/portfolio/__init__.py`, `src/risk/__init__.py`,
+  `src/execution/__init__.py` -- updated exports for the new classes/
+  function.
+
+### Decided
+
+- A standalone, parallel risk-sizing path (`PortfolioRiskEngine`) rather
+  than extending `PositionSizer` -- the two answer different questions
+  (allocation vs. stop-based loss) and neither trade sized by one is
+  meant to also be sized by the other.
+- Two coexisting `Position` models, deliberately: the new
+  `src.portfolio.position.Position` (broker-independent, risk-facing)
+  and the existing `src.execution.models.Position` (fill-bookkeeping,
+  `PaperBroker`-owned), kept in sync by
+  `apply_fill_to_portfolio()` rather than merged or one wrapping the
+  other.
+- `Portfolio` duplicates state `PaperBroker` already tracks, by design
+  -- avoids rewriting `PaperBroker`'s tested internals in exchange for a
+  small, explicit synchronization step a caller performs once per fill.
+- Position scaling stays unsupported and closing stays ungated by the
+  risk engine, both matching `PaperBroker`'s existing one-open-position-
+  per-symbol limitation (ADR-0022) rather than introducing new
+  capability the execution layer can't actually honor.
+- See `DECISIONS.md`, ADR-0039 for the full precedence-order rejection
+  logic, the short-sale no-margin assumption, and everything explicitly
+  deferred (Kelly, VaR/CVaR, correlation, optimization, real
+  mark-to-market, etc.).
+
+### Verified
+
+- Confirmed via sandbox test runner (stub-based, `PYTHONPATH=/tmp/stubs:.
+  python3 /tmp/runner_all.py`): **470 passed**, 2 known
+  environment-only failures (`test_python_version_passes_against_running_interpreter`,
+  `test_logger_is_importable_and_callable` -- both sandbox-stub
+  artifacts, not real regressions; see `PROJECT_STATE.md`). Up from the
+  Pre-Sprint 7 baseline of 402.
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6,
+  pytest 9.1.1): **499 passed in 1.18s**, all green -- including both
+  tests that failed only in the sandbox, confirming those were
+  genuinely environment-only (sandbox Python 3.10 vs. the project's pin;
+  the sandbox's own no-op `loguru` stub), not real regressions. This
+  count is after the ADR-0040 cleanup pass below (497 sandbox-passed +
+  2 known-environment-failures = 499 total collected, all passing for
+  real).
+
+## Sprint 7 cleanup -- 2026-09-16, Explicit Close-Path and Short-Margin Semantics, Formalized Risk/Execution Boundary
+
+A targeted cleanup pass on Sprint 7 (`DECISIONS.md`, ADR-0040), not a
+redesign: two review items (the `FLAT`/close path, and short-sale
+capital/margin semantics) made explicit and typed, plus the
+Risk/Execution/Portfolio responsibility boundary formalized and one
+edge of it locked by a new architecture test. No existing behavior
+changed -- `decide()` still raises on `FLAT`; `RiskLimits`,
+`SizingDecision`, `PositionSizer`, `AccountState`, `PaperBroker`,
+`Portfolio`, `Position`, and `apply_fill_to_portfolio()` are all
+untouched.
+
+### Added
+
+- `src/risk/portfolio_risk.py`: `PortfolioRiskEngine.decide_close(signal,
+  portfolio, quantity=None) -> RiskDecision` -- the symmetric
+  close/exit-intent counterpart to `decide()`. A lookup-and-permit
+  operation, never risk-sized: no risk budget computed, and
+  `RiskLimits.max_portfolio_exposure_pct`/`PortfolioRiskLimits.
+  max_symbol_exposure_pct` are never consulted, so a close remains
+  permitted even when the portfolio is already over either limit. No
+  open position -> `RejectionReason.NO_POSITION_TO_CLOSE` (new enum
+  member); a `quantity` other than the position's own full size ->
+  `RejectionReason.UNSUPPORTED_POSITION_OPERATION` (no partial-close
+  support fabricated). Never submits an order itself -- the actual
+  close still goes through `PaperBroker.submit_signal()` directly,
+  unchanged.
+- `src/risk/models.py`: `RejectionReason.NO_POSITION_TO_CLOSE`;
+  `CapitalConstraintModel(str, Enum)` (`MODELED`/`NOT_MODELED`) makes a
+  `SHORT`'s unmodeled capital ceiling machine-visible rather than an
+  ambiguous `None`; `RiskDecision` gained `is_close: bool = False`,
+  `signal_id: UUID | None = None`, `capital_model:
+  CapitalConstraintModel | None = None` (all defaulted, no existing
+  construction broken); `RiskDecision.to_trade_intent(quantity=None) ->
+  ApprovedTradeIntent` formalizes the Risk -> Execution handoff and
+  raises if the requested quantity exceeds `final_approved_quantity` --
+  the `execution_quantity <= risk_approved_quantity` invariant enforced
+  in code; `ApprovedTradeIntent` (new frozen dataclass) composes rather
+  than duplicates `RiskDecision` (referenced, not copied).
+- `tests/test_portfolio_risk.py` (+22 tests): close-path Cases A-D and
+  the required-tests list, short-margin representation and its effect
+  on `SHORT` trades (exposure/allocation/concurrent-position limits
+  still bind; the absent capital ceiling is never read as unlimited),
+  `to_trade_intent()`'s invariant enforcement (over-quantity rejection,
+  execution-side reduction allowed, rejected-decision rejection).
+- `tests/test_sprint7_integration.py` (+4 tests): the close path end to
+  end via `decide_close()` + `PaperBroker` + `apply_fill_to_portfolio()`;
+  close permitted over an already-breached exposure limit; a
+  no-position close never reaching execution; "close is execution-owned"
+  proving `PaperBroker.submit_signal()` needs no `sizing_decision` for a
+  `FLAT` signal.
+- `tests/test_architecture.py` (+1 test):
+  `test_execution_does_not_duplicate_risk_sizing_logic` -- confirms
+  `src/execution` never imports the risk-computation symbols
+  (`PortfolioRiskEngine`, `PortfolioRiskLimits`, `RiskLimits`, or
+  anything from `src.risk.portfolio_risk`), only the plain
+  `SizingDecision` shape it has always depended on.
+
+### Decided
+
+- A new, separate `decide_close()` method rather than teaching `decide()`
+  to accept `FLAT` -- a close is a fundamentally different question
+  (permission, not sizing) and conflating the two methods would have
+  been exactly the ambiguity this cleanup exists to remove. See
+  `DECISIONS.md`, ADR-0040.
+- `CapitalConstraintModel` as a paired, explicit field alongside
+  `capital_quantity` rather than overloading `None`'s meaning or
+  inventing a numeric sentinel.
+- No `ExecutionResult` wrapper type: `Fill` (execution) and
+  `Portfolio`/`Position` (state) already are the distinct, structured
+  outputs those layers expose; a new wrapper with no consumer this
+  round would itself be a speculative abstraction. No partial-close
+  support -- fabricating it was explicitly out of scope.
+
+### Verified
+
+- Confirmed via sandbox test runner: **497 passed**, 2 known
+  environment-only failures (unchanged from Sprint 7's own baseline
+  set of known artifacts). Up from 470 before this cleanup.
+- Confirmed via real `pytest` on the dev machine (Python 3.14.6,
+  pytest 9.1.1): **499 passed in 1.18s**, all green.
+
 ## Pre-Sprint 7 -- 2026-09-15, Timeframe-Agnostic Architecture Corrections
 
 A targeted correction pass, not a redesign, requested ahead of Sprint 7:

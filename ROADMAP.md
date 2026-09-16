@@ -515,7 +515,106 @@ need none). **This is architectural readiness, not new functionality**
 -- no real intraday data has been run through `scripts/run_experiment.py`
 against a live provider yet, only through synthetic fixtures.
 
-## Sprint 7 -- Analytics & Dashboard (planned)
+## Sprint 7 -- Portfolio-Aware Risk & Position Management ✅ Complete
+
+Superseded the originally-planned "Analytics & Dashboard" scope (moved
+below, unbuilt, not abandoned) ahead of the sprint starting: the more
+pressing requirement was moving the platform from simple per-trade
+allocation toward a portfolio-aware risk and position-management
+system with explicit loss-based sizing and portfolio constraints,
+before either a dashboard or cross-experiment analytics had real
+portfolio-level numbers to show. See `DECISIONS.md`, ADR-0039.
+
+- ✅ **Genuine, stop-based position sizing**: `PortfolioRiskEngine.decide()`
+  (`src/risk/portfolio_risk.py`) sizes from a defined loss boundary --
+  `risk_quantity = floor(equity * risk_pct_per_trade /
+  abs(entry_price - stop_price))` -- a hard ceiling, never a target.
+  Standalone from `PositionSizer` (unchanged, still allocation-only);
+  `RiskLimits.allocation_per_trade_pct` was **not** reverted to a
+  risk-based meaning -- Allocation and Risk stay distinct concepts in
+  distinct classes (`RiskLimits` vs. the new `PortfolioRiskLimits`).
+- ✅ **Long/short risk symmetry**: stop-direction validated explicitly
+  (`LONG`: `stop_price < entry_price`; `SHORT`: `stop_price >
+  entry_price`), both directions sized through the same formula.
+- ✅ **Capital/affordability constraints reduce, never silently clip**:
+  capital, allocation, total-exposure, and symbol-exposure ceilings are
+  each computed independently and observable on the returned
+  `RiskDecision` (`capital_quantity`, `allocation_quantity`,
+  `portfolio_exposure_quantity`, `symbol_exposure_quantity`), with
+  `limiting_constraint` naming which one(s) bound.
+- ✅ **Neutral `Portfolio` domain model** (`src/portfolio/models.py`) --
+  cash, positions, per-symbol and total exposure -- reusing
+  `AccountState` (via `to_account_state()`) rather than duplicating its
+  concept.
+- ✅ **Platform-level `Position` model** (`src/portfolio/position.py`) --
+  broker-independent, `OPEN`/`CLOSED` lifecycle, stop price,
+  realized/unrealized P&L -- deliberately coexisting with (not
+  replacing) `src.execution.models.Position`.
+- ✅ **Portfolio constraint engine with structured results** --
+  `RejectionReason(str, Enum)` (13 members), never a free-form string;
+  `RiskDecision` (frozen dataclass) exposes every intermediate quantity
+  for full auditability.
+- ✅ **Signal/execution symbol consistency** -- `PaperBroker`'s existing
+  ADR-0036 enforcement confirmed to still hold with a `RiskDecision` in
+  the loop (`tests/test_sprint7_integration.py`).
+- ✅ **Connected to the existing execution layer without redesigning
+  it** -- `RiskDecision.as_sizing_decision()` adapts into the
+  pre-existing `SizingDecision` shape; `src/execution/portfolio_sync.py`'s
+  `apply_fill_to_portfolio()` is the small glue keeping `PaperBroker`
+  and `Portfolio` in sync, on the allowed side of the
+  `src/portfolio`-depends-on-nothing dependency-isolation boundary.
+- ✅ **Multi-position support**: three concurrent positions opened and
+  coexisting end to end; a same-symbol scaling attempt rejected
+  (`POSITION_SCALING_NOT_SUPPORTED`); existing exposure correctly
+  constrains a new trade on a different symbol
+  (`tests/test_sprint7_integration.py`).
+- ✅ **Closing releases exposure, updates capital, records realized
+  P&L** -- deterministic, tested via `Portfolio.close_position()` and
+  the full pipeline test.
+- ✅ **~90+ new tests** spanning sizing, constraints, and integration:
+  `tests/test_portfolio_position.py` (27), `tests/test_portfolio_risk.py`
+  (36, including all six of the spec's mandatory worked examples and
+  the architectural invariant across five scenarios),
+  `tests/test_sprint7_integration.py` (6).
+- ✅ **Architecture preserved**: strict dependency direction Portfolio
+  -> Risk -> Execution -> Broker, confirmed by a new
+  `tests/test_architecture.py` check that `src/risk` never imports
+  `src/broker`/`src/execution`; strategies still express intent only, a
+  `Signal` with direction/confidence -- `PortfolioRiskEngine` is the
+  only new place deciding size and portfolio admission.
+
+**Explicitly not built this round** (per the sprint's own instruction):
+Kelly criterion sizing, VaR/CVaR, correlation-aware exposure, portfolio
+optimization, factor models, volatility targeting, dynamic hedging,
+sophisticated margin modeling, market-impact modeling, order-book
+simulation, HFT-style execution, real mark-to-market requiring a live
+price feed, advanced broker-specific risk handling, ML-based risk
+models. See `DECISIONS.md`, ADR-0039 for the full list and reasoning.
+
+**Cleanup pass ✅ Complete** (`DECISIONS.md`, ADR-0040) -- a review of
+the implementation above raised two items, addressed without
+redesigning anything: (1) the `FLAT`/close path is now an explicit,
+symmetric method, `PortfolioRiskEngine.decide_close()`, rather than
+`decide()`'s `ValueError` being the only word on it -- a close is
+looked up and permitted, never risk-sized, never gated by an exposure
+limit; (2) a `SHORT`'s unmodeled capital/margin ceiling is now typed
+(`CapitalConstraintModel.NOT_MODELED`) instead of an ambiguous `None`.
+The cleanup also formalized the Risk -> Execution handoff
+(`RiskDecision.to_trade_intent() -> ApprovedTradeIntent`, enforcing in
+code that execution can never be handed more than Risk approved) and
+added a static test confirming `src/execution` never imports the
+risk-computation symbols. 27 new tests. No partial-close support and
+no new `ExecutionResult` wrapper type were added -- both judged out of
+this cleanup's narrow scope. Sandbox-confirmed at 497 passed (up from
+470), and confirmed via real `pytest` on the dev machine: 499 passed in
+1.18s, all green, zero regressions. Previously reading "up from
+470), pending real-`pytest` confirmation.
+
+## Sprint 7 (superseded) -- Analytics & Dashboard (planned, not yet built)
+
+Originally slated for Sprint 7; re-sequenced (not abandoned) when the
+portfolio-aware risk requirement above took priority. Remains future
+work.
 
 - `src/analytics/`: backtest performance metrics (Sharpe, drawdown,
   win rate) and live P&L tracking.
@@ -592,3 +691,23 @@ against a live provider yet, only through synthetic fixtures.
   `scripts/run_experiment.py --interval 1m` has not yet been run against
   a live provider. Worth doing once there's an actual intraday research
   question to answer, not scheduled on its own.
+- **Sprint 7's explicitly deferred risk capabilities** (`DECISIONS.md`,
+  ADR-0039): Kelly criterion sizing, VaR/CVaR, correlation-aware
+  exposure, portfolio optimization, factor models, volatility
+  targeting, dynamic hedging, sophisticated margin modeling,
+  market-impact modeling, order-book simulation, real mark-to-market
+  for `Portfolio`/`Position` (both fall back to `entry_price` exactly
+  like `PaperBroker.account_state` already does), and ML-based risk
+  models. None scheduled; tracked so the scope boundary isn't lost.
+- **`PortfolioRiskEngine`/`PaperBroker` position scaling**: neither
+  supports adding to or partially reducing an existing position --
+  `PortfolioRiskEngine.decide()` rejects a same-symbol call outright
+  (`POSITION_SCALING_NOT_SUPPORTED`) rather than attempting it. Real
+  future work, gated on `PaperBroker` itself gaining that capability
+  first (`DECISIONS.md`, ADR-0022, ADR-0039).
+- **`PortfolioRiskEngine` wired into `Backtester`**: like
+  `PositionSizer` before it, Sprint 7's engine composes end to end with
+  `PaperBroker`/`Portfolio` only via
+  `tests/test_sprint7_integration.py` -- `Backtester.run()` itself still
+  sizes every trade as a single unit (ADR-0011). Same deferred wiring
+  gap as `PositionSizer`'s, now shared by both risk engines.

@@ -55,6 +55,65 @@ def test_broker_modules_do_not_import_src_risk():
     )
 
 
+def test_risk_modules_do_not_import_src_broker_or_src_execution():
+    # Sprint 7 (DECISIONS.md, ADR-0039): PortfolioRiskEngine consumes the
+    # neutral Portfolio/Signal models to make a decision, then hands a
+    # structured RiskDecision back to the caller -- it must never reach
+    # into src.broker or src.execution itself. The dependency direction
+    # is strictly Portfolio -> Risk -> Execution -> Broker; risk depends
+    # on portfolio and signals only.
+    import_pattern = re.compile(r"^\s*(?:from|import)\s+src\.(broker|execution)\b", re.MULTILINE)
+    for path in (SRC_ROOT / "risk").glob("*.py"):
+        text = path.read_text()
+        match = import_pattern.search(text)
+        assert match is None, (
+            f"{path.name} must not depend on src.broker or src.execution -- "
+            f"risk decides, execution/broker act on that decision, not the "
+            f"other way around (DECISIONS.md, ADR-0039). Found an import of "
+            f"src.{match.group(1) if match else ''}."
+        )
+
+
+def test_execution_does_not_duplicate_risk_sizing_logic():
+    # Sprint 7 cleanup (DECISIONS.md, ADR-0040): there must be exactly
+    # one authoritative implementation of each risk rule. PaperBroker
+    # consumes an already-computed SizingDecision/RiskDecision's
+    # quantity directly (src/execution/engine.py's own submit_signal()/
+    # _build_order()) -- it must never independently recalculate a risk
+    # percentage, a stop-distance quantity, or a portfolio-exposure
+    # ceiling.
+    #
+    # Checks actual *import* statements, not prose -- src/execution's
+    # own docstrings legitimately *mention* PortfolioRiskEngine/
+    # PortfolioRiskLimits to explain how a RiskDecision reaches
+    # execution (e.g. portfolio_sync.py's stop_price parameter doc),
+    # without importing or reimplementing them. Importing the
+    # computational risk symbols themselves (as opposed to the plain
+    # data shape `SizingDecision`, which execution has always legitimately
+    # depended on, DECISIONS.md ADR-0022) would be the real red flag:
+    # it would mean execution has its own way to *compute* a risk
+    # decision, not just consume one.
+    forbidden_imports = re.compile(
+        r"^\s*(?:from\s+src\.risk(?:\.\w+)?\s+import\s+.*\b"
+        r"(PortfolioRiskEngine|PortfolioRiskLimits|RiskLimits)\b"
+        r"|from\s+src\.risk\.portfolio_risk\s+import)",
+        re.MULTILINE,
+    )
+    offenders = [
+        path.name
+        for path in (SRC_ROOT / "execution").glob("*.py")
+        if forbidden_imports.search(path.read_text())
+    ]
+    assert offenders == [], (
+        f"src/execution must not import the risk-computation symbols "
+        f"(PortfolioRiskEngine, PortfolioRiskLimits, RiskLimits) or "
+        f"anything from src.risk.portfolio_risk -- it consumes an "
+        f"already-decided quantity via the plain SizingDecision shape, "
+        f"never recomputes one itself (DECISIONS.md, ADR-0040). "
+        f"Offending files: {offenders}"
+    )
+
+
 def test_portfolio_package_depends_on_nothing_else_in_this_codebase():
     # Checks actual import statements, not prose -- src/portfolio's own
     # docstrings legitimately *mention* src.risk/src.broker/src.execution

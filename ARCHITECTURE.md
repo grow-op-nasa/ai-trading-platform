@@ -24,9 +24,9 @@ graph TD
     attribution[attribution: PerformanceAttributor]
     experiments[experiments: ExperimentRegistry + Signal + ExperimentSpec storage]
     research[research: ResearchReporter]
-    portfolio[portfolio: AccountState]
-    risk[risk: PositionSizer]
-    execution[execution: PaperBroker]
+    portfolio[portfolio: AccountState + Portfolio + Position]
+    risk[risk: PositionSizer + PortfolioRiskEngine]
+    execution[execution: PaperBroker + portfolio_sync]
     broker[broker: BrokerConnection + AlpacaBroker + IBKRBroker + IGBroker + TigerBroker]
     reconciliation[reconciliation: reconcile_fill]
     analytics[analytics: not yet built]
@@ -75,12 +75,22 @@ graph TD
     broker --> cli
 ```
 
-`attribution` is not the same thing as the planned `analytics` (Sprint 7,
-still not built): `attribution` explains a single completed backtest
-(which regime/session it did well or badly in), while `analytics` is
-scoped for cross-experiment and live P&L tracking. If that boundary
-ever gets blurry when `analytics` is actually built, revisit here
-rather than letting the two quietly duplicate each other.
+`attribution` is not the same thing as the planned `analytics` (still
+not built, and no longer Sprint 7's scope -- see the note below):
+`attribution` explains a single completed backtest (which regime/
+session it did well or badly in), while `analytics` is scoped for
+cross-experiment and live P&L tracking. If that boundary ever gets
+blurry when `analytics` is actually built, revisit here rather than
+letting the two quietly duplicate each other.
+
+**Sprint 7 built portfolio-aware risk, not analytics/dashboard.** The
+scope originally planned for Sprint 7 in this file (`src/analytics`,
+`src/dashboard`) was superseded before the sprint began by a more
+pressing requirement: moving from simple per-trade allocation to
+genuine, stop-based position sizing plus portfolio-level exposure
+constraints (`DECISIONS.md`, ADR-0039). `src/analytics` and
+`src/dashboard` remain unbuilt, tracked in `ROADMAP.md`, not abandoned
+-- they were re-sequenced, not replaced.
 
 `research` is also distinct from the Sprint 8+ `ai` module: `research`
 turns one completed backtest's evidence into a human-readable summary
@@ -603,44 +613,97 @@ already committed" depends on -- without any of them depending on each
 other to get it. Extracted from `src/risk` during the Pre-Sprint 6
 architecture review cleanup (`DECISIONS.md`, ADR-0031), the same way
 `src/data`'s `DataProvider` interface keeps every data vendor
-interchangeable.
+interchangeable. Sprint 7 (`DECISIONS.md`, ADR-0039) grew this package
+from the single summary-numbers `AccountState` into a richer, still
+neutral aggregate -- `Portfolio` plus a platform-level `Position` --
+without changing `AccountState` at all.
 
-- **Inputs:** none -- `AccountState` is a plain data model, constructed
-  directly by whatever needs to describe an account (a broker's
-  `get_account()`, `PaperBroker.account_state`, a test).
+- **Inputs:** none -- both `AccountState` and `Position` are plain data
+  models, constructed directly by whatever needs to describe an account
+  or a holding (a broker's `get_account()`, `PaperBroker.account_state`,
+  `Portfolio.open_position()`, a test).
 - **Outputs:** `AccountState` (`equity: float` validated `> 0`,
   `open_exposure: float` validated `>= 0`, defaults to `0.0`).
+  `Portfolio` (cash plus open `Position`s; `equity`, `total_exposure`,
+  `symbol_exposure(symbol)`, `position_count`, `positions`/
+  `closed_positions` as defensive copies, `to_account_state()`).
+  `Position` (symbol, side, signed quantity, entry price/timestamp,
+  optional stop/current price, `OPEN`/`CLOSED` lifecycle, realized/
+  unrealized P&L).
 - **Key files:**
   - `models.py` -- `AccountState`, moved here verbatim from
     `src/risk/models.py` -- same fields, same `__post_init__`
-    validation, no behavior change.
+    validation, no behavior change. `Portfolio` (Sprint 7, ADR-0039,
+    new) -- a regular class, not a dataclass (matches `PaperBroker`'s
+    own convention, since it protects a real invariant: its positions
+    dict must stay consistent with `cash`). `open_position()`/
+    `close_position()` move cash by `-quantity * entry_price`/
+    `+quantity * exit_price` uniformly for `LONG` and `SHORT` (signed
+    quantity does the work, no branch needed) and raise on
+    scaling into an already-held symbol -- `Portfolio` does not support
+    that this sprint, matching `PaperBroker`. `equity`/`total_exposure`
+    reuse the same "value at `valuation_price`, falling back to
+    `entry_price` when no `current_price` is known" formula
+    `PaperBroker.account_state` already uses -- no new mark-to-market
+    capability introduced. `to_account_state()` bridges back for any
+    caller (e.g. `PositionSizer`) that only needs the two summary
+    numbers.
+  - `position.py` (Sprint 7, ADR-0039, new) -- `PositionSide`
+    (`LONG`/`SHORT`), `PositionLifecycle` (`OPEN`/`CLOSED` only --
+    "FLAT" is represented by *absence* from `Portfolio.positions`, not
+    a third enum member; see the module's own docstring), `Position`.
+    Deliberately distinct from, and does not replace,
+    `src.execution.models.Position` (the older, lighter fill-
+    bookkeeping record `PaperBroker` already owns) -- see
+    `src/execution`'s section below for how the two stay in sync.
 - **Does not:** know anything about brokers, risk limits, position
-  sizing, or execution -- it is a value object, nothing more. Does not
-  import from `src/broker`, `src/risk`, or `src/execution` -- if it
-  ever did, the whole point of extracting it would be defeated;
-  `tests/test_architecture.py` enforces this with a static source
-  check, not just this docstring.
+  sizing, or execution -- it is a set of value objects plus one small
+  aggregate, nothing more. Does not import from `src/broker`,
+  `src/risk`, or `src/execution` -- if it ever did, the whole point of
+  extracting it would be defeated; `tests/test_architecture.py` enforces
+  this with a static source check, not just this docstring (and the
+  check globs every file in the package, so `position.py` is covered
+  automatically). Consequently `Portfolio` has no method that accepts an
+  `src.execution.models.Fill` directly -- `src.execution.portfolio_sync.
+  apply_fill_to_portfolio()` is the small glue living on the allowed
+  side of that boundary instead (`execution --> portfolio` already
+  exists; the reverse never will). Does not implement partial-fill or
+  position-scaling lifecycle states -- `PaperBroker` doesn't support
+  those operations, so `Position`/`Portfolio` don't carry states for
+  them either.
 - **Depends on:** nothing else in `src/` -- like `src/signals` and
   `src/utils`, it's foundational infrastructure other capabilities
   build on, not the other way around. Extension Cost (ADR-0014): the
-  move itself touched `src/risk/models.py`, `src/risk/engine.py`,
+  original move touched `src/risk/models.py`, `src/risk/engine.py`,
   `src/risk/__init__.py`, `src/broker/base.py` and all four concrete
   brokers, and `src/execution/engine.py` (7 files, all import-path
-  updates only, no behavior change) -- proportionate for a
-  dependency-direction correction that fixes an actual architectural
-  mistake, not routine churn.
+  updates only, no behavior change). Sprint 7's `Portfolio`/`Position`
+  addition was purely additive on top -- two new files inside this
+  package, no existing file in it modified.
 
 ### `src/risk`
 
 **Purpose:** decide how large a position to take for a signal -- and
 whether to take one at all -- given the account's current state.
-Sprint 4 (`DECISIONS.md`, ADR-0021).
+Sprint 4's `PositionSizer` (`DECISIONS.md`, ADR-0021) answers this from
+a fixed allocation fraction; Sprint 7's `PortfolioRiskEngine`
+(`DECISIONS.md`, ADR-0039) answers it from a genuine, stop-based risk
+budget plus portfolio-level constraints -- a distinct question, in a
+distinct class, standalone from the first.
 
-- **Inputs:** a `Signal` (must be `LONG` or `SHORT`), an
-  `src.portfolio.AccountState` (`equity`, `open_exposure`), and the
+- **Inputs (`PositionSizer`):** a `Signal` (must be `LONG` or `SHORT`),
+  an `src.portfolio.AccountState` (`equity`, `open_exposure`), and the
   instrument's current `price`.
-- **Outputs:** a `SizingDecision` (`approved`, `position_size`,
-  `capital_allocated`, `reason`).
+- **Outputs (`PositionSizer`):** a `SizingDecision` (`approved`,
+  `position_size`, `capital_allocated`, `reason`).
+- **Inputs (`PortfolioRiskEngine`, Sprint 7):** a `Signal` (must be
+  `LONG` or `SHORT`), an `src.portfolio.Portfolio` (cash, open
+  positions, exposure), a proposed `entry_price`, and a proposed
+  `stop_price` (must be on the correct side of `entry_price` for the
+  signal's direction, and not equal to it).
+- **Outputs (`PortfolioRiskEngine`):** a `RiskDecision` -- always,
+  never a raised exception for a business-rule rejection (only for a
+  `FLAT` signal, which this engine doesn't size at all).
 - **Key files:**
   - `engine.py` -- `PositionSizer.size(signal, account, price)`. Sizes
     at a **fixed** fraction of equity
@@ -651,34 +714,112 @@ Sprint 4 (`DECISIONS.md`, ADR-0021).
     (`RiskLimits.max_portfolio_exposure_pct`, default 50% of equity)
     rather than rejecting outright when the full allocation doesn't
     fit; only rejects (`approved=False`) when there's no headroom left
-    at all. `LONG` and `SHORT` sized identically.
+    at all. `LONG` and `SHORT` sized identically. Untouched by Sprint 7.
   - `models.py` -- `RiskLimits` (validated percentages, `(0, 1]`;
     `allocation_per_trade_pct`'s docstring states explicitly this is
-    capital allocation/exposure, not maximum loss -- true stop-based
-    risk sizing is a distinct, unbuilt capability), `SizingDecision`.
-    `AccountState` no longer lives here -- see `src/portfolio` above
-    (`DECISIONS.md`, ADR-0031); `src/risk/__init__.py` still re-exports
-    it from `src.portfolio.models` so existing external imports of
+    capital allocation/exposure, not maximum loss), `SizingDecision` --
+    both untouched by Sprint 7. `PortfolioRiskLimits` (Sprint 7, new) --
+    `risk_pct_per_trade`, optional `max_symbol_exposure_pct`, optional
+    `max_concurrent_positions`, `min_quantity` (default `1`) -- a
+    separate class from `RiskLimits`, not new fields added to it, since
+    `PortfolioRiskEngine` is constructed with *both*
+    (`RiskLimits.allocation_per_trade_pct`/`max_portfolio_exposure_pct`
+    are reused for the allocation and total-exposure checks, not
+    duplicated). `RejectionReason(str, Enum)` (Sprint 7, new, 13
+    members) -- a stable, serializable enum (like `Interval`,
+    ADR-0038) used both for why a decision was rejected and, as a
+    tuple, which constraint(s) reduced an approved decision's quantity.
+    `RiskDecision` (Sprint 7, new, frozen dataclass) -- every
+    intermediate quantity (`risk_quantity`, `capital_quantity`,
+    `allocation_quantity`, `portfolio_exposure_quantity`,
+    `symbol_exposure_quantity`), the final outcome
+    (`final_approved_quantity`, `limiting_constraint`,
+    `rejection_reason`), and `as_sizing_decision()` to adapt into the
+    older `SizingDecision` shape so `PaperBroker` never has to learn
+    about `RiskDecision` directly. `AccountState` no longer lives here
+    -- see `src/portfolio` above (`DECISIONS.md`, ADR-0031);
+    `src/risk/__init__.py` still re-exports it from
+    `src.portfolio.models` so existing external imports of
     `src.risk.AccountState` keep working.
-- **Does not:** scale size by `Signal.confidence` -- deliberately
-  deferred, since there's no validated relationship yet between a
-  confidence score and how much capital it should be trusted with.
-  Does not cap the number of concurrent open positions -- only a
-  percentage-of-equity portfolio cap exists today. Does not enforce
-  whole-share/lot rounding -- fractional `position_size` is allowed;
-  rounding to a tradable lot is an execution-layer concern, deferred
-  the same way ADR-0011 deferred realistic execution mechanics out of
-  `Backtester`. Does not implement true risk-based (stop-distance)
-  position sizing -- `allocation_per_trade_pct` was renamed to describe
-  what it actually does, not redefined to do something new (ADR-0032).
-  Is not wired into `Backtester` or a real strategy loop -- `src/execution`
-  (below) consumes its output directly, but only in tests that
-  construct a `SizingDecision` and hand it to `PaperBroker`, not a real
-  end-to-end run yet.
+  - `portfolio_risk.py` (Sprint 7, new) -- `PortfolioRiskEngine.decide(signal,
+    portfolio, entry_price, stop_price) -> RiskDecision`. Two-stage
+    model: Stage A computes `risk_quantity =
+    floor(equity * risk_pct_per_trade / abs(entry_price - stop_price))`
+    -- a hard ceiling nothing in Stage B may ever exceed; Stage B
+    computes capital/allocation/total-exposure/symbol-exposure ceilings
+    independently from the same proposed trade and takes their `min()`
+    against `risk_quantity`. Rejects a call for an already-held symbol
+    with `POSITION_SCALING_NOT_SUPPORTED` before any quantity math runs
+    (matches `PaperBroker`'s one-position-per-symbol limitation);
+    raises `ValueError` on a `FLAT` signal, the same restriction
+    `PositionSizer.size()` already has, since closing is never
+    risk-gated by this engine (a `FLAT` signal only reduces exposure,
+    nothing to constrain). A `SHORT`'s `capital_quantity` is `None`,
+    not a fabricated number -- `PaperBroker` models short opens as an
+    immediate, uncollateralized cash credit, so there is no capital
+    ceiling to compute under that model. See the module's own docstring
+    for the full stop-loss-semantics disclaimer (a stop here sizes a
+    position, it is not a guaranteed fill price, maximum realized loss,
+    or broker stop-order behavior of any kind).
+- **Does not (either engine):** implement Kelly criterion sizing, VaR/
+  CVaR, correlation-aware exposure, portfolio optimization, factor
+  models, volatility targeting, or any ML-based risk model -- all
+  explicitly out of scope for Sprint 7 (`DECISIONS.md`, ADR-0039). Does
+  not support partial-fill or position-scaling (`PortfolioRiskEngine`
+  rejects it explicitly rather than pretending it would work). Is not
+  wired into `Backtester` -- `Backtester` still sizes every trade as a
+  single unit (ADR-0011), unaffected by either risk engine.
+  `PositionSizer` additionally: does not scale size by
+  `Signal.confidence`; does not cap the number of concurrent open
+  positions (only `PortfolioRiskEngine` does, via
+  `max_concurrent_positions`); does not enforce whole-share/lot
+  rounding. `PortfolioRiskEngine` additionally: does not model real
+  margin for shorts, slippage, or a resting stop order actually
+  triggering -- see `portfolio_risk.py`'s module docstring.
+- **Close/exit intent (Sprint 7 cleanup, `DECISIONS.md` ADR-0040):**
+  `PortfolioRiskEngine.decide_close(signal, portfolio, quantity=None)`
+  is the symmetric counterpart to `decide()` for a `FLAT` signal --
+  `decide()` still raises on `FLAT`, unchanged; `decide_close()` is
+  exclusively the close path (raises on anything else). It is a
+  lookup-and-permit operation, never a sizing one: no risk budget, and
+  `RiskLimits.max_portfolio_exposure_pct`/`PortfolioRiskLimits.
+  max_symbol_exposure_pct` are never consulted, so a close remains
+  permitted even when the portfolio is already over either limit. No
+  open position -> `RejectionReason.NO_POSITION_TO_CLOSE`; a `quantity`
+  other than the position's own full size -> `RejectionReason.
+  UNSUPPORTED_POSITION_OPERATION` (`Portfolio`/`PaperBroker` support no
+  partial reduction). Like `decide()`, it never submits an order --
+  the actual close still goes through `PaperBroker.submit_signal()`
+  directly, unchanged.
+- **Short-margin representation and the Risk/Execution boundary
+  (Sprint 7 cleanup, `DECISIONS.md` ADR-0040):** `CapitalConstraintModel`
+  (`MODELED`/`NOT_MODELED`) is a new enum on `RiskDecision.capital_model`
+  making a `SHORT`'s unmodeled capital ceiling machine-visible --
+  `capital_quantity is None` must always be read alongside it, never
+  taken alone as "capital-unlimited." `RiskDecision.to_trade_intent()
+  -> ApprovedTradeIntent` formalizes the handoff to Execution and
+  enforces, in code, that the quantity Execution receives can never
+  exceed what was approved (raises otherwise) -- composing rather than
+  duplicating `RiskDecision`'s data. Neither changes what `PaperBroker`
+  actually consumes (`as_sizing_decision()`, unchanged).
 - **Depends on:** `src/signals` (for `Signal`/`SignalDirection`),
-  `src/portfolio` (for `AccountState`, since ADR-0031). Extension Cost
-  (ADR-0014): 0 originally -- purely additive, nothing in
-  `src/backtesting`, `src/strategies`, or `src/signals` was changed.
+  `src/portfolio` (for `AccountState` and, as of Sprint 7, `Portfolio`).
+  Never `src/broker` or `src/execution` --
+  `tests/test_architecture.py::test_risk_modules_do_not_import_src_broker_or_src_execution`
+  enforces this with a static source check (Sprint 7 hands a structured
+  `RiskDecision` back to the caller; it never reaches into execution or
+  broker itself), and the reverse edge --
+  `test_execution_does_not_duplicate_risk_sizing_logic` (ADR-0040) --
+  confirms `src/execution` never imports the risk-computation symbols
+  either, only the plain `SizingDecision` shape it has always consumed.
+  Extension Cost (ADR-0014): `PositionSizer` was 0 originally; Sprint
+  7's `PortfolioRiskEngine` addition was also purely additive -- one new
+  file (`portfolio_risk.py`) plus new classes appended to the existing
+  `models.py`, nothing in `src/backtesting`, `src/strategies`,
+  `src/signals`, or `PositionSizer` itself touched. The ADR-0040
+  cleanup was likewise purely additive on top -- `decide_close()`, the
+  new enum/dataclass, and `to_trade_intent()` all extend `models.py`/
+  `portfolio_risk.py` without changing any existing method or field.
 
 ### `src/execution`
 
@@ -736,10 +877,31 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
   `tests/test_pipeline_contract.py` prove it composes with a real
   strategy's signals, but only as tests, not as production wiring.
 - **Depends on:** `src/signals` (for `Signal`/`SignalDirection`),
-  `src/portfolio` (for `AccountState`, since ADR-0031), `src/risk` (for
+  `src/portfolio` (for `AccountState`, since ADR-0031, and as of Sprint 7
+  for `Portfolio`/`Position` via `portfolio_sync.py`), `src/risk` (for
   `SizingDecision`). Extension Cost (ADR-0014): 0 originally -- purely
   additive, nothing in `src/risk`, `src/signals`, `src/backtesting`, or
-  `src/strategies` was changed.
+  `src/strategies` was changed. Sprint 7's `portfolio_sync.py` addition
+  was likewise purely additive -- `engine.py`/`models.py` untouched.
+
+  **`portfolio_sync.py`** (Sprint 7, `DECISIONS.md` ADR-0039, new) --
+  `apply_fill_to_portfolio(portfolio, fill, stop_price=None) ->
+  Position`. `src/portfolio` cannot import `Fill`/`Order` (that would
+  cross the dependency-isolation boundary
+  `test_portfolio_package_depends_on_nothing_else_in_this_codebase`
+  protects), so this small glue function lives here instead, on the
+  allowed side of the existing `execution --> portfolio` edge: it reads
+  a `Fill` `PaperBroker.submit_signal()` already produced and calls
+  `Portfolio.open_position()`/`close_position()` accordingly (inferring
+  which the same way `PaperBroker._fill()` does -- no open position for
+  this symbol means an open, an existing one means a close).
+  `PaperBroker` itself is not modified by this -- a caller that wants
+  both a `PaperBroker` simulation and a risk-facing `Portfolio` applies
+  the same `Fill` to both, explicitly, via this one function. This is a
+  deliberate, documented duplication (`Portfolio` maintains its own
+  cash/positions state mirrored from the same fills, rather than either
+  wrapping or modifying `PaperBroker`'s tested internals) -- see
+  `DECISIONS.md`, ADR-0039.
 
 ### `src/broker`
 

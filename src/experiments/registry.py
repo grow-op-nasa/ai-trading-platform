@@ -20,22 +20,31 @@ decision was KEEP") is the whole point.
     )
     print(registry.get_experiment(experiment_id).summary())
 
-Deliberately decoupled from `src/backtesting`: this module knows
-nothing about `BacktestResult` or `Trade` -- it stores whatever dicts
-it's given. The caller is responsible for turning two `BacktestResult`
-objects into `metrics_before`/`metrics_after` dicts.
+Deliberately decoupled from `src/backtesting`: `log_experiment()` itself
+knows nothing about `BacktestResult` or `Trade` -- it stores whatever
+dicts it's given for `metrics_before`/`metrics_after`. The richer,
+additive persistence methods below (`save_trades`, `save_equity_curve`,
+`save_portfolio`, `save_research_report`) do know about those shapes,
+the same way `save_signals`/`save_spec` already know about `Signal`/
+`ExperimentSpec` -- each is its own small, optional table, never a
+required part of logging an experiment.
 
 **Scope grows deliberately, one artifact at a time.** Signals are
 stored as first-class rows (`DECISIONS.md`, ADR-0016); as of Sprint 6,
 one `ExperimentSpec` per experiment is too (`save_spec()`/`get_spec()`,
-ADR-0035) -- the reproducible starting-point of the long-term chain
-this registry is working toward: strategy/version -> parameters ->
-dataset/version -> signals -> trades -> metrics -> attribution ->
-report. Trades, attribution, and research reports still remain
-in-memory, produced on demand from a `BacktestResult`/`AttributionReport`
-pair (ADR-0019, ADR-0020) -- linking those into the registry too is
-real future work, not started this round. Tracked as future work in
-`ROADMAP.md`/`PROJECT_STATE.md`.
+ADR-0035). As of Sprint 9 (`DECISIONS.md`, ADR-0042), so are a
+backtest's `Trade` list, its equity curve, the `Portfolio` its signals
+resolved to after paper execution, and its `ResearchReport` --
+completing enough of the long-term chain (strategy/version ->
+parameters -> dataset/version -> signals -> trades -> metrics ->
+attribution -> report) that the Analytics & Dashboard layer can inspect
+a *past* experiment in full, not only one just run in the same process.
+Each is its own table, written once per experiment by
+`scripts/run_experiment.py` immediately after `log_experiment()`
+returns an id -- an experiment logged before Sprint 9 simply has no
+rows in these tables, and every accessor below returns an explicit
+"nothing here" value (`None`, `[]`, or an empty `pd.Series`) rather
+than fabricating one.
 """
 
 from __future__ import annotations
@@ -48,9 +57,13 @@ from uuid import UUID
 
 import pandas as pd
 
+from src.backtesting.models import Trade
 from src.data.base import Interval
 from src.experiments.models import Experiment
 from src.experiments.spec import ExperimentSpec
+from src.portfolio.models import Portfolio
+from src.portfolio.position import Position, PositionLifecycle, PositionSide
+from src.research.models import Finding, ResearchFindings, ResearchReport
 from src.signals.models import Signal, SignalDirection
 
 DEFAULT_DB_PATH = Path("data/experiments.db")
@@ -117,6 +130,71 @@ CREATE TABLE IF NOT EXISTS experiment_specs (
 )
 """
 
+# Sprint 9 (DECISIONS.md, ADR-0042): one experiment's Trade list. Many
+# rows per experiment (like signals), no natural unique key of its own
+# -- `save_trades()` deletes and reinserts rather than upserting, so
+# calling it again for the same experiment_id replaces, not duplicates.
+_TRADES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS experiment_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id INTEGER NOT NULL,
+    entry_time TEXT NOT NULL,
+    exit_time TEXT NOT NULL,
+    direction INTEGER NOT NULL,
+    entry_price REAL NOT NULL,
+    exit_price REAL NOT NULL,
+    entry_signal_id TEXT NOT NULL,
+    exit_signal_id TEXT
+)
+"""
+
+# One equity curve per experiment -- stored as a single JSON column
+# (a list of [iso_timestamp, value] pairs) rather than one row per
+# point, the same one-row-per-experiment convention `experiment_specs`
+# already uses. `pd.Series.to_json()`/`pd.read_json()` are deliberately
+# not used here: this keeps the on-disk shape a plain, dependency-free
+# JSON list any future consumer can read without pandas at all.
+_EQUITY_CURVES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS experiment_equity_curves (
+    experiment_id INTEGER PRIMARY KEY,
+    curve_json TEXT NOT NULL
+)
+"""
+
+# The `Portfolio` (`src.portfolio.models.Portfolio`) a backtest's
+# signals resolved to after being paper-executed through Risk ->
+# Execution (`scripts/run_experiment.py`) -- cash plus every open and
+# closed `Position`, serialized field-for-field. This is a snapshot as
+# of the end of that experiment's run, not a live position: Sprint 9's
+# Paper Portfolio view marks it to *current* market price on read
+# (`src.analytics.valuation`), it does not re-simulate anything.
+_PORTFOLIOS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS experiment_portfolios (
+    experiment_id INTEGER PRIMARY KEY,
+    cash REAL NOT NULL,
+    open_positions_json TEXT NOT NULL,
+    closed_positions_json TEXT NOT NULL
+)
+"""
+
+# One `ResearchReport` per experiment -- the narrative `ResearchReporter`
+# already rendered at run time (Claude or the deterministic fallback),
+# stored so the dashboard can display it later without ever calling an
+# LLM itself (Sprint 9 spec, section 28: analytics/dashboard must stay
+# independent of the LLM). `findings_json` is `ResearchFindings.findings`
+# as a list of `{"label": ..., "value": ...}` dicts.
+_RESEARCH_REPORTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS experiment_research_reports (
+    experiment_id INTEGER PRIMARY KEY,
+    strategy_name TEXT NOT NULL,
+    findings_json TEXT NOT NULL,
+    recommendation TEXT,
+    narrative TEXT NOT NULL,
+    rendered_by TEXT NOT NULL,
+    renderer_error TEXT
+)
+"""
+
 
 class ExperimentRegistry:
     """SQLite-backed store of experiment records.
@@ -133,6 +211,10 @@ class ExperimentRegistry:
             conn.execute(_SCHEMA)
             conn.execute(_SIGNALS_SCHEMA)
             conn.execute(_SPECS_SCHEMA)
+            conn.execute(_TRADES_SCHEMA)
+            conn.execute(_EQUITY_CURVES_SCHEMA)
+            conn.execute(_PORTFOLIOS_SCHEMA)
+            conn.execute(_RESEARCH_REPORTS_SCHEMA)
 
     def log_experiment(
         self,
@@ -293,6 +375,172 @@ class ExperimentRegistry:
             ).fetchone()
         return _row_to_spec(row) if row is not None else None
 
+    def save_trades(self, experiment_id: int, trades: list[Trade]) -> None:
+        """Persist `trades` as `experiment_id`'s Trade list (Sprint 9,
+        `DECISIONS.md` ADR-0042).
+
+        Deletes any trades already saved for `experiment_id` first, so
+        calling this again (e.g. a re-run) replaces rather than
+        duplicates -- `Trade` has no id of its own to upsert against,
+        unlike `Signal`/`ExperimentSpec`.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM experiment_trades WHERE experiment_id = ?", (experiment_id,)
+            )
+            conn.executemany(
+                "INSERT INTO experiment_trades "
+                "(experiment_id, entry_time, exit_time, direction, entry_price, "
+                "exit_price, entry_signal_id, exit_signal_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        experiment_id,
+                        trade.entry_time.isoformat(),
+                        trade.exit_time.isoformat(),
+                        trade.direction,
+                        trade.entry_price,
+                        trade.exit_price,
+                        str(trade.entry_signal_id),
+                        str(trade.exit_signal_id) if trade.exit_signal_id is not None else None,
+                    )
+                    for trade in trades
+                ],
+            )
+
+    def get_trades(self, experiment_id: int) -> list[Trade]:
+        """All trades saved under `experiment_id`, ordered by entry
+        time -- `[]` if none were ever saved (including every
+        experiment logged before Sprint 9)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM experiment_trades WHERE experiment_id = ? ORDER BY entry_time",
+                (experiment_id,),
+            ).fetchall()
+        return [_row_to_trade(r) for r in rows]
+
+    def save_equity_curve(self, experiment_id: int, equity_curve: pd.Series) -> None:
+        """Persist `equity_curve` (a `BacktestResult.equity_curve`,
+        timezone-aware `DatetimeIndex`) as `experiment_id`'s equity
+        curve (Sprint 9, `DECISIONS.md` ADR-0042).
+
+        `INSERT OR REPLACE` -- calling this again for the same
+        `experiment_id` overwrites, matching `save_spec()`'s convention.
+        """
+        curve_json = json.dumps(
+            [[timestamp.isoformat(), float(value)] for timestamp, value in equity_curve.items()]
+        )
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO experiment_equity_curves (experiment_id, curve_json) "
+                "VALUES (?, ?)",
+                (experiment_id, curve_json),
+            )
+
+    def get_equity_curve(self, experiment_id: int) -> pd.Series:
+        """`experiment_id`'s equity curve, indexed by a timezone-aware
+        UTC `DatetimeIndex` named `"timestamp"` -- an empty `pd.Series`
+        (never `None`) if none was ever saved, so callers can treat
+        "no equity curve" and "empty equity curve" identically (Sprint 9
+        spec, section 9: no equity observations means undefined
+        analytics, not a special-cased `None`)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT curve_json FROM experiment_equity_curves WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+        if row is None:
+            return pd.Series(dtype=float, name="equity")
+        points = json.loads(row["curve_json"])
+        if not points:
+            return pd.Series(dtype=float, name="equity")
+        index = pd.DatetimeIndex([pd.Timestamp(p[0]) for p in points], name="timestamp")
+        return pd.Series([p[1] for p in points], index=index, name="equity")
+
+    def save_portfolio(self, experiment_id: int, portfolio: Portfolio) -> None:
+        """Persist `portfolio`'s current state (cash, open positions,
+        closed positions) as `experiment_id`'s resulting paper
+        portfolio (Sprint 9, `DECISIONS.md` ADR-0042) -- a snapshot as
+        of whenever this is called, not a live position.
+
+        `INSERT OR REPLACE` -- matches `save_spec()`'s convention.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO experiment_portfolios "
+                "(experiment_id, cash, open_positions_json, closed_positions_json) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    experiment_id,
+                    portfolio.cash,
+                    json.dumps([_position_to_dict(p) for p in portfolio.positions.values()]),
+                    json.dumps([_position_to_dict(p) for p in portfolio.closed_positions]),
+                ),
+            )
+
+    def get_portfolio(self, experiment_id: int) -> Portfolio | None:
+        """Reconstruct `experiment_id`'s saved `Portfolio`, or `None` if
+        none was ever saved (including every experiment logged before
+        Sprint 9, or one whose signals were never paper-executed).
+
+        Reconstructed via `Portfolio.reconstruct()`, not by replaying
+        fills through `open_position()`/`close_position()` -- those
+        simulate a *new* fill (re-deriving `cash`, rejecting a symbol
+        that's already open or closed), which is not what loading an
+        already-correct saved snapshot should do.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM experiment_portfolios WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Portfolio.reconstruct(
+            cash=row["cash"],
+            positions=[_dict_to_position(d) for d in json.loads(row["open_positions_json"])],
+            closed_positions=[
+                _dict_to_position(d) for d in json.loads(row["closed_positions_json"])
+            ],
+        )
+
+    def save_research_report(self, experiment_id: int, report: ResearchReport) -> None:
+        """Persist `report` as `experiment_id`'s research report
+        (Sprint 9, `DECISIONS.md` ADR-0042) -- whatever
+        `ResearchReporter` rendered at run time (Claude or the
+        deterministic fallback), stored exactly as produced so the
+        dashboard can display it later without ever invoking an LLM
+        itself.
+
+        `INSERT OR REPLACE` -- matches `save_spec()`'s convention.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO experiment_research_reports "
+                "(experiment_id, strategy_name, findings_json, recommendation, "
+                "narrative, rendered_by, renderer_error) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    experiment_id,
+                    report.findings.strategy_name,
+                    json.dumps([{"label": f.label, "value": f.value} for f in report.findings.findings]),
+                    report.findings.recommendation,
+                    report.narrative,
+                    report.rendered_by,
+                    report.renderer_error,
+                ),
+            )
+
+    def get_research_report(self, experiment_id: int) -> ResearchReport | None:
+        """`experiment_id`'s saved research report, or `None` if none
+        was ever saved (including every experiment logged before
+        Sprint 9)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM experiment_research_reports WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+        return _row_to_research_report(row) if row is not None else None
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
@@ -323,6 +571,62 @@ def _row_to_spec(row: sqlite3.Row) -> ExperimentSpec:
         dataset_fingerprint=row["dataset_fingerprint"],
         risk_config=json.loads(row["risk_config"]),
         backtest_config=json.loads(row["backtest_config"]),
+    )
+
+
+def _row_to_trade(row: sqlite3.Row) -> Trade:
+    return Trade(
+        entry_time=pd.Timestamp(row["entry_time"]),
+        exit_time=pd.Timestamp(row["exit_time"]),
+        direction=row["direction"],
+        entry_price=row["entry_price"],
+        exit_price=row["exit_price"],
+        entry_signal_id=UUID(row["entry_signal_id"]),
+        exit_signal_id=UUID(row["exit_signal_id"]) if row["exit_signal_id"] else None,
+    )
+
+
+def _position_to_dict(position: Position) -> dict:
+    return {
+        "symbol": position.symbol,
+        "side": position.side.value,
+        "quantity": position.quantity,
+        "entry_price": position.entry_price,
+        "entry_timestamp": position.entry_timestamp.isoformat(),
+        "entry_signal_id": str(position.entry_signal_id),
+        "stop_price": position.stop_price,
+        "current_price": position.current_price,
+        "lifecycle": position.lifecycle.value,
+        "realized_pnl": position.realized_pnl,
+    }
+
+
+def _dict_to_position(data: dict) -> Position:
+    return Position(
+        symbol=data["symbol"],
+        side=PositionSide(data["side"]),
+        quantity=data["quantity"],
+        entry_price=data["entry_price"],
+        entry_timestamp=pd.Timestamp(data["entry_timestamp"]),
+        entry_signal_id=UUID(data["entry_signal_id"]),
+        stop_price=data["stop_price"],
+        current_price=data["current_price"],
+        lifecycle=PositionLifecycle(data["lifecycle"]),
+        realized_pnl=data["realized_pnl"],
+    )
+
+
+def _row_to_research_report(row: sqlite3.Row) -> ResearchReport:
+    findings = [Finding(**f) for f in json.loads(row["findings_json"])]
+    return ResearchReport(
+        findings=ResearchFindings(
+            strategy_name=row["strategy_name"],
+            findings=findings,
+            recommendation=row["recommendation"],
+        ),
+        narrative=row["narrative"],
+        rendered_by=row["rendered_by"],
+        renderer_error=row["renderer_error"],
     )
 
 

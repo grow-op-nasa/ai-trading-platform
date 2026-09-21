@@ -11,6 +11,113 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 9 -- 2026-09-21, Analytics & Dashboard
+
+A read-only Streamlit research and paper-portfolio analytics interface
+over the platform's existing backtesting, experiment, strategy,
+market-data, and portfolio capabilities. Resolves the roadmap
+ambiguity between "Analytics & Dashboard" and "AI" as Sprint 9
+candidates in favor of the former; AI/ML signal generation remains
+explicit future work. See `DECISIONS.md`, ADR-0042 for the full design
+and reasoning.
+
+### Added
+
+- `src/analytics/` (new top-level package) -- deterministic backtest
+  and portfolio analytics, zero Streamlit dependency.
+  - `models.py`: `Metric`/`MetricStatus` (every computed number is
+    explicitly `OK` or `UNDEFINED`, with a reason, never a silent `0`/
+    `inf`/`nan`), `BacktestAnalytics` (metrics plus full identity/
+    provenance), `ComparisonResult`/`ComparisonWarning`,
+    `PositionValuation`/`PortfolioSnapshot`.
+  - `metrics.py`: pure functions over `list[Trade]` + `pd.Series`
+    equity curves -- `total_pnl`, `total_return`, `win_rate`,
+    `profit_factor`, `expectancy`, `average_winner`/`average_loser`,
+    `largest_winner`/`largest_loser`, `winning_trade_count`/
+    `losing_trade_count`, `max_drawdown`, `drawdown_curve`,
+    `sharpe_ratio`, `volatility`, `exposure_time`. Sharpe/volatility
+    reuse `src.backtesting.metrics.infer_periods_per_year` (ADR-0038)
+    for timeframe-aware annualization and return the exact
+    `periods_per_year` used.
+  - `service.py`: `AnalyticsService.analyze_backtest()`/
+    `analyze_experiment()` and `compare_experiments()` -- the single
+    place these metric definitions are wired together; never a
+    composite "best strategy" score.
+  - `valuation.py`: `PortfolioValuationService.value()` (strictly
+    read-only mark-to-market valuation of a `Portfolio` snapshot),
+    `latest_price()`/`default_price_lookup()` (the only sanctioned
+    `MarketDataService` touchpoint in this package or the dashboard).
+- `src/dashboard/` (new top-level package) -- the Streamlit app
+  (`streamlit run src/dashboard/app.py`).
+  - `app.py`: entrypoint, sidebar page routing (Overview, Backtest/
+    Experiment Analysis, Strategy Comparison, Paper Portfolio) and
+    experiment/comparison selectors.
+  - `views.py`: one `render_*` function per page -- every number comes
+    from `src.analytics`; the dashboard never computes a metric itself.
+  - `formatting.py`: pure, Streamlit-free presentation formatting
+    (`format_metric`/`format_number`/`format_interval`/etc.) --
+    rounding/display belongs only here, never in `src.analytics`.
+- `src/experiments/registry.py` -- four new additive tables and eight
+  new methods: `save_trades()`/`get_trades()`,
+  `save_equity_curve()`/`get_equity_curve()`,
+  `save_portfolio()`/`get_portfolio()`,
+  `save_research_report()`/`get_research_report()`. Written once by
+  `scripts/run_experiment.py` immediately after `log_experiment()`
+  returns an id; every accessor returns an explicit "nothing here"
+  value (`[]`, an empty `pd.Series`, or `None`) for an experiment
+  logged before Sprint 9, rather than fabricating one.
+- `src/portfolio/models.py` -- `Portfolio.reconstruct(cash, positions,
+  closed_positions)`: a new classmethod for restoring an
+  already-known, previously-saved `Portfolio` snapshot, distinct from
+  the fill-simulating `open_position()`/`close_position()`.
+- `scripts/run_experiment.py` -- `_fill_signals_through_risk_and_execution()`
+  now also applies every `Fill` to a neutral `Portfolio`
+  (`src.execution.portfolio_sync.apply_fill_to_portfolio`, Sprint 7)
+  alongside the existing `PaperBroker`; `run_experiment()` persists
+  trades/equity curve/portfolio/research report and
+  `ExperimentRunResult` gained a `portfolio` field.
+
+### Tests
+
+- `tests/test_analytics.py` (59) -- `Metric`/`MetricStatus`, every
+  metric function's hand-calculated edge cases (empty/one/all-winning/
+  all-losing/mixed/zero-P&L/zero-variance/flat-curve), timeframe/
+  annualization, `AnalyticsService`, `compare_experiments()`.
+- `tests/test_portfolio_valuation.py` (13) -- long/short/multiple
+  positions, missing-price aggregation, realized-P&L independence,
+  read-only verification, `latest_price()`/`default_price_lookup()`.
+- `tests/test_dashboard_formatting.py` (16) -- unconditional, no
+  Streamlit dependency to skip on.
+- `tests/test_dashboard_smoke.py` (9) -- gated with
+  `pytest.importorskip("streamlit")`, uses
+  `streamlit.testing.v1.AppTest`, fully network-free via a
+  class-level `MarketDataService.get_history` monkeypatch.
+- `tests/test_experiments.py` (+12), `tests/test_run_experiment_script.py`
+  (+2) -- the new registry persistence, round-tripped and scoped
+  per-experiment.
+- `tests/test_architecture.py` (+8) -- analytics does not depend on
+  dashboard or Streamlit; dashboard depends on analytics; no circular
+  dependency; dashboard never imports yfinance or reads the market-data
+  cache directly; `MarketDataService` is constructed only inside
+  `src.analytics.valuation`.
+
+### Notes
+
+- Explicitly not built this round: AI/ML signal generation, LLM
+  trading decisions, AI agents or strategy selection; order placement
+  or broker execution from the dashboard; a global standing
+  paper-trading account (`PaperTradingLoop`, already deferred);
+  real-broker P&L in the dashboard; execution-realism/slippage/
+  commission simulation; tick/order-book data; auth/user management;
+  cloud deployment; a mobile UI; portfolio optimization; new strategy
+  families.
+- Sandbox-verified: 677 passed, same 2 known environment-only
+  artifacts (`test_cli_doctor`'s Python-version check,
+  `test_config`'s logger-stdout check), plus 1 correctly skipped
+  (`test_dashboard_smoke.py`, no Streamlit installed in the sandbox --
+  expected to run for real on the dev machine, where
+  `streamlit==1.59.2` is already pinned in `requirements.txt`).
+
 ## Sprint 8 -- 2026-09-16, Market Data Integrity & Session Awareness
 
 Makes market data trustworthy and reproducible enough for daily and

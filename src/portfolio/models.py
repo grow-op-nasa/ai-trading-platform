@@ -91,6 +91,48 @@ class Portfolio:
         self._positions: dict[str, Position] = {}
         self._closed_positions: list[Position] = []
 
+    @classmethod
+    def reconstruct(
+        cls,
+        cash: float,
+        positions: list[Position] | None = None,
+        closed_positions: list[Position] | None = None,
+    ) -> "Portfolio":
+        """Rebuild a `Portfolio` directly from already-known state --
+        for restoring a previously-saved snapshot (Sprint 9,
+        `DECISIONS.md` ADR-0042: `src.experiments.registry.
+        ExperimentRegistry.get_portfolio()`), not for live trading.
+
+        Deliberately distinct from `open_position()`/`close_position()`:
+        those simulate a *new* fill against the portfolio's current
+        state (deriving `cash` from an entry/exit price, rejecting a
+        symbol that's already open or already closed) -- exactly the
+        wrong operations for loading state that was already correct
+        the moment it was saved. This bypasses that simulation and
+        trusts `cash`/`positions`/`closed_positions` as given.
+
+        Args:
+            cash: the exact cash balance to restore.
+            positions: open positions to restore, keyed internally by
+                their own `symbol`. Defaults to none.
+            closed_positions: closed positions to restore, in order.
+                Defaults to none.
+
+        Raises:
+            ValueError: `cash` is negative, or two entries in
+                `positions` share a `symbol`.
+        """
+        portfolio = cls(cash=cash)
+        for position in positions or []:
+            if position.symbol in portfolio._positions:
+                raise ValueError(
+                    f"{position.symbol!r} appears more than once in positions -- "
+                    f"a Portfolio holds at most one open position per symbol"
+                )
+            portfolio._positions[position.symbol] = position
+        portfolio._closed_positions.extend(closed_positions or [])
+        return portfolio
+
     @property
     def positions(self) -> dict[str, Position]:
         """A defensive copy -- callers can't mutate internal state

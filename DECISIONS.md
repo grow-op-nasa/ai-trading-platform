@@ -2863,3 +2863,187 @@ passed, 0 failed, 0 errors, all green** -- both sandbox-only artifacts
 passed for real (570 sandbox + 2 environment-only = 572), confirming
 the fix is genuine and this sprint is now actually verified, not just
 sandbox-verified. This sprint is confirmed and ready to commit.
+
+---
+
+## ADR-0042: Sprint 9 -- Analytics & Dashboard
+
+**Status:** Sandbox-verified, pending real-`pytest` confirmation on the
+dev machine.
+
+**Context:** `ROADMAP.md` named two different candidates for "Sprint
+9" (Analytics & Dashboard vs. AI); the sprint's own spec explicitly
+resolved this as Candidate A -- Analytics & Dashboard is Sprint 9, and
+Candidate B -- AI is explicit future work, not built this round (no
+ML/LLM signal generation, no AI agents, no AI-driven strategy
+selection anywhere in this change). Investigating the existing system
+first (`src/backtesting`, `src/experiments`, `src/portfolio`,
+`src/execution`, `scripts/run_experiment.py`) surfaced a real gap: the
+Experiment Registry (ADR-0012/ADR-0016/ADR-0035) persisted a `Signal`
+list and an `ExperimentSpec`, but never a backtest's `Trade` list, its
+`equity_curve`, or the `Portfolio` its signals resolved to after paper
+execution -- even though `run_experiment()` computes all three in
+memory before discarding them. A dashboard that wants to browse *past*
+experiments (not just ones just run in the same process) needs that
+data actually saved.
+
+**Decision:**
+
+1. **Registry extension, additive.** Four new tables mirror the
+   existing `save_signals()`/`save_spec()` pattern exactly:
+   `experiment_trades`, `experiment_equity_curves`,
+   `experiment_portfolios`, `experiment_research_reports`, each written
+   once by `run_experiment()` immediately after `log_experiment()`
+   returns an id. `get_trades()`/`get_equity_curve()`/`get_portfolio()`/
+   `get_research_report()` return an explicit "nothing here" value
+   (`[]`, an empty `pd.Series`, or `None`) for any experiment logged
+   before Sprint 9 -- never a fabricated one. Chosen over a
+   session-scoped-only alternative (analytics only ever computed from
+   an in-memory `BacktestResult`, confirmed via `AskUserQuestion` with
+   the user selecting the registry-extension option) because the whole
+   point of a dashboard is inspecting experiments that aren't in memory
+   any more.
+
+2. **`Portfolio.reconstruct()` -- a new, explicit restore path.**
+   `ExperimentRegistry.get_portfolio()` needs to rebuild a `Portfolio`
+   from already-known state (cash, open positions, closed positions)
+   without re-deriving anything. `Portfolio.open_position()`/
+   `close_position()` are the wrong tool for this: they simulate a
+   *new* fill (deriving `cash` from a price, rejecting a symbol that's
+   already open or already closed) -- exactly backwards for loading a
+   snapshot that was already correct the moment it was saved. A new
+   `@classmethod Portfolio.reconstruct(cash, positions, closed_positions)`
+   (`src/portfolio/models.py`) bypasses that simulation and trusts the
+   given state directly. (The first implementation attempt reached into
+   `Portfolio`'s private `_positions`/`_closed_positions` from
+   `src.experiments.registry` directly -- caught during self-review as
+   a package-boundary violation and replaced with this proper public
+   classmethod before it was ever tested.)
+
+3. **`src/analytics/` -- deterministic metrics, no Streamlit
+   dependency.** `models.py` defines `Metric`/`MetricStatus` (every
+   computed number carries an explicit `OK`/`UNDEFINED` status plus a
+   reason -- never a silent `0`, `inf`, or `nan` when the underlying
+   math has no answer: no trades, zero variance, no equity
+   observations, no losing trades for profit factor). `metrics.py`
+   holds pure functions over `list[Trade]` + `pd.Series` equity curves
+   -- `total_pnl`/`total_return` read directly off the equity curve (so
+   they're genuine dollar/fractional totals for the run); win rate,
+   profit factor, expectancy, and average/largest winner/loser are
+   computed from `Trade.return_pct` (a fraction of entry price) rather
+   than a dollar P&L, since this backtester (ADR-0011) has no
+   persistent per-trade share count to derive a dollar amount from
+   without inventing one. Sharpe and volatility both reuse
+   `src.backtesting.metrics.infer_periods_per_year` (ADR-0038) for
+   timeframe-aware annualization -- never a blind `sqrt(252)` -- and
+   both return the exact `periods_per_year` used alongside the value,
+   for the "auditable back to periodicity + annualization convention"
+   requirement. `max_drawdown()` is built on a new `drawdown_curve()`
+   (the running drawdown at every point, not just its minimum) so a
+   caller needing the full series for a chart never has to re-derive
+   the drawdown formula itself. `service.py`'s `AnalyticsService`
+   is the one thing a caller actually talks to:
+   `analyze_backtest(result, spec=None)` for an in-memory result,
+   `analyze_experiment(registry, experiment_id)` for a persisted one
+   (gracefully degrading to all-`UNDEFINED` metrics for a pre-Sprint-9
+   experiment with no saved trades/equity, rather than crashing or
+   fabricating). `compare_experiments()` builds a `ComparisonResult`
+   that flags (never blocks) a material difference in symbol,
+   interval, dataset fingerprint, or strategy-implementation hash
+   across the rows compared -- deliberately no composite "best
+   strategy" score or ranking anywhere in this package.
+   `valuation.py`'s `PortfolioValuationService.value(portfolio,
+   price_lookup)` is strictly read-only (never assigns
+   `Position.current_price`, never calls a `Portfolio` mutator) --
+   calling it twice never changes the `Portfolio` it was given. When
+   any open position lacks a current price, the *aggregate* Metrics
+   (market value, unrealized P&L, equity, exposure, total P&L) become
+   `UNDEFINED` rather than a partial sum that silently omits the
+   unpriced position -- the same "don't fabricate" principle applied
+   to totals, not just individual numbers; the per-position breakdown
+   still shows exactly which symbols were priced. `latest_price()` and
+   the new `default_price_lookup()` factory are the *only* places in
+   this package (or, downstream, `src.dashboard`) that construct or
+   call `MarketDataService` -- the sanctioned boundary chain is
+   Dashboard -> Analytics/Portfolio Valuation -> MarketDataService ->
+   Canonical Data, enforced structurally by
+   `tests/test_architecture.py`.
+
+4. **`src/dashboard/` -- a read-only Streamlit interface over
+   `src.analytics`.** Four pages (`app.py` routes via a sidebar radio;
+   `views.py` renders each): Overview (recent experiments' key metrics,
+   the most recently run experiment's paper-portfolio summary),
+   Backtest/Experiment Analysis (identity/provenance, all metrics,
+   equity/drawdown/cumulative-P&L charts, trade P&L distribution, the
+   trade table, and the persisted research report if any), Strategy
+   Comparison (a side-by-side metrics table plus a bar-aligned equity
+   comparison, with `compare_experiments()`'s warnings surfaced
+   directly), and Paper Portfolio (cash/equity/unrealized/realized P&L,
+   exposure, and the open-position breakdown for one experiment's own
+   paper-executed portfolio -- not a new global paper-trading account:
+   confirmed via `AskUserQuestion`, the user selecting per-experiment
+   portfolio over building the standing "PaperTradingLoop" ROADMAP.md
+   already defers as future work). The dashboard never computes a
+   metric itself -- every number comes from `AnalyticsService`/
+   `PortfolioValuationService`; the one exception is
+   `equity_curve - equity_curve.iloc[0]` for the cumulative-P&L chart,
+   a presentation-only re-basing of an already-computed series, not a
+   new calculation. `formatting.py` is pure, Streamlit-free string
+   formatting (rounding/display belongs only here, never in
+   `src.analytics`, which preserves full precision). `st.cache_data` is
+   used only in `views.py`'s small data-loading functions (a
+   presentation-layer optimization, capped to the most recent 20
+   experiments on the Overview page to avoid recomputing analytics for
+   every experiment ever logged) -- never inside `src.analytics`
+   itself. Every unexpected failure in the Paper Portfolio path
+   (`_safe_value_portfolio`) is logged via loguru and shown as a
+   friendly message, never a raw traceback. Nothing in this package can
+   submit an order, change a risk limit, or mutate a
+   `Portfolio`/`Experiment`/`Strategy` record -- there is no such method
+   anywhere in `src/dashboard`, and a smoke test asserts the underlying
+   `Portfolio` is byte-for-byte unchanged after a full render.
+
+**Explicitly not built this round** (per the sprint's own non-goals):
+AI/ML signal generation, LLM trading decisions, AI agents or AI
+strategy selection (Candidate B, deferred); order placement or broker
+execution from the dashboard; a global standing paper-trading account
+(`PaperTradingLoop`, already deferred by ADR-0021); real-broker P&L in
+the dashboard (Alpaca/IBKR/IG/Tiger are all out of scope this sprint);
+execution-realism/slippage/commission simulation as a new subsystem;
+tick/order-book data, HFT, or websocket infrastructure; auth/user
+management; cloud deployment; a mobile UI; portfolio optimization; new
+strategy families.
+
+**Consequences:** Extension Cost (ADR-0014): two new top-level
+packages (`src/analytics/`: `models.py`, `metrics.py`, `service.py`,
+`valuation.py`; `src/dashboard/`: `app.py`, `views.py`,
+`formatting.py`), four new tables and eight new methods on
+`ExperimentRegistry`, one new classmethod on `Portfolio`, and
+`scripts/run_experiment.py` extended to persist trades/equity/
+portfolio/research-report at its existing single write point -- no
+existing method signature changed except
+`_fill_signals_through_risk_and_execution()`'s new `portfolio`
+parameter (internal to that script, not part of any public API). New
+tests: `tests/test_analytics.py` (59: `Metric`/`MetricStatus`, every
+metric function's hand-calculated edge cases -- empty/one/all-winning/
+all-losing/mixed/zero-P&L/zero-variance/flat-curve -- timeframe/
+annualization, `AnalyticsService`, `compare_experiments()`),
+`tests/test_portfolio_valuation.py` (13: long/short/multiple
+positions, missing-price aggregation, realized-P&L independence,
+read-only verification, `latest_price()`/`default_price_lookup()`),
+`tests/test_dashboard_formatting.py` (16, unconditional -- no
+Streamlit dependency to skip on), `tests/test_dashboard_smoke.py` (9,
+gated with `pytest.importorskip("streamlit")` and using
+`streamlit.testing.v1.AppTest`, fully network-free via a
+class-level `MarketDataService.get_history` monkeypatch), 12 added to
+`tests/test_experiments.py` and 2 added to
+`tests/test_run_experiment_script.py` for the new persistence, and 8
+added to `tests/test_architecture.py` for the Sprint 9 boundaries
+(analytics does not depend on dashboard or Streamlit; dashboard
+depends on analytics; no circular dependency; dashboard never imports
+yfinance or reads the cache directly; `MarketDataService` is
+constructed only inside `src.analytics.valuation`). Sandbox-verified:
+677 passed, same 2 known environment-only artifacts, plus 1 correctly
+skipped (`test_dashboard_smoke.py`, no Streamlit installed in this
+sandbox -- expected to run for real on the dev machine, where
+`streamlit==1.59.2` is already pinned in `requirements.txt`).

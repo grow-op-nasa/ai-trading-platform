@@ -688,28 +688,85 @@ green** -- both previously sandbox-only artifacts passed for real.
 Sprint 8, including this cleanup, is now genuinely verified. See
 `DECISIONS.md`, ADR-0041 for the full account.
 
-## Sprint 7 (superseded) -- Analytics & Dashboard (planned, not yet built)
+## Sprint 9 -- Analytics & Dashboard ✅ Complete (sandbox-verified, pending real-pytest confirmation)
 
-Originally slated for Sprint 7; re-sequenced (not abandoned) when the
-portfolio-aware risk requirement took priority, then again when the
-market-data integrity requirement (Sprint 8, `DECISIONS.md` ADR-0041)
-took priority. Remains future work -- next up is Sprint 9, unless a
-subsequent review re-sequences it again.
+Originally slated for Sprint 7; re-sequenced twice (not abandoned) --
+first when the portfolio-aware risk requirement took priority
+(Sprint 7, `DECISIONS.md` ADR-0039), then again when the market-data
+integrity requirement took priority (Sprint 8, ADR-0041). Now built,
+resolving the Sprint 9 roadmap ambiguity in favor of Candidate A
+(Analytics & Dashboard) over Candidate B (AI, moved below as future
+work). See `DECISIONS.md`, ADR-0042 for the full design and reasoning.
 
-- `src/analytics/`: backtest performance metrics (Sharpe, drawdown,
-  win rate) and live P&L tracking.
-- `src/dashboard/`: Streamlit UI over `data`, `strategies`, and
-  `analytics` -- a way to see the system running, not a place where
-  new logic lives.
+- ✅ **`src/analytics/`**: deterministic, no-Streamlit-dependency
+  backtest performance metrics -- `Metric`/`MetricStatus` (every
+  computed number is either a real value or an explicit `UNDEFINED`
+  with a reason, never a silently fabricated `0`/`inf`/`nan`);
+  `AnalyticsService.analyze_backtest()`/`analyze_experiment()`
+  (Sharpe, volatility, max drawdown, win rate, profit factor,
+  expectancy, average/largest winner/loser -- the last six in
+  return-fraction space, since `Trade` has no persistent share count
+  to derive a dollar figure from without inventing one);
+  `compare_experiments()` (flags, never blocks, material differences
+  in symbol/interval/dataset/strategy-version -- deliberately no
+  composite "best strategy" score); `PortfolioValuationService`
+  (read-only mark-to-market snapshot of a `Portfolio` -- never
+  assigns `Position.current_price`, degrades any position missing a
+  price to an explicit `UNDEFINED` aggregate rather than a silently
+  partial sum, while still showing the per-position breakdown).
+  `ExperimentRegistry` extended to persist trades/equity
+  curve/portfolio snapshot/research report per experiment -- the gap
+  that made a `PortfolioValuationService`-shaped read possible at all
+  for a stored experiment.
+- ✅ **`src/dashboard/`**: read-only Streamlit UI over `analytics` --
+  Overview, Experiment Analysis, Comparison, and Paper Portfolio
+  pages. Never computes its own metrics (everything comes from
+  `AnalyticsService`/`PortfolioValuationService`), never bypasses
+  `MarketDataService` (the one price touchpoint goes through
+  `analytics.valuation.default_price_lookup()`, confirmed by a
+  dedicated architecture test after an early draft was caught
+  constructing `MarketDataService` directly), and structurally cannot
+  submit orders or mutate `Portfolio`/experiment state -- a place to
+  see the system running, not a place where new logic lives.
+- ✅ **~97 new tests**: `tests/test_analytics.py` (59, hand-calculable
+  edge cases + timeframe/annualization + comparison + degraded-legacy-
+  experiment cases), `tests/test_portfolio_valuation.py` (13, incl.
+  a read-only-invariant test and `default_price_lookup()`'s
+  `MarketDataService` construction), `tests/test_dashboard_formatting.py`
+  (16, unconditional), `tests/test_dashboard_smoke.py` (9, network-free
+  `streamlit.testing.v1.AppTest`, gated with
+  `pytest.importorskip("streamlit")` so a machine without Streamlit
+  skips cleanly rather than failing), plus 8 added to
+  `tests/test_architecture.py` for the new package boundaries and
+  extensions to `tests/test_experiments.py`/`test_run_experiment_script.py`
+  for the registry persistence additions.
 
-## Sprint 9+ -- AI (planned)
+**Explicitly not built this round** (per the sprint's own scope):
+real broker P&L wired into the dashboard (paper portfolio only);
+a global `PaperTradingLoop` orchestrating live valuation continuously
+(the dashboard reads a stored snapshot on demand instead); the
+Overview page's experiment list is capped at 20 rather than paginated;
+`infer_periods_per_year()`'s calendar-time (not exchange-session-
+precise) annualization approximation is inherited unchanged from
+ADR-0038, not revisited here.
+
+Sandbox-confirmed at 677 passed, 2 known environment-only failures, 1
+correctly-skipped (`test_dashboard_smoke.py`, no Streamlit in the
+sandbox). Real-`pytest` confirmation on the dev machine (expected
+~688 passed, since `test_dashboard_smoke.py`'s 9 tests should run for
+real there) is still pending -- see `PROJECT_STATE.md`.
+
+## Sprint 10+ -- AI (planned)
 
 - `src/ai/`: ML/LLM-based signal generation, consumed by
   `src/strategies` as one signal source among others (see
   `DECISIONS.md`, ADR-0001) -- not a rewrite of the strategy layer.
   Specific approach (classic ML on engineered features vs. LLM-based
   reasoning over market context) to be decided closer to the sprint,
-  once indicators and strategies exist to feed it.
+  once indicators and strategies exist to feed it. This is Sprint 9's
+  Candidate B, deferred (not abandoned) in favor of Analytics &
+  Dashboard (Candidate A, now built above) -- see `DECISIONS.md`,
+  ADR-0042.
 
 ## Ongoing, not sprint-scoped
 

@@ -1,6 +1,27 @@
 # Project State
 
-_Last updated: 2026-09-16 -- **Sprint 8 (Market Data Integrity &
+_Last updated: 2026-09-21 -- **Sprint 9 (Analytics & Dashboard) is
+implemented and sandbox-verified: 677 passed, same 2 known
+environment-only failures, plus 1 correctly-skipped module
+(`tests/test_dashboard_smoke.py` -- no Streamlit in this sandbox).
+Real-`pytest` confirmation on the dev machine, where
+`streamlit==1.59.2` is installed, is pending.** A new `src/analytics/`
+package (`models.py`/`metrics.py`/`service.py`/`valuation.py`) turns a
+backtest or experiment's raw trades/equity curve into deterministic
+metrics -- every value is either a real number or an explicit
+`UNDEFINED` with a reason, never a silently fabricated `0`/`inf`/`nan`
+(`DECISIONS.md`, ADR-0042). A new `src/dashboard/` package is a
+read-only Streamlit interface over it (`streamlit run
+src/dashboard/app.py`): Overview, Backtest/Experiment Analysis,
+Strategy Comparison, and Paper Portfolio pages, none of which can
+submit an order, change a risk limit, or mutate any
+`Portfolio`/`Experiment`/`Strategy` state. `ExperimentRegistry` gained
+additive persistence for a backtest's trades, equity curve, resulting
+`Portfolio`, and research report, so the dashboard can inspect a past
+experiment, not only one just run in the same process. See
+`DECISIONS.md`, ADR-0042 for the full design._
+
+_As of 2026-09-16 -- **Sprint 8 (Market Data Integrity &
 Session Awareness), including its canonicalization-idempotence
 cleanup, is complete and confirmed via real `pytest` on the dev
 machine: 572 passed, 0 failed, 0 errors.** Resolves two long-deferred ADRs (ADR-0006
@@ -692,8 +713,84 @@ For why things were built the way they were, see `DECISIONS.md`.
   known environment-only failures. Confirmed via real `pytest` on the
   dev machine (Python 3.14.6, pytest 9.1.1): **499 passed in 1.18s, all
   green.**
+- ✅ Sprint 9 -- Analytics & Dashboard (`DECISIONS.md`, ADR-0042).
+  Resolves `ROADMAP.md`'s "Analytics & Dashboard vs. AI" ambiguity in
+  favor of Analytics & Dashboard; AI/ML signal generation remains
+  explicit future work. `ExperimentRegistry` gained four additive
+  tables (`experiment_trades`/`experiment_equity_curves`/
+  `experiment_portfolios`/`experiment_research_reports`) so a past
+  experiment's trades, equity curve, resulting `Portfolio`, and
+  research report survive past the process that ran it -- an explicit
+  "nothing here" value (`[]`/empty `pd.Series`/`None`) for anything
+  logged before Sprint 9. `Portfolio.reconstruct()` (new classmethod)
+  restores an already-known snapshot without going through the
+  fill-simulating `open_position()`/`close_position()`. New
+  `src/analytics/` package: `Metric`/`MetricStatus` make every computed
+  number explicitly `OK` or `UNDEFINED` with a reason (never a silent
+  `0`/`inf`/`nan`); `metrics.py`'s pure functions compute total P&L,
+  total return, win rate, profit factor, expectancy, average/largest
+  winner/loser, max drawdown (and the full `drawdown_curve()` it's
+  built on), Sharpe, volatility, and exposure time -- Sharpe/volatility
+  reuse `infer_periods_per_year()` (ADR-0038) for timeframe-aware
+  annualization; `AnalyticsService.analyze_backtest()`/
+  `analyze_experiment()` and `compare_experiments()` are the one thing
+  a caller talks to, with comparison warnings (never a composite "best
+  strategy" score) for material symbol/timeframe/dataset/strategy
+  differences; `PortfolioValuationService.value()` is strictly
+  read-only mark-to-market valuation, with any open position lacking a
+  current price making the *aggregate* metrics `UNDEFINED` rather than
+  a silently partial sum. New `src/dashboard/` package -- a read-only
+  Streamlit app (`streamlit run src/dashboard/app.py`) with four pages
+  (Overview, Backtest/Experiment Analysis, Strategy Comparison, Paper
+  Portfolio) that never computes a metric itself and cannot submit an
+  order, change a risk limit, or mutate any state; the only sanctioned
+  `MarketDataService` touchpoint anywhere in either package is
+  `src.analytics.valuation.latest_price()`/`default_price_lookup()`.
+  New tests: `tests/test_analytics.py` (59), `tests/test_portfolio_valuation.py`
+  (13), `tests/test_dashboard_formatting.py` (16, unconditional),
+  `tests/test_dashboard_smoke.py` (9, `pytest.importorskip("streamlit")`-
+  gated, using `streamlit.testing.v1.AppTest`, fully network-free), 12
+  added to `tests/test_experiments.py`, 2 added to
+  `tests/test_run_experiment_script.py`, 8 added to
+  `tests/test_architecture.py` for the new package-boundary
+  invariants. Extension Cost (ADR-0014): two new top-level packages,
+  four new tables + eight new methods on `ExperimentRegistry`, one new
+  classmethod on `Portfolio`, `scripts/run_experiment.py` extended at
+  its existing single write point -- no existing method signature
+  changed except that script's own internal helper. Confirmed via the
+  sandbox stub-based test runner: **677 passed**, 2 known
+  environment-only failures, 1 correctly-skipped module (no Streamlit
+  in this sandbox). Pending real-`pytest` confirmation on the dev
+  machine.
 
 ## Current Module
+
+**Sprint 9 (Analytics & Dashboard) is implemented and
+sandbox-verified; real-`pytest` confirmation on the dev machine is
+pending.** `src/analytics/` computes deterministic backtest and
+portfolio metrics from a backtest's `Trade` list and equity curve (now
+persisted by `ExperimentRegistry`, not just held in memory) -- every
+metric is either a real, full-precision number or an explicit
+`UNDEFINED` with a stated reason, never a fabricated `0`/`inf`/`nan`.
+Sharpe and volatility reuse Sprint 6's `infer_periods_per_year()`
+(ADR-0038) rather than reinventing timeframe-aware annualization.
+`src/dashboard/` is a read-only Streamlit app over that analytics
+layer -- it never computes a metric itself, never bypasses
+`MarketDataService` for a market price, and cannot submit an order,
+change a risk limit, or mutate any `Portfolio`/`Experiment`/`Strategy`
+state (`tests/test_architecture.py` enforces all three
+structurally). The Paper Portfolio view is scoped to one experiment's
+own paper-executed `Portfolio` at a time (per-experiment, not a new
+global paper-trading account -- ADR-0021's `PaperTradingLoop` stays
+deferred future work), marked to the *current* market price via a new
+`PortfolioValuationService` -- closing the long-standing gap where
+`PaperBroker`/`Portfolio` never marked an open position to market
+(ADR-0022) without changing that platform behavior itself. Sandbox
+suite: **677 passed**, same 2 known environment-only failures, plus 1
+module correctly skipped (`tests/test_dashboard_smoke.py` --
+Streamlit isn't installed in this sandbox; it's pinned in
+`requirements.txt` and expected to run for real on the dev machine).
+See `DECISIONS.md`, ADR-0042 for the full design.
 
 **Sprint 8 (Market Data Integrity & Session Awareness), including its
 canonicalization-idempotence cleanup, is complete and confirmed via
@@ -813,6 +910,20 @@ yfinance API; pre-market/after-hours session support is reserved
 
 ## Next Task
 
+Sprint 9 (Analytics & Dashboard) is implemented and sandbox-verified:
+**677 passed**, same 2 known environment-only failures, plus 1
+module (`tests/test_dashboard_smoke.py`) correctly skipped in this
+sandbox for lack of a Streamlit install. What remains: a real `pytest`
+run on the dev machine (where `streamlit==1.59.2` is already pinned in
+`requirements.txt`) to confirm the full suite, including the 9
+dashboard-smoke tests this sandbox couldn't execute; then the
+`git commit`/`push` for this sprint. Expected real total, if
+everything holds: roughly 688 passed (677 sandbox-passed + 2
+previously-environment-only fixes + 9 dashboard-smoke tests that only
+skipped here) -- an expectation to be confirmed by the actual run, not
+assumed. AI/ML signal generation (`ROADMAP.md`'s other Sprint 9
+candidate) remains explicit future work, not started.
+
 Sprint 8 (Market Data Integrity & Session Awareness) is implemented,
 committed (`53db66c`), and its follow-up canonicalization-idempotence
 cleanup is confirmed via real `pytest` on the dev machine (Python
@@ -821,8 +932,6 @@ record: the sprint's first real-`pytest` run returned 1 failed, 568
 passed, not the "569 passed, 0 failed" this section briefly and
 wrongly claimed before that run had actually happened; see
 `DECISIONS.md`, ADR-0041 for the root cause, fix, and full timeline.)
-Only the cleanup commit and push remain. Sprint 9 (or the re-sequenced
-Analytics & Dashboard scope, see `ROADMAP.md`) begins after that.
 Separately available, none yet explicitly requested: setting
 `TIGER_ID`/`TIGER_PRIVATE_KEY_PATH`/`TIGER_ACCOUNT` to exercise
 `TigerBroker.get_account()` against a real Tiger paper account; setting
@@ -999,40 +1108,80 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
   codebase has been migrated to prefer it yet -- `ExperimentSpec.capture()`
   and `Backtester.run()`'s new `dataset` parameter both still take a
   plain DataFrame/optional dataset, additively, not a required one.
+- Sprint 9's Paper Portfolio view (`DECISIONS.md`, ADR-0042) is scoped
+  strictly to the platform's own `PaperBroker`/`Portfolio` path for one
+  experiment at a time -- real broker P&L (Alpaca/IBKR/IG/Tiger) is not
+  wired into the dashboard, and there is still no global, standing
+  paper-trading account (`ADR-0021`'s `PaperTradingLoop` remains
+  deferred future work; Sprint 9 deliberately did not build it, per
+  explicit `AskUserQuestion` confirmation choosing the per-experiment
+  scope instead). `PortfolioValuationService` marks a saved snapshot to
+  the *current* market price on read, but never re-simulates a trade --
+  `Portfolio`/`PaperBroker` themselves still don't mark to market
+  automatically (ADR-0022 unchanged). The Overview page caps its
+  per-experiment analytics table to the most recent 20 experiments (a
+  guard against recomputing metrics for every experiment ever logged,
+  not real pagination) -- a natural next step if the registry grows
+  large enough for that to matter. `src.analytics.metrics.exposure_time()`/
+  `sharpe_ratio()`/`volatility()` inherit `infer_periods_per_year()`'s
+  existing calendar-time (not exchange-session-aware) approximation
+  from ADR-0038 -- unchanged, not revisited this round.
 
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # should show 572 passed on the real dev machine
-                          # (14 architecture + 8 attribution + 12 backtesting
-                          # + 34 broker + 6 cache + 19 calendar + 29 cli/doctor
-                          # + 7 config + 15 data_canonical + 24 data_validation
+pytest                    # expected ~688 passed on the real dev machine, once
+                          # confirmed (21 architecture + 8 attribution
+                          # + 12 backtesting + 34 broker + 6 cache + 19 calendar
+                          # + 29 cli/doctor + 7 config + 15 data_canonical
+                          # + 24 data_validation + 59 analytics
+                          # + 16 dashboard_formatting + 9 dashboard_smoke
                           # + 11 ema_cross_strategy + 19 execution
-                          # + 12 experiment_spec + 21 experiments + 6 hashing
+                          # + 12 experiment_spec + 33 experiments + 6 hashing
                           # + 15 ibkr + 31 ig + 11 indicators
                           # + 6 integration_paper_trading + 9 intraday_acceptance
                           # + 27 market_data + 3 pipeline_contract + 5 portfolio
                           # + 27 portfolio_position + 58 portfolio_risk
-                          # + 11 reconciliation + 10 regime + 17 research + 17 risk
-                          # + 14 rsi_mean_reversion_strategy + 8 run_experiment_script
+                          # + 13 portfolio_valuation + 11 reconciliation
+                          # + 10 regime + 17 research + 17 risk
+                          # + 14 rsi_mean_reversion_strategy + 9 run_experiment_script
                           # + 13 signals + 10 sprint7_integration + 9 strategy_registry
                           # + 13 strategy_sdk + 15 tiger + 6 timeframe_agnostic)
-                          # -- the sandbox's own stub-based runner shows 570
-                          # (cli/doctor 28/29, config 6/7 -- 2 known
-                          # environment-only failures there, see below).
+                          # -- the sandbox's own stub-based runner shows 677
+                          # passed, 2 known environment-only failures
+                          # (cli/doctor 28/29, config 6/7), plus 1 module
+                          # correctly skipped (dashboard_smoke -- no Streamlit
+                          # installed in this sandbox; its 9 tests only run for
+                          # real, see below). This "~688" figure is an
+                          # expectation, not a confirmed result -- only an
+                          # actual real-pytest run confirms it.
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until
                           # ALPACA_API_KEY/ALPACA_API_SECRET are set)
+streamlit run src/dashboard/app.py
+                          # should open the read-only research dashboard;
+                          # populate data first via
+                          # `python scripts/run_experiment.py` (see "Sprint 9"
+                          # above), otherwise every page shows "No experiments
+                          # found yet"
 ```
 
 Confirmed via the sandbox stub-based test runner
-(`PYTHONPATH=/tmp/stubs:. python3 /tmp/runner_all.py`): **570 passed**,
+(`PYTHONPATH=/tmp/stubs:. python3 /tmp/runner_all.py`): **677 passed**,
 2 known environment-only failures --
 `test_python_version_passes_against_running_interpreter` (sandbox
 Python 3.10 vs. the dev machine's pinned newer version) and
 `test_logger_is_importable_and_callable` (the sandbox's `loguru` stub
-is a no-op and doesn't write to stdout the way real `loguru` does).
+is a no-op and doesn't write to stdout the way real `loguru` does) --
+plus 1 module correctly skipped, `tests/test_dashboard_smoke.py` (its
+own `pytest.importorskip("streamlit")` skips it cleanly since this
+sandbox has no network access to install Streamlit; it's pinned in
+`requirements.txt` and is expected to run for real, and pass, on the
+dev machine). **Sprint 9's real-`pytest` confirmation is pending** --
+report back the actual dev-machine total once run, per the project's
+standing verification process; do not treat the "~688" estimate above
+as a substitute for that.
 
 **Correction:** an earlier version of this section claimed "Confirmed
 via real `pytest` on the dev machine: 569 passed, 0 failed, 0 errors"

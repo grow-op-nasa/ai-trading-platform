@@ -40,8 +40,10 @@ from src.backtesting.engine import Backtester
 from src.backtesting.models import BacktestResult
 from src.data.base import Interval
 from src.execution.engine import PaperBroker
+from src.execution.portfolio_sync import apply_fill_to_portfolio
 from src.experiments.registry import ExperimentRegistry
 from src.experiments.spec import ExperimentSpec
+from src.portfolio.models import Portfolio
 from src.research.models import ResearchReport
 from src.research.reporter import ResearchReporter
 from src.risk.engine import PositionSizer
@@ -66,10 +68,16 @@ class ExperimentRunResult:
     result: BacktestResult
     attribution: AttributionReport
     report: ResearchReport
+    portfolio: Portfolio
 
 
 def _fill_signals_through_risk_and_execution(
-    signals, candles: pd.DataFrame, sizer: PositionSizer, broker: PaperBroker, symbol: str
+    signals,
+    candles: pd.DataFrame,
+    sizer: PositionSizer,
+    broker: PaperBroker,
+    portfolio: Portfolio,
+    symbol: str,
 ) -> None:
     """Drive `signals` through `PositionSizer` -> `PaperBroker` -- the
     Risk -> Execution -> Trade(Fill) leg of the pipeline that
@@ -79,6 +87,13 @@ def _fill_signals_through_risk_and_execution(
     and `tests/test_integration_paper_trading.py` -- the same pattern,
     reused rather than reinvented, in a real (not test-only) caller.
 
+    Every `Fill` `PaperBroker` produces is also applied to `portfolio`
+    (`src.execution.portfolio_sync.apply_fill_to_portfolio`, Sprint 7)
+    so this run ends with both its `PaperBroker` (execution simulation)
+    and a neutral `Portfolio` (Sprint 9, `DECISIONS.md` ADR-0042: what
+    gets persisted via `ExperimentRegistry.save_portfolio()` and later
+    mark-to-market valued by `src.analytics.valuation`).
+
     A sizing decision that isn't approved (e.g. it would breach
     `max_portfolio_exposure_pct`) is skipped rather than forced through
     -- `PositionSizer` already decided that trade shouldn't happen.
@@ -86,12 +101,14 @@ def _fill_signals_through_risk_and_execution(
     for signal in signals:
         price = float(candles.loc[signal.timestamp, "close"])
         if signal.direction is SignalDirection.FLAT:
-            broker.submit_signal(signal, symbol, price)
+            fill = broker.submit_signal(signal, symbol, price)
+            apply_fill_to_portfolio(portfolio, fill)
             continue
         decision = sizer.size(signal, broker.account_state, price)
         if not decision.approved:
             continue
-        broker.submit_signal(signal, symbol, price, sizing_decision=decision)
+        fill = broker.submit_signal(signal, symbol, price, sizing_decision=decision)
+        apply_fill_to_portfolio(portfolio, fill)
 
 
 def run_experiment(
@@ -158,7 +175,10 @@ def run_experiment(
 
     sizer = PositionSizer(risk_limits)
     broker = PaperBroker(starting_cash=100_000)
-    _fill_signals_through_risk_and_execution(result.signals, candles, sizer, broker, symbol)
+    portfolio = Portfolio(cash=100_000)
+    _fill_signals_through_risk_and_execution(
+        result.signals, candles, sizer, broker, portfolio, symbol
+    )
 
     attribution = PerformanceAttributor().run(result, candles)
     report = ResearchReporter().run(result, attribution)
@@ -183,12 +203,24 @@ def run_experiment(
     )
     registry.save_spec(experiment_id, spec)
 
+    # Sprint 9 (DECISIONS.md, ADR-0042): persist enough of this run for
+    # the Analytics & Dashboard layer to inspect it later, not only in
+    # this same process -- trades and the equity curve for the
+    # Backtest/Experiment Analysis view, the resulting Portfolio for the
+    # Paper Portfolio view, and the research report so the dashboard
+    # never has to call an LLM itself to show one.
+    registry.save_trades(experiment_id, result.trades)
+    registry.save_equity_curve(experiment_id, result.equity_curve)
+    registry.save_portfolio(experiment_id, portfolio)
+    registry.save_research_report(experiment_id, report)
+
     return ExperimentRunResult(
         experiment_id=experiment_id,
         spec=spec,
         result=result,
         attribution=attribution,
         report=report,
+        portfolio=portfolio,
     )
 
 

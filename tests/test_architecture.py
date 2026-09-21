@@ -318,6 +318,140 @@ def test_market_data_service_is_the_only_thing_that_imports_yfinance_provider():
     assert "yfinance_provider" in service_source
 
 
+# ---------------------------------------------------------------------------
+# Sprint 9 (DECISIONS.md, ADR-0042): "The dashboard is an interface over
+# the platform; it is not the platform." Dependency direction is
+# strictly Data/Experiments/Backtesting/Portfolio -> Analytics ->
+# Dashboard -- analytics never depends on the dashboard or on
+# Streamlit, and the dashboard never bypasses MarketDataService for a
+# market price.
+# ---------------------------------------------------------------------------
+
+
+def test_analytics_package_does_not_depend_on_dashboard():
+    # Checks actual import statements, not prose -- src/analytics's own
+    # docstrings legitimately *mention* src.dashboard to explain the
+    # dependency direction, without importing it.
+    import_pattern = re.compile(r"^\s*(?:from|import)\s+src\.dashboard\b", re.MULTILINE)
+    for path in (SRC_ROOT / "analytics").glob("*.py"):
+        text = path.read_text()
+        match = import_pattern.search(text)
+        assert match is None, (
+            f"{path.name} must not depend on src.dashboard -- the dashboard is an "
+            f"interface over analytics, never the reverse (DECISIONS.md, ADR-0042). "
+            f"Found an import of src.dashboard."
+        )
+
+
+def test_analytics_package_has_no_streamlit_dependency():
+    import_pattern = re.compile(r"^\s*(?:from|import)\s+streamlit\b", re.MULTILINE)
+    for path in (SRC_ROOT / "analytics").glob("*.py"):
+        text = path.read_text()
+        match = import_pattern.search(text)
+        assert match is None, (
+            f"{path.name} must not depend on streamlit -- src.analytics has to be "
+            f"usable from a CLI, a test, or the dashboard equally, and must never "
+            f"require Streamlit to be installed at all (DECISIONS.md, ADR-0042). "
+            f"Found an import of streamlit."
+        )
+
+
+def test_dashboard_depends_on_analytics():
+    # The positive half of the boundary: confirms src.dashboard actually
+    # uses src.analytics for its computations, rather than the negative
+    # check above vacuously passing because the two packages never
+    # interact at all.
+    import_pattern = re.compile(r"^\s*(?:from|import)\s+src\.analytics\b", re.MULTILINE)
+    offending = [
+        path.name
+        for path in (SRC_ROOT / "dashboard").glob("*.py")
+        if import_pattern.search(path.read_text())
+    ]
+    assert offending, (
+        "src.dashboard must depend on src.analytics for its metrics/valuation -- "
+        "found no file in src/dashboard importing from src.analytics at all "
+        "(DECISIONS.md, ADR-0042)."
+    )
+
+
+def test_no_circular_dependency_between_analytics_and_dashboard():
+    # Sprint 9 spec: dashboard -> analytics is required, analytics ->
+    # dashboard is forbidden -- together, no cycle between the two.
+    dashboard_imports_analytics = any(
+        re.search(r"^\s*(?:from|import)\s+src\.analytics\b", path.read_text(), re.MULTILINE)
+        for path in (SRC_ROOT / "dashboard").glob("*.py")
+    )
+    analytics_imports_dashboard = any(
+        re.search(r"^\s*(?:from|import)\s+src\.dashboard\b", path.read_text(), re.MULTILINE)
+        for path in (SRC_ROOT / "analytics").glob("*.py")
+    )
+    assert dashboard_imports_analytics is True
+    assert analytics_imports_dashboard is False
+
+
+def test_dashboard_does_not_import_yfinance():
+    # Neither the raw `yfinance` package nor the internal
+    # YFinanceProvider wrapper -- every market price the dashboard shows
+    # must come from src.analytics.valuation.latest_price(), which goes
+    # through MarketDataService (DECISIONS.md, ADR-0042, section 23).
+    import_pattern = re.compile(
+        r"^\s*(?:from\s+yfinance\b|import\s+yfinance\b|"
+        r"from\s+src\.data\.yfinance_provider\s+import|"
+        r"import\s+src\.data\.yfinance_provider\b|"
+        r"from\s+src\.data(?:\.\w+)?\s+import\s+.*\bYFinanceProvider\b)",
+        re.MULTILINE,
+    )
+    offenders = [
+        path.name
+        for path in (SRC_ROOT / "dashboard").glob("*.py")
+        if import_pattern.search(path.read_text())
+    ]
+    assert offenders == [], (
+        f"src/dashboard must never import yfinance (directly or via "
+        f"YFinanceProvider) -- market prices must flow through "
+        f"MarketDataService only (DECISIONS.md, ADR-0042). Offending files: "
+        f"{offenders}"
+    )
+
+
+def test_dashboard_does_not_read_the_market_data_cache_directly():
+    # The other half of "doesn't bypass MarketDataService": no direct
+    # use of CacheManager or a raw cache file read either.
+    import_pattern = re.compile(r"^\s*(?:from|import)\s+src\.utils\.cache\b", re.MULTILINE)
+    offenders = [
+        path.name
+        for path in (SRC_ROOT / "dashboard").glob("*.py")
+        if import_pattern.search(path.read_text())
+    ]
+    assert offenders == [], (
+        f"src/dashboard must never read the market-data cache directly -- prices "
+        f"must flow through MarketDataService (via src.analytics.valuation), not "
+        f"src.utils.cache (DECISIONS.md, ADR-0042). Offending files: {offenders}"
+    )
+
+
+def test_dashboard_only_touches_market_data_service_via_analytics_valuation():
+    # Positive half: MarketDataService is only ever constructed inside
+    # src.analytics.valuation (the one sanctioned touchpoint), never
+    # directly inside src.dashboard itself -- confirms the boundary is
+    # real, not just "never bypassed by accident because it's never
+    # used at all."
+    valuation_source = (SRC_ROOT / "analytics" / "valuation.py").read_text()
+    assert "MarketDataService" in valuation_source
+
+    direct_construction = re.compile(r"MarketDataService\s*\(")
+    offenders = [
+        path.name
+        for path in (SRC_ROOT / "dashboard").glob("*.py")
+        if direct_construction.search(path.read_text())
+    ]
+    assert offenders == [], (
+        f"src/dashboard must not construct MarketDataService itself -- it should "
+        f"go through src.analytics.valuation.latest_price()/PortfolioValuationService "
+        f"(DECISIONS.md, ADR-0042). Offending files: {offenders}"
+    )
+
+
 def test_account_state_equity_is_computed_from_frozen_entry_price_only():
     from src.risk.models import SizingDecision
 

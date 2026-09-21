@@ -29,9 +29,9 @@ graph TD
     execution[execution: PaperBroker + portfolio_sync]
     broker[broker: BrokerConnection + AlpacaBroker + IBKRBroker + IGBroker + TigerBroker]
     reconciliation[reconciliation: reconcile_fill]
-    analytics[analytics: not yet built]
+    analytics[analytics: AnalyticsService + PortfolioValuationService]
     ai[ai: not yet built]
-    dashboard[dashboard: not yet built]
+    dashboard[dashboard: read-only Streamlit app]
     cli[cli: atp doctor]
 
     config --> data
@@ -65,8 +65,11 @@ graph TD
     execution --> broker
     execution --> reconciliation
     broker --> reconciliation
-    strategies --> analytics
-    data --> dashboard
+    backtesting --> analytics
+    experiments --> analytics
+    portfolio --> analytics
+    data --> analytics
+    analytics --> dashboard
     ai --> strategies
     config --> cli
     data --> cli
@@ -75,22 +78,26 @@ graph TD
     broker --> cli
 ```
 
-`attribution` is not the same thing as the planned `analytics` (still
-not built, and no longer Sprint 7's scope -- see the note below):
-`attribution` explains a single completed backtest (which regime/
-session it did well or badly in), while `analytics` is scoped for
-cross-experiment and live P&L tracking. If that boundary ever gets
-blurry when `analytics` is actually built, revisit here rather than
-letting the two quietly duplicate each other.
+`attribution` is not the same thing as `analytics` (built in Sprint 9,
+`DECISIONS.md` ADR-0042): `attribution` explains a single completed
+backtest (which regime/session it did well or badly in), while
+`analytics` computes the standard metrics set (Sharpe, drawdown, win
+rate, profit factor, ...) plus portfolio valuation, and is the one
+thing `src/dashboard` is allowed to depend on for any calculation.
+`attribution`'s regime-bucketing analysis remains its own thing --
+`analytics` does not duplicate it, and the dashboard doesn't surface
+regime attribution at all this round (a natural future addition, not
+built).
 
-**Sprint 7 built portfolio-aware risk, not analytics/dashboard.** The
-scope originally planned for Sprint 7 in this file (`src/analytics`,
-`src/dashboard`) was superseded before the sprint began by a more
+**Sprint 7 built portfolio-aware risk; Sprint 9 built analytics and
+dashboard.** The Analytics & Dashboard scope originally planned for
+Sprint 7 in this file was superseded before that sprint began by a more
 pressing requirement: moving from simple per-trade allocation to
 genuine, stop-based position sizing plus portfolio-level exposure
-constraints (`DECISIONS.md`, ADR-0039). `src/analytics` and
-`src/dashboard` remain unbuilt, tracked in `ROADMAP.md`, not abandoned
--- they were re-sequenced, not replaced.
+constraints (`DECISIONS.md`, ADR-0039). It was re-sequenced, not
+abandoned -- Sprint 9 (`DECISIONS.md`, ADR-0042) is where `src/analytics`
+and `src/dashboard` were actually built, both now documented in the
+module reference below.
 
 `research` is also distinct from the Sprint 9+ `ai` module: `research`
 turns one completed backtest's evidence into a human-readable summary
@@ -1320,16 +1327,151 @@ guess. See `DECISIONS.md`, ADR-0013.
   `src/broker` -- it reaches into each capability's public API to check
   it, the same way any other consumer would.
 
-### `src/analytics`, `src/ai`, `src/dashboard`
+### `src/analytics`
 
-(`src/research`, `src/risk`, `src/execution`, and `src/broker` are now
-built -- see above -- and no longer belong in this "not yet
-implemented" list.)
+**Purpose:** turn a backtest or experiment's raw trades/equity curve
+into deterministic, decision-useful metrics -- the one thing
+`src/dashboard` is allowed to depend on for any calculation. Sprint 9
+(`DECISIONS.md`, ADR-0042). "The dashboard is an interface over the
+platform; it is not the platform" -- this package is that platform-side
+half.
 
-Not yet implemented -- each currently exists only as an empty package
-with a docstring stating its intended purpose (see `src/__init__.py`
-and each package's `__init__.py`). They'll get their own sections here
-as they're built, following the same purpose/inputs/outputs format.
+- **Inputs:** a `BacktestResult` (in-memory) or an `(ExperimentRegistry,
+  experiment_id)` pair (persisted); a `Portfolio` snapshot plus a
+  `symbol -> price | None` lookup, for valuation.
+- **Outputs:** a `BacktestAnalytics` (every metric as a `Metric` --
+  `value`/`status`/`reason`, `OK` or `UNDEFINED`, never a silent
+  `0`/`inf`/`nan` -- plus full identity/provenance); a `ComparisonResult`
+  (rows plus material-difference warnings, never a composite score); a
+  `PortfolioSnapshot` (cash/market value/realized+unrealized+total P&L/
+  exposure, each a `Metric`, plus a per-position breakdown).
+- **Key files:**
+  - `models.py` -- `Metric`/`MetricStatus`, `BacktestAnalytics`,
+    `ComparisonResult`/`ComparisonWarning`, `PositionValuation`/
+    `PortfolioSnapshot`. Plain dataclasses, no behavior beyond simple
+    constructors (`Metric.of()`/`Metric.undefined()`).
+  - `metrics.py` -- pure functions over `list[Trade]` + `pd.Series`
+    equity curves: `total_pnl`/`total_return` (read directly off the
+    equity curve -- genuine dollar/fractional totals for the whole
+    run); `win_rate`/`profit_factor`/`expectancy`/`average_winner`/
+    `average_loser`/`largest_winner`/`largest_loser` (computed from
+    `Trade.return_pct`, a fraction of entry price, since this
+    backtester has no persistent per-trade share count to derive a
+    dollar P&L from without inventing one); `max_drawdown()` (built on
+    `drawdown_curve()`, the full running-drawdown series, so a caller
+    needing the series for a chart never re-derives the formula);
+    `sharpe_ratio()`/`volatility()` (reuse
+    `src.backtesting.metrics.infer_periods_per_year()`, ADR-0038, for
+    timeframe-aware annualization, returning the exact
+    `periods_per_year` used alongside the value); `exposure_time()`.
+  - `service.py` -- `AnalyticsService.analyze_backtest()`/
+    `analyze_experiment()` (the latter loads trades/equity/spec from
+    the registry, degrading to all-`UNDEFINED` metrics for a
+    pre-Sprint-9 experiment rather than crashing) and
+    `compare_experiments()` (flags, never blocks, a material
+    difference in symbol/interval/dataset-fingerprint/strategy-version
+    across compared rows).
+  - `valuation.py` -- `PortfolioValuationService.value(portfolio,
+    price_lookup)`: strictly read-only (never assigns
+    `Position.current_price`, never calls a `Portfolio` mutator); when
+    any open position lacks a price, the *aggregate* metrics become
+    `UNDEFINED` rather than a silently partial sum, while the
+    per-position breakdown still shows exactly what was priced.
+    `latest_price()`/`default_price_lookup()` are the only places in
+    this package (or, downstream, `src.dashboard`) that construct or
+    call `MarketDataService` -- the sanctioned chain is Dashboard ->
+    Analytics/Portfolio Valuation -> MarketDataService -> Canonical
+    Data.
+- **Does not:** compute a composite "best strategy" score or ranking.
+  Round or format any number for display -- full precision is
+  preserved throughout; rounding belongs only in
+  `src.dashboard.formatting`. Depend on Streamlit at all -- this
+  package must be usable from a CLI, a test, or the dashboard equally
+  (`tests/test_architecture.py` enforces this with a static source
+  check). Fabricate a market price for a symbol none is available for.
+  Mutate a `Portfolio`, `Experiment`, or any other platform state --
+  every method here is a pure read.
+- **Depends on:** `src/backtesting` (for `Trade`, and
+  `infer_periods_per_year()`), `src/experiments` (for
+  `ExperimentRegistry`/`ExperimentSpec`), `src/portfolio` (for
+  `Portfolio`/`Position`), `src/data` (for `MarketDataService`/
+  `Interval`, `valuation.py` only). Extension Cost (ADR-0014): one new
+  top-level package; `src/experiments/registry.py` gained four new
+  tables/eight new methods and `src/portfolio/models.py` gained
+  `Portfolio.reconstruct()` to support it, both purely additive; no
+  existing method signature changed.
+
+### `src/dashboard`
+
+**Purpose:** a read-only Streamlit research and paper-portfolio
+analytics interface over `src/analytics` -- **not** a production
+trading terminal. Sprint 9 (`DECISIONS.md`, ADR-0042).
+
+- **Inputs:** none from a caller -- run as `streamlit run
+  src/dashboard/app.py`. Reads whatever `ExperimentRegistry` database
+  the platform has been logging experiments into (default
+  `data/experiments.db`).
+- **Outputs:** four pages rendered in the browser -- Overview (recent
+  experiments' key metrics, the most recently run experiment's paper
+  portfolio summary), Backtest/Experiment Analysis (identity/
+  provenance, every metric, equity/drawdown/cumulative-P&L charts,
+  trade P&L distribution, the trade table, the persisted research
+  report if any), Strategy Comparison (a side-by-side metrics table,
+  a bar-aligned equity comparison, `compare_experiments()`'s warnings
+  surfaced directly), Paper Portfolio (cash/equity/unrealized/realized
+  P&L/exposure and the open-position breakdown for one experiment's
+  own paper-executed `Portfolio`, marked to the current market price).
+- **Key files:**
+  - `app.py` -- the entrypoint: page routing (a sidebar radio) and the
+    experiment/comparison selectors. Deliberately thin -- delegates
+    every render to `views.py`.
+  - `views.py` -- one `render_*` function per page. Every number comes
+    from `AnalyticsService`/`PortfolioValuationService`; the one
+    exception is `equity_curve - equity_curve.iloc[0]` for the
+    cumulative-P&L chart, a presentation-only re-basing of an
+    already-computed series, not a new calculation. `st.cache_data`
+    wraps this module's own small data-loading functions only (a
+    presentation-layer optimization, e.g. capping the Overview page to
+    the most recent 20 experiments) -- never used inside
+    `src.analytics` itself. Any unexpected failure in the Paper
+    Portfolio path is logged via loguru and shown as a friendly
+    message, never a raw traceback.
+  - `formatting.py` -- pure, Streamlit-free presentation formatting
+    (`format_metric`/`format_number`/`format_interval`/etc.) --
+    rounding/display belongs only here.
+- **Does not:** compute a metric itself -- no Sharpe, drawdown, win
+  rate, or P&L calculation appears anywhere in this package outside
+  the one cumulative-P&L re-basing noted above. Submit an order,
+  change a risk limit, approve a strategy, or mutate any
+  `Portfolio`/`Experiment`/`Strategy` state -- there is no such method
+  anywhere in `src/dashboard`, and a smoke test
+  (`tests/test_dashboard_smoke.py`) asserts a `Portfolio` is
+  byte-for-byte unchanged after a full page render. Import `yfinance`
+  or read the market-data cache directly, or construct
+  `MarketDataService` itself -- every market price flows through
+  `src.analytics.valuation`'s sanctioned chain
+  (`tests/test_architecture.py` enforces all of this structurally).
+  Show a global, standing paper-trading account -- the Paper Portfolio
+  page is scoped to one experiment's own paper-executed `Portfolio` at
+  a time (per-experiment, not the `PaperTradingLoop` ADR-0021 already
+  defers as future work). Wire in real broker P&L (Alpaca/IBKR/IG/
+  Tiger) -- out of scope this sprint. Display any broker API
+  key/secret/credential.
+- **Depends on:** `src/analytics` (for every calculation) and
+  `src/experiments` (for `ExperimentRegistry`, to load past
+  experiments and research reports) only. Extension Cost (ADR-0014):
+  one new top-level package; nothing outside it was changed to build
+  it.
+
+### `src/ai`
+
+Not yet implemented -- exists only as an empty package with a
+docstring stating its intended purpose (see `src/ai/__init__.py`).
+`ROADMAP.md` named this the other Sprint 9 candidate; Sprint 9 itself
+resolved that ambiguity in favor of Analytics & Dashboard (above),
+leaving `src/ai` untouched and explicitly deferred. It will get its
+own section here, following the same purpose/inputs/outputs format,
+once built.
 
 ## Testing philosophy
 

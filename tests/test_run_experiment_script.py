@@ -78,6 +78,42 @@ def test_run_experiment_with_ema_cross(tmp_path):
     fetched_signals = registry.get_signals(run_result.experiment_id)
     assert {s.id for s in fetched_signals} == {s.id for s in run_result.result.signals}
 
+    # Sprint 9 (DECISIONS.md, ADR-0042): trades, equity curve, the
+    # resulting Portfolio, and the research report are all persisted
+    # too, not just returned in-memory (ExperimentRunResult).
+    assert registry.get_trades(run_result.experiment_id) == run_result.result.trades
+    fetched_curve = registry.get_equity_curve(run_result.experiment_id)
+    assert list(fetched_curve.values) == list(run_result.result.equity_curve.values)
+    fetched_portfolio = registry.get_portfolio(run_result.experiment_id)
+    assert fetched_portfolio is not None
+    assert fetched_portfolio.cash == run_result.portfolio.cash
+    fetched_report = registry.get_research_report(run_result.experiment_id)
+    assert fetched_report == run_result.report
+
+
+def test_run_experiment_returns_a_portfolio_reflecting_paper_executed_trades(tmp_path):
+    from src.portfolio.models import Portfolio
+
+    candles = make_candles(EMA_CLOSES)
+    registry = ExperimentRegistry(db_path=tmp_path / "experiments.db")
+
+    run_result = run_experiment(
+        strategy_name="ema_cross",
+        symbol="SPY",
+        candles=candles,
+        strategy_params={"fast": 2, "slow": 4},
+        registry=registry,
+    )
+
+    assert isinstance(run_result.portfolio, Portfolio)
+    # Every trade the backtester extracted corresponds to one closed
+    # position once paper-executed through Risk -> Execution -> Portfolio
+    # (an open position at the very end of the run, if any, is the one
+    # exception -- it has no corresponding backtest-side "close").
+    closed_count = len(run_result.portfolio.closed_positions)
+    open_count = len(run_result.portfolio.positions)
+    assert closed_count + open_count == len(run_result.result.trades)
+
 
 def test_run_experiment_with_rsi_mean_reversion(tmp_path):
     # The same function, unmodified, run against a genuinely different

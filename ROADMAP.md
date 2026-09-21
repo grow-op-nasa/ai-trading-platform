@@ -688,7 +688,7 @@ green** -- both previously sandbox-only artifacts passed for real.
 Sprint 8, including this cleanup, is now genuinely verified. See
 `DECISIONS.md`, ADR-0041 for the full account.
 
-## Sprint 9 -- Analytics & Dashboard ✅ Complete (sandbox-verified, pending real-pytest confirmation)
+## Sprint 9 -- Analytics & Dashboard ✅ Complete (confirmed via real pytest: 688 passed, 0 failed)
 
 Originally slated for Sprint 7; re-sequenced twice (not abandoned) --
 first when the portfolio-aware risk requirement took priority
@@ -752,9 +752,15 @@ ADR-0038, not revisited here.
 
 Sandbox-confirmed at 677 passed, 2 known environment-only failures, 1
 correctly-skipped (`test_dashboard_smoke.py`, no Streamlit in the
-sandbox). Real-`pytest` confirmation on the dev machine (expected
-~688 passed, since `test_dashboard_smoke.py`'s 9 tests should run for
-real there) is still pending -- see `PROJECT_STATE.md`.
+sandbox). Confirmed via real `pytest` on the dev machine: **688
+passed, 0 failed, all green** -- all 9 `test_dashboard_smoke.py` tests
+ran for real and passed, and the 2 sandbox-only failures (cli/doctor,
+config) also passed for real, confirming they were always
+environment-only. Getting to that clean run took three real-`pytest`
+rounds, each finding and fixing a genuine issue in
+`tests/test_dashboard_smoke.py` itself (never production code) -- see
+`DECISIONS.md`, ADR-0042 for the full account, and `PROJECT_STATE.md`
+for the current status.
 
 ## Sprint 10+ -- AI (planned)
 

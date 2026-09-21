@@ -184,9 +184,12 @@ and reasoning.
   `len(portfolio.positions) == 1` sanity check, and the "with an open
   position" test gained a real assertion that the per-position
   dataframe renders `"QQQ"` -- a code path never actually exercised
-  before this fix. Sandbox-reverified: 677 passed, unchanged. A fourth
-  real-`pytest` run (expected 688 passed, 0 failed) is pending -- see
-  `DECISIONS.md`, ADR-0042 for the full account.
+  before this fix. Sandbox-reverified: 677 passed, unchanged.
+- **Confirmed:** the fourth real `pytest` run returned **688 passed, 0
+  failed, all green**. Sprint 9 (Analytics & Dashboard) is genuinely
+  verified, not just implemented or sandbox-verified -- see
+  `DECISIONS.md`, ADR-0042 for the full account, including all three
+  corrections along the way.
 
 ## Sprint 8 -- 2026-09-16, Market Data Integrity & Session Awareness
 

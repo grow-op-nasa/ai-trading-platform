@@ -2868,8 +2868,8 @@ sandbox-verified. This sprint is confirmed and ready to commit.
 
 ## ADR-0042: Sprint 9 -- Analytics & Dashboard
 
-**Status:** Sandbox-verified, pending real-`pytest` confirmation on the
-dev machine.
+**Status:** Confirmed via real `pytest` on the dev machine: **688
+passed, 0 failed, all green.**
 
 **Context:** `ROADMAP.md` named two different candidates for "Sprint
 9" (Analytics & Dashboard vs. AI); the sprint's own spec explicitly
@@ -3224,6 +3224,8 @@ before this fix was, in fact, closed by the end of its own run.
 isn't required (the Comparison-page tests, which only need a second,
 differently-configured experiment to compare against).
 
-Sandbox-reverified: 677 passed, unchanged. A fourth real-`pytest` run
-(expected **688 passed, 0 failed**) is pending -- this sprint is
-genuinely ready to be marked verified once that lands clean.
+Sandbox-reverified: 677 passed, unchanged. **Confirmed via real
+`pytest` on the dev machine: 688 passed, 0 failed, all green** -- the
+fourth real run, and the first one this sprint's own test suite
+actually passed outright. Sprint 9 (Analytics & Dashboard) is now
+genuinely verified, not just implemented or sandbox-verified.

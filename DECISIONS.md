@@ -3104,3 +3104,59 @@ itself cannot be sandbox-exercised, only reasoned through and handed
 back for a second real run). Real-`pytest` reconfirmation on the dev
 machine (expected 688 passed: 682 + the 6 tests this fix should now
 turn green) is pending -- this sprint is not yet marked verified.
+
+**Second correction (post-commit cleanup):** the second real `pytest`
+run returned **2 failed, 686 passed** -- down from 6, confirming the
+cache-clearing fix above resolved four of the six original failures,
+but two remained, both again inside `tests/test_dashboard_smoke.py`:
+
+1. `test_app_runs_experiment_analysis_page` failed with
+   `RuntimeError: AppTest script run timed out after 3(s)`. Once the
+   cache fix let this test actually reach the real Backtest/Experiment
+   Analysis page (rather than the trivial "no experiments" branch it
+   had been silently hitting before), the page's genuine work --
+   computing analytics, drawing three line charts, a bar chart, and two
+   dataframes -- took longer than `AppTest`'s default 3-second
+   per-`.run()` timeout under a real Streamlit runtime. `AppTest`
+   re-executes the entire script from scratch on every `.run()` (it
+   doesn't keep a warm server the way real Streamlit does between
+   reruns), so 3 seconds is a tight budget for a page this size. Fix:
+   every `.run()` call in the file now passes `timeout=15` -- a test-
+   tooling accommodation, not evidence of a production performance
+   problem, since a real Streamlit server never re-executes cold like
+   this between interactions.
+
+2. `test_paper_portfolio_page_degrades_gracefully_when_price_unavailable`
+   still saw zero warnings rendered. Unlike the first correction, this
+   one's exact mechanism could not be fully confirmed by static
+   reading of `src/dashboard/views.py`/`src/analytics/valuation.py`
+   alone -- every individual piece (`latest_price()`'s
+   `except DataProviderError` correctly catching `NoDataError`,
+   `PortfolioValuationService.value()`'s warning-on-`None`-price
+   logic) is independently unit-tested and passing, and tracing the
+   full call chain by hand does not reveal where a warning would be
+   dropped. The one genuine gap identified: `_cached_latest_price`/
+   `_value_portfolio` carry a 60s TTL, and this specific test first
+   populates its experiment while `MarketDataService.get_history` is
+   still the autouse fixture's success stub, then switches it to raise
+   `NoDataError` -- a real 60-second cache lag between "price was
+   available" and "price just became unavailable" is intentional,
+   correct production behavior, but makes this test's outcome depend
+   on cache timing it shouldn't have to reason about. Applied, as a
+   genuine improvement regardless of whether it is the full
+   explanation: an extra `st.cache_data.clear()` immediately after the
+   `get_history`-failure monkeypatch, so the test's "price just became
+   unavailable" moment can never be served a stale, previously-
+   successful price from anywhere. Also widened the assertion to dump
+   `at.error`/`at.info`/`at.metric` on failure, so a third occurrence
+   (if any) will show conclusively whether `_safe_value_portfolio`'s
+   except-Exception branch fired (an `st.error`, meaning a real,
+   unidentified exception) or the page rendered cleanly with an
+   all-priced snapshot (meaning the price genuinely resolved to a
+   non-`None` value, and the cache theory above needs revisiting).
+
+Sandbox-reverified after both changes: 677 passed, unchanged (neither
+change touches sandbox-reachable code paths -- `test_dashboard_smoke.py`
+is still correctly skipped there). A third real-`pytest` run is
+pending; if the price-unavailable test fails again, its enriched
+assertion message is the next debugging input, not another guess.

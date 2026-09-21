@@ -148,6 +148,23 @@ and reasoning.
   installed). Real-`pytest` reconfirmation on the dev machine
   (expected 688 passed) is pending -- see `DECISIONS.md`, ADR-0042 for
   the full account.
+- **Second correction:** the second real `pytest` run returned **2
+  failed, 686 passed** -- the cache fix resolved four of six original
+  failures; two more surfaced in `tests/test_dashboard_smoke.py`. One
+  was a genuine `AppTest` timeout (its default 3s per-run budget was
+  too tight for a real analytics page now that the cache fix let the
+  test actually reach it) -- fixed by raising every `.run()` call's
+  timeout to 15s, a test-tooling change only. The other
+  (`test_paper_portfolio_page_degrades_gracefully_when_price_unavailable`
+  still seeing zero warnings) could not be fully root-caused from
+  static reading alone -- every underlying piece is independently
+  unit-tested and passing. Applied a defensive extra
+  `st.cache_data.clear()` right after the test's `get_history`-failure
+  monkeypatch (closes a real, if unconfirmed, TTL-staleness path) and
+  widened the assertion to dump `at.error`/`at.info`/`at.metric` on
+  failure so a third occurrence would be conclusive rather than another
+  guess. Sandbox-reverified: 677 passed, unchanged. A third real-`pytest`
+  run is pending -- see `DECISIONS.md`, ADR-0042 for the full account.
 
 ## Sprint 8 -- 2026-09-16, Market Data Integrity & Session Awareness
 

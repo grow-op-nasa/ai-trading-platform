@@ -113,23 +113,34 @@ def _assert_no_exception(at: AppTest) -> None:
 # ---------------------------------------------------------------------------
 
 
+# AppTest's own default is a 3s per-run timeout, tuned for trivial
+# scripts -- too tight for pages that genuinely compute analytics,
+# value a portfolio, and draw several charts against real Streamlit
+# (as opposed to the sandbox's now-retired hand-rolled stub, which was
+# never timed). A generous, fixed timeout here is a test-tooling
+# accommodation, not evidence of a slow page in production (a real
+# Streamlit server keeps the app warm between reruns; AppTest
+# re-executes the whole script from scratch on every `.run()`).
+_RUN_TIMEOUT = 15
+
+
 def test_app_runs_with_no_experiments(workdir):
-    at = AppTest.from_file(APP_PATH).run()
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
     assert any("No experiments found" in info.value for info in at.info)
 
 
 def test_app_runs_overview_page_by_default(workdir):
     _populate_one_experiment()
-    at = AppTest.from_file(APP_PATH).run()
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
     assert any("Overview" in h.value for h in at.header)
 
 
 def test_app_runs_experiment_analysis_page(workdir):
     run_result = _populate_one_experiment()
-    at = AppTest.from_file(APP_PATH).run()
-    at.sidebar.radio[0].set_value("Backtest / Experiment Analysis").run()
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    at.sidebar.radio[0].set_value("Backtest / Experiment Analysis").run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
     assert any(str(run_result.experiment_id) in h.value for h in at.header)
     # Metrics rendered as st.metric widgets -- at least the core four.
@@ -142,9 +153,11 @@ def test_app_runs_comparison_page_with_two_experiments(workdir):
     run_b = _populate_one_experiment(
         symbol="QQQ", strategy="rsi_mean_reversion", params={"period": 5}, closes=RSI_CLOSES
     )
-    at = AppTest.from_file(APP_PATH).run()
-    at.sidebar.radio[0].set_value("Strategy Comparison").run()
-    at.sidebar.multiselect[0].set_value([run_a.experiment_id, run_b.experiment_id]).run()
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    at.sidebar.radio[0].set_value("Strategy Comparison").run(timeout=_RUN_TIMEOUT)
+    at.sidebar.multiselect[0].set_value(
+        [run_a.experiment_id, run_b.experiment_id]
+    ).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
     assert any("Comparison" in h.value for h in at.header)
     # Differing symbol/strategy should surface at least one warning.
@@ -153,8 +166,8 @@ def test_app_runs_comparison_page_with_two_experiments(workdir):
 
 def test_app_runs_comparison_page_with_fewer_than_two_selected(workdir):
     _populate_one_experiment()
-    at = AppTest.from_file(APP_PATH).run()
-    at.sidebar.radio[0].set_value("Strategy Comparison").run()
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    at.sidebar.radio[0].set_value("Strategy Comparison").run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
     assert any("two or more" in i.value for i in at.info)
 
@@ -167,8 +180,8 @@ def test_app_runs_paper_portfolio_page_with_an_open_position(workdir):
     run_result = _populate_one_experiment(
         symbol="QQQ", strategy="rsi_mean_reversion", params={"period": 5}, closes=RSI_CLOSES
     )
-    at = AppTest.from_file(APP_PATH).run()
-    at.sidebar.radio[0].set_value("Paper Portfolio").run()
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
     assert any(str(run_result.experiment_id) in h.value for h in at.header)
     metric_labels = {m.label for m in at.metric}
@@ -184,14 +197,27 @@ def test_paper_portfolio_page_degrades_gracefully_when_price_unavailable(workdir
         raise NoDataError("no data available")
 
     monkeypatch.setattr(MarketDataService, "get_history", _raise_no_data)
+    # The 60s TTL on `_cached_latest_price`/`_value_portfolio` is correct
+    # production behavior (a real outage's UI reflection can lag up to a
+    # minute), but this test wants to assert the outcome of a price
+    # lookup that fails *right now* -- clear again so nothing computed
+    # under the success stub above (or leftover from another test) can
+    # still be sitting in cache under this test's own (db_path,
+    # experiment_id)/symbol keys.
+    st.cache_data.clear()
 
-    at = AppTest.from_file(APP_PATH).run()
-    at.sidebar.radio[0].set_value("Paper Portfolio").run()
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)
     # A missing market price must degrade to a warning + "N/A", never a
     # raw traceback shown to the user (Sprint 9 spec's error-handling
     # requirement).
     _assert_no_exception(at)
-    assert len(at.warning) >= 1
+    assert len(at.warning) >= 1, (
+        f"expected at least one st.warning; got none. "
+        f"errors={[e.value for e in at.error]!r} "
+        f"info={[i.value for i in at.info]!r} "
+        f"metrics={[(m.label, m.value) for m in at.metric]!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -208,9 +234,9 @@ def test_rendering_the_dashboard_never_mutates_the_saved_portfolio(workdir):
     before_cash = before.cash
     before_open = {p.symbol: p.quantity for p in before.positions.values()}
 
-    at = AppTest.from_file(APP_PATH).run()
-    at.sidebar.radio[0].set_value("Paper Portfolio").run()
-    at.sidebar.radio[0].set_value("Overview").run()
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)
+    at.sidebar.radio[0].set_value("Overview").run(timeout=_RUN_TIMEOUT)
 
     after = registry.get_portfolio(run_result.experiment_id)
     assert after.cash == before_cash
@@ -235,7 +261,7 @@ def test_rendering_the_dashboard_makes_no_network_call_when_no_positions_are_ope
     saved_portfolio = registry.get_portfolio(run_result.experiment_id)
     assert len(saved_portfolio.positions) == 0  # sanity check on the fixture
 
-    at = AppTest.from_file(APP_PATH).run()
-    at.sidebar.radio[0].set_value("Paper Portfolio").run()
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
     assert calls == []

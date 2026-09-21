@@ -1,18 +1,25 @@
 # Project State
 
 _Last updated: 2026-09-21 -- **Sprint 9 (Analytics & Dashboard) is
-implemented; the first real `pytest` run on the dev machine returned
-6 failed, 682 passed, all 6 failures inside `tests/test_dashboard_smoke.py`
--- a test-isolation bug (`@st.cache_data` keyed on a db-path string
-shared across every test's own `tmp_path`, so an earlier test's stale
-result leaked into later ones), not a production bug. Fixed by
-clearing the cache in the `workdir` fixture; no `src/dashboard`/
-`src/analytics` code changed. Sandbox-reverified at 677 passed, same 2
-known environment-only failures, plus 1 correctly-skipped module
+implemented; two real `pytest` runs on the dev machine have each
+found and fixed a `tests/test_dashboard_smoke.py` issue, and a third
+run is pending.** Run 1: 6 failed, 682 passed -- a test-isolation bug
+(`@st.cache_data` keyed on a db-path string shared across every test's
+own `tmp_path`), fixed by clearing the cache in the `workdir` fixture.
+Run 2: 2 failed, 686 passed -- one genuine `AppTest` timeout (its
+default 3s budget too tight for a real analytics page), fixed by
+raising every `.run()` call to `timeout=15`; one
+(`test_paper_portfolio_page_degrades_gracefully_when_price_unavailable`)
+whose exact cause couldn't be fully confirmed from static reading
+alone, addressed with a defensive extra cache-clear plus a richer
+diagnostic assertion so a third occurrence would be conclusive. No
+`src/dashboard`/`src/analytics` production code changed in either
+fix. Sandbox-reverified at 677 passed both times, same 2 known
+environment-only failures, plus 1 correctly-skipped module
 (`tests/test_dashboard_smoke.py` -- no Streamlit in this sandbox, so
-the fix itself can't be sandbox-exercised). Real-`pytest`
-reconfirmation on the dev machine (expected 688 passed) is pending --
-see `DECISIONS.md`, ADR-0042 for the full account.** A new `src/analytics/`
+neither fix could be sandbox-exercised). A third real-`pytest` run
+(expected 688 passed) is pending -- see `DECISIONS.md`, ADR-0042 for
+the full account.** A new `src/analytics/`
 package (`models.py`/`metrics.py`/`service.py`/`valuation.py`) turns a
 backtest or experiment's raw trades/equity curve into deterministic
 metrics -- every value is either a real number or an explicit
@@ -806,9 +813,15 @@ across tests that share the same relative db-path string from
 different `tmp_path` directories within the same TTL window (a
 test-isolation bug, not a production one -- a real deployment has
 exactly one `data/experiments.db`). Fixed by clearing the cache in the
-`workdir` fixture; sandbox-reverified at 677 passed unchanged. A
-second real-`pytest` run (expected 688 passed) is pending. See
-`DECISIONS.md`, ADR-0042 for the full design and the correction.
+`workdir` fixture; sandbox-reverified at 677 passed unchanged. The
+second real `pytest` run returned 686 passed, 2 failed -- one a genuine
+`AppTest` timeout (its default 3s budget too tight for a real analytics
+page, fixed by raising every `.run()` call to `timeout=15`), one
+(the price-unavailable degrade test) whose exact cause wasn't fully
+confirmed from static reading alone, addressed with a defensive extra
+cache-clear plus a richer diagnostic assertion. A third real-`pytest`
+run (expected 688 passed) is pending. See `DECISIONS.md`, ADR-0042 for
+the full design and both corrections.
 
 **Sprint 8 (Market Data Integrity & Session Awareness), including its
 canonicalization-idempotence cleanup, is complete and confirmed via
@@ -929,23 +942,31 @@ yfinance API; pre-market/after-hours session support is reserved
 ## Next Task
 
 Sprint 9 (Analytics & Dashboard) is implemented and committed
-(`aeca0c8`). The first real `pytest` run on the dev machine returned
-**682 passed, 6 failed** -- all 6 in `tests/test_dashboard_smoke.py`,
-the one file this sandbox could only ever skip. Root cause: that
-file's `@st.cache_data`-backed loaders cache on the relative db-path
-string alone, which every test shares even though each points at a
-different `tmp_path`; the whole file runs well inside the cache's TTL,
-so an earlier test's (often empty) result silently served later tests
-too. Fixed by clearing `st.cache_data` in the `workdir` fixture -- no
-production code changed; see `DECISIONS.md`, ADR-0042 for the full
-account. Sandbox-reverified at 677 passed, same 2 known
+(`aeca0c8`, `38e693b`). Two real `pytest` runs on the dev machine have
+each found and fixed a `tests/test_dashboard_smoke.py` issue -- the
+one file this sandbox could only ever skip, never execute. Run 1:
+**682 passed, 6 failed**, caused by `@st.cache_data`-backed loaders
+caching on a relative db-path string shared across every test's own
+`tmp_path`; fixed by clearing `st.cache_data` in the `workdir` fixture.
+Run 2: **686 passed, 2 failed** -- one a genuine `AppTest` timeout
+(default 3s budget too tight for a real analytics page now that the
+cache fix let the test reach it; fixed by raising every `.run()` call
+to `timeout=15`), one
+(`test_paper_portfolio_page_degrades_gracefully_when_price_unavailable`)
+whose exact cause wasn't fully confirmed from static reading alone --
+addressed with a defensive extra `st.cache_data.clear()` plus a
+richer diagnostic assertion (dumps `at.error`/`at.info`/`at.metric` on
+failure) so a third occurrence would be conclusive rather than another
+guess. No `src/dashboard`/`src/analytics` production code changed in
+either fix; see `DECISIONS.md`, ADR-0042 for the full account.
+Sandbox-reverified at 677 passed both times, same 2 known
 environment-only failures, `test_dashboard_smoke.py` still correctly
-skipped here. What remains: a second real `pytest` run on the dev
-machine to confirm the fix actually turns all 6 green with no new
-regressions (expected **688 passed**: 682 + the 6 now-fixed tests),
-then `git commit`/`push` for this fix. AI/ML signal generation
-(`ROADMAP.md`'s other Sprint 9 candidate) remains explicit future
-work, not started.
+skipped here (neither fix is sandbox-exercisable). What remains: a
+third real `pytest` run on the dev machine (expected **688 passed**),
+then `git commit`/`push` for this fix -- and if the price-unavailable
+test fails again, its enriched assertion message, not a guess, is the
+next debugging input. AI/ML signal generation (`ROADMAP.md`'s other
+Sprint 9 candidate) remains explicit future work, not started.
 
 Sprint 8 (Market Data Integrity & Session Awareness) is implemented,
 committed (`53db66c`), and its follow-up canonicalization-idempotence
@@ -1175,10 +1196,12 @@ pytest                    # expected ~688 passed on the real dev machine, once
                           # (cli/doctor 28/29, config 6/7), plus 1 module
                           # correctly skipped (dashboard_smoke -- no Streamlit
                           # installed in this sandbox; its 9 tests only run for
-                          # real, see below). The first real-pytest run
-                          # returned 682 passed, 6 failed, all 6 inside
-                          # dashboard_smoke -- a test-isolation cache bug
-                          # (fixed; see DECISIONS.md ADR-0042). This "~688"
+                          # real, see below). Real-pytest run 1 returned 682
+                          # passed, 6 failed, all 6 inside dashboard_smoke -- a
+                          # test-isolation cache bug (fixed). Run 2 returned
+                          # 686 passed, 2 failed -- an AppTest timeout and one
+                          # not-fully-confirmed warning-rendering case (both
+                          # addressed; see DECISIONS.md ADR-0042). This "~688"
                           # figure is the expectation for the *next* real run,
                           # not yet confirmed.
 python src/main.py        # should log startup + watchlist
@@ -1226,6 +1249,32 @@ test suite reusing that string across many temp directories. Fixed by
 calling `st.cache_data.clear()` in the `workdir` fixture; no
 `src/dashboard`/`src/analytics` code changed. Sandbox-reverified at
 677 passed, unchanged. A second real-`pytest` run (expected 688
+passed) is pending -- see `DECISIONS.md`, ADR-0042 for the full
+account.
+
+**Second correction (Sprint 9):** the second real `pytest` run
+returned **686 passed, 2 failed** -- confirming the cache fix above
+resolved four of six original failures. Two remained, both again in
+`tests/test_dashboard_smoke.py`: (1)
+`test_app_runs_experiment_analysis_page` hit `AppTest`'s default 3s
+per-`.run()` timeout, now that the cache fix let it reach a page that
+genuinely computes analytics and draws several charts -- fixed by
+raising every `.run()` call in the file to `timeout=15`, a test-tooling
+change, not a production performance issue (`AppTest` re-executes the
+whole script cold on every call; a real Streamlit server doesn't). (2)
+`test_paper_portfolio_page_degrades_gracefully_when_price_unavailable`
+still saw zero warnings, and its exact mechanism could not be fully
+confirmed from static reading of `src/dashboard/views.py`/
+`src/analytics/valuation.py` alone -- every individual piece is
+independently unit-tested and passing. The one identified gap: this
+test switches `MarketDataService.get_history` from success to
+`NoDataError` mid-test, and `_cached_latest_price`/`_value_portfolio`'s
+60s TTL means a stale, previously-successful price could in principle
+still be served. Addressed with a defensive extra
+`st.cache_data.clear()` right after the failure monkeypatch and a
+richer assertion (dumps `at.error`/`at.info`/`at.metric` on failure)
+so a third occurrence would be conclusive. Sandbox-reverified at 677
+passed, unchanged. A third real-`pytest` run (still expected 688
 passed) is pending -- see `DECISIONS.md`, ADR-0042 for the full
 account.
 

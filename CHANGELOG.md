@@ -111,12 +111,43 @@ and reasoning.
   commission simulation; tick/order-book data; auth/user management;
   cloud deployment; a mobile UI; portfolio optimization; new strategy
   families.
+### Verified
+
 - Sandbox-verified: 677 passed, same 2 known environment-only
   artifacts (`test_cli_doctor`'s Python-version check,
   `test_config`'s logger-stdout check), plus 1 correctly skipped
   (`test_dashboard_smoke.py`, no Streamlit installed in the sandbox --
   expected to run for real on the dev machine, where
   `streamlit==1.59.2` is already pinned in `requirements.txt`).
+- **Correction:** the real `pytest` run on the dev machine (Python
+  3.14.6, pytest 9.1.1) returned **6 failed, 682 passed** -- every
+  failure inside `tests/test_dashboard_smoke.py`, the one file this
+  sandbox could only ever skip, never actually execute. Root cause:
+  `src/dashboard/views.py`'s `@st.cache_data`-decorated loaders key
+  their cache purely on the `db_path` string argument
+  (`"data/experiments.db"`), which every test in the file shares --
+  each pointing at a different `tmp_path` after `chdir`, but
+  indistinguishable to Streamlit's cache, and the whole file runs in
+  ~3 seconds, well inside the loaders' 30-60s TTL. The first test's
+  (genuinely empty) result silently served every later test too,
+  routing them all into `app.py`'s "No experiments found yet" branch
+  regardless of what they had actually populated -- explaining all six
+  failures (missing headers, an unrendered multiselect, wrong info
+  text, zero warnings shown). A test-isolation bug only: a real
+  deployment has exactly one `data/experiments.db`, so this collision
+  cannot occur outside a test suite reusing that same relative string
+  across many temp directories in quick succession.
+- Fix: the `workdir` fixture (`tests/test_dashboard_smoke.py`) now
+  calls `st.cache_data.clear()` immediately after `chdir`, so every
+  test starts with a cold cache. No `src/dashboard`/`src/analytics`
+  production code changed.
+- Sandbox-reverified after the fix: 677 passed, same 2 known
+  environment-only artifacts, `test_dashboard_smoke.py` still
+  correctly skipped in-sandbox (the fix itself can only be confirmed
+  by a second real run, since this sandbox has no Streamlit
+  installed). Real-`pytest` reconfirmation on the dev machine
+  (expected 688 passed) is pending -- see `DECISIONS.md`, ADR-0042 for
+  the full account.
 
 ## Sprint 8 -- 2026-09-16, Market Data Integrity & Session Awareness
 

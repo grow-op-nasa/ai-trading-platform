@@ -28,6 +28,7 @@ import pytest
 
 pytest.importorskip("streamlit")
 
+import streamlit as st  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from scripts.run_experiment import run_experiment  # noqa: E402
@@ -75,8 +76,19 @@ def workdir(tmp_path, monkeypatch):
     `"data/experiments.db"` -- `chdir` into an isolated tmp_path so the
     dashboard (which uses that same default) and the fixture data this
     test populates always agree on which database file they mean,
-    without touching the real project's `data/experiments.db`."""
+    without touching the real project's `data/experiments.db`.
+
+    `src.dashboard.views`'s `st.cache_data`-decorated loaders key their
+    cache purely on the (relative) db_path string passed in -- they have
+    no way to know two tests used that identical string for two
+    different `tmp_path` directories. Without clearing the cache here,
+    a later test in this file can silently read another test's cached
+    (and by then stale) experiment list, since every test in this
+    module runs well inside the loaders' 30-60s TTL. This is a test-
+    isolation fix only: in real single-deployment use there's exactly
+    one `data/experiments.db`, so no such collision is possible."""
     monkeypatch.chdir(tmp_path)
+    st.cache_data.clear()
     return tmp_path
 
 

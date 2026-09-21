@@ -1,11 +1,18 @@
 # Project State
 
 _Last updated: 2026-09-21 -- **Sprint 9 (Analytics & Dashboard) is
-implemented and sandbox-verified: 677 passed, same 2 known
-environment-only failures, plus 1 correctly-skipped module
-(`tests/test_dashboard_smoke.py` -- no Streamlit in this sandbox).
-Real-`pytest` confirmation on the dev machine, where
-`streamlit==1.59.2` is installed, is pending.** A new `src/analytics/`
+implemented; the first real `pytest` run on the dev machine returned
+6 failed, 682 passed, all 6 failures inside `tests/test_dashboard_smoke.py`
+-- a test-isolation bug (`@st.cache_data` keyed on a db-path string
+shared across every test's own `tmp_path`, so an earlier test's stale
+result leaked into later ones), not a production bug. Fixed by
+clearing the cache in the `workdir` fixture; no `src/dashboard`/
+`src/analytics` code changed. Sandbox-reverified at 677 passed, same 2
+known environment-only failures, plus 1 correctly-skipped module
+(`tests/test_dashboard_smoke.py` -- no Streamlit in this sandbox, so
+the fix itself can't be sandbox-exercised). Real-`pytest`
+reconfirmation on the dev machine (expected 688 passed) is pending --
+see `DECISIONS.md`, ADR-0042 for the full account.** A new `src/analytics/`
 package (`models.py`/`metrics.py`/`service.py`/`valuation.py`) turns a
 backtest or experiment's raw trades/equity curve into deterministic
 metrics -- every value is either a real number or an explicit
@@ -760,14 +767,17 @@ For why things were built the way they were, see `DECISIONS.md`.
   changed except that script's own internal helper. Confirmed via the
   sandbox stub-based test runner: **677 passed**, 2 known
   environment-only failures, 1 correctly-skipped module (no Streamlit
-  in this sandbox). Pending real-`pytest` confirmation on the dev
-  machine.
+  in this sandbox). The first real `pytest` run found 6 failures, all
+  in `tests/test_dashboard_smoke.py` -- a test-isolation cache bug, now
+  fixed; real-`pytest` reconfirmation is pending (see `DECISIONS.md`,
+  ADR-0042).
 
 ## Current Module
 
-**Sprint 9 (Analytics & Dashboard) is implemented and
-sandbox-verified; real-`pytest` confirmation on the dev machine is
-pending.** `src/analytics/` computes deterministic backtest and
+**Sprint 9 (Analytics & Dashboard) is implemented; a real-`pytest`
+run surfaced and this session fixed a test-isolation bug in
+`tests/test_dashboard_smoke.py`, and a second real-`pytest`
+confirmation is pending.** `src/analytics/` computes deterministic backtest and
 portfolio metrics from a backtest's `Trade` list and equity curve (now
 persisted by `ExperimentRegistry`, not just held in memory) -- every
 metric is either a real, full-precision number or an explicit
@@ -790,7 +800,15 @@ suite: **677 passed**, same 2 known environment-only failures, plus 1
 module correctly skipped (`tests/test_dashboard_smoke.py` --
 Streamlit isn't installed in this sandbox; it's pinned in
 `requirements.txt` and expected to run for real on the dev machine).
-See `DECISIONS.md`, ADR-0042 for the full design.
+The first real `pytest` run returned 682 passed, 6 failed -- all 6 in
+`tests/test_dashboard_smoke.py`, caused by `@st.cache_data` caching
+across tests that share the same relative db-path string from
+different `tmp_path` directories within the same TTL window (a
+test-isolation bug, not a production one -- a real deployment has
+exactly one `data/experiments.db`). Fixed by clearing the cache in the
+`workdir` fixture; sandbox-reverified at 677 passed unchanged. A
+second real-`pytest` run (expected 688 passed) is pending. See
+`DECISIONS.md`, ADR-0042 for the full design and the correction.
 
 **Sprint 8 (Market Data Integrity & Session Awareness), including its
 canonicalization-idempotence cleanup, is complete and confirmed via
@@ -910,19 +928,24 @@ yfinance API; pre-market/after-hours session support is reserved
 
 ## Next Task
 
-Sprint 9 (Analytics & Dashboard) is implemented and sandbox-verified:
-**677 passed**, same 2 known environment-only failures, plus 1
-module (`tests/test_dashboard_smoke.py`) correctly skipped in this
-sandbox for lack of a Streamlit install. What remains: a real `pytest`
-run on the dev machine (where `streamlit==1.59.2` is already pinned in
-`requirements.txt`) to confirm the full suite, including the 9
-dashboard-smoke tests this sandbox couldn't execute; then the
-`git commit`/`push` for this sprint. Expected real total, if
-everything holds: roughly 688 passed (677 sandbox-passed + 2
-previously-environment-only fixes + 9 dashboard-smoke tests that only
-skipped here) -- an expectation to be confirmed by the actual run, not
-assumed. AI/ML signal generation (`ROADMAP.md`'s other Sprint 9
-candidate) remains explicit future work, not started.
+Sprint 9 (Analytics & Dashboard) is implemented and committed
+(`aeca0c8`). The first real `pytest` run on the dev machine returned
+**682 passed, 6 failed** -- all 6 in `tests/test_dashboard_smoke.py`,
+the one file this sandbox could only ever skip. Root cause: that
+file's `@st.cache_data`-backed loaders cache on the relative db-path
+string alone, which every test shares even though each points at a
+different `tmp_path`; the whole file runs well inside the cache's TTL,
+so an earlier test's (often empty) result silently served later tests
+too. Fixed by clearing `st.cache_data` in the `workdir` fixture -- no
+production code changed; see `DECISIONS.md`, ADR-0042 for the full
+account. Sandbox-reverified at 677 passed, same 2 known
+environment-only failures, `test_dashboard_smoke.py` still correctly
+skipped here. What remains: a second real `pytest` run on the dev
+machine to confirm the fix actually turns all 6 green with no new
+regressions (expected **688 passed**: 682 + the 6 now-fixed tests),
+then `git commit`/`push` for this fix. AI/ML signal generation
+(`ROADMAP.md`'s other Sprint 9 candidate) remains explicit future
+work, not started.
 
 Sprint 8 (Market Data Integrity & Session Awareness) is implemented,
 committed (`53db66c`), and its follow-up canonicalization-idempotence
@@ -1152,9 +1175,12 @@ pytest                    # expected ~688 passed on the real dev machine, once
                           # (cli/doctor 28/29, config 6/7), plus 1 module
                           # correctly skipped (dashboard_smoke -- no Streamlit
                           # installed in this sandbox; its 9 tests only run for
-                          # real, see below). This "~688" figure is an
-                          # expectation, not a confirmed result -- only an
-                          # actual real-pytest run confirms it.
+                          # real, see below). The first real-pytest run
+                          # returned 682 passed, 6 failed, all 6 inside
+                          # dashboard_smoke -- a test-isolation cache bug
+                          # (fixed; see DECISIONS.md ADR-0042). This "~688"
+                          # figure is the expectation for the *next* real run,
+                          # not yet confirmed.
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until
@@ -1183,8 +1209,29 @@ report back the actual dev-machine total once run, per the project's
 standing verification process; do not treat the "~688" estimate above
 as a substitute for that.
 
-**Correction:** an earlier version of this section claimed "Confirmed
-via real `pytest` on the dev machine: 569 passed, 0 failed, 0 errors"
+**Correction (Sprint 9):** the first real `pytest` run on the dev
+machine returned **682 passed, 6 failed**, not the "~688 passed"
+estimate above assumed -- all 6 failures inside
+`tests/test_dashboard_smoke.py`, the one module this sandbox could
+only ever skip, never execute. Cause: that file's `@st.cache_data`-
+backed loaders cache purely on the relative `db_path` string
+(`"data/experiments.db"`), which every test in the file shares even
+though each `chdir`s into its own `tmp_path` -- the whole file runs in
+seconds, well inside the 30-60s cache TTL, so the first test's
+(empty) result silently served every later test too, routing them all
+into the "no experiments" branch regardless of what they had actually
+populated. A test-isolation bug only -- a real deployment has exactly
+one `data/experiments.db`, so this collision can't occur outside a
+test suite reusing that string across many temp directories. Fixed by
+calling `st.cache_data.clear()` in the `workdir` fixture; no
+`src/dashboard`/`src/analytics` code changed. Sandbox-reverified at
+677 passed, unchanged. A second real-`pytest` run (expected 688
+passed) is pending -- see `DECISIONS.md`, ADR-0042 for the full
+account.
+
+**Correction (Sprint 8):** an earlier version of this section claimed
+"Confirmed via real `pytest` on the dev machine: 569 passed, 0 failed,
+0 errors"
 before that run had actually been reported -- the real run in fact
 returned **1 failed, 568 passed**. The one failure:
 `test_data_canonical.test_canonicalize_is_idempotent` compared two

@@ -3047,3 +3047,60 @@ constructed only inside `src.analytics.valuation`). Sandbox-verified:
 skipped (`test_dashboard_smoke.py`, no Streamlit installed in this
 sandbox -- expected to run for real on the dev machine, where
 `streamlit==1.59.2` is already pinned in `requirements.txt`).
+
+**Correction (post-commit cleanup):** the first real `pytest` run on
+the dev machine (Python 3.14.6) returned **6 failed, 682 passed** --
+every failure inside `tests/test_dashboard_smoke.py`, the one file
+this sandbox could never actually execute (only
+`pytest.importorskip`-skip it), so this is exactly the class of gap
+the project's "sandbox-verified is not real-verified" standing rule
+exists to catch.
+
+Root cause: `src/dashboard/views.py`'s `@st.cache_data`-decorated
+loaders (`_load_experiment_summaries` and friends) key their cache
+purely on the `db_path` argument -- the relative string
+`"data/experiments.db"`. Every test in the file uses that identical
+string (each pointing at a different `tmp_path` after `chdir`, via
+the `workdir` fixture), and the whole file runs in ~3 seconds --
+comfortably inside the loaders' 30-60s TTL. Streamlit's cache has no
+way to know two calls with the same string argument, made from two
+different working directories, mean two different databases, so
+`test_app_runs_with_no_experiments` (the first test, genuinely empty)
+poisoned the cache for every test that ran after it within the TTL
+window: `list_experiment_ids()` kept returning that first test's
+stale, empty result no matter what a later test had actually
+populated. That routed every later test into `app.py`'s "No
+experiments found yet" branch instead of the page it meant to
+exercise, which explains all six failures directly: two
+`assert ... in h.value for h in at.header` checks failed because the
+Overview/Analysis/Paper-Portfolio headers never rendered; the
+Comparison page's `IndexError: list index out of range` fired because
+its `st.sidebar.multiselect` never rendered (its branch never ran);
+the "fewer than two selected" test saw the wrong info message ("No
+experiments found" instead of "Select two or more"); and the
+price-unavailable test saw zero warnings because the Paper Portfolio
+branch, and therefore `_safe_value_portfolio`, was never reached. The
+two read-only-invariant tests in the same file (mutation and
+no-network-call) still passed throughout, because both assertions
+hold regardless of which UI branch actually rendered -- they were
+insensitive to the bug, not evidence against it.
+
+This is a test-isolation bug only, not a production one: a real
+deployment has exactly one `data/experiments.db`, so no two calls
+with that identical string ever mean two different underlying
+databases, and the 30-60s cache lag after a fresh
+`run_experiment()` call is the intentional, documented trade-off
+(section 34 of the Sprint 9 spec) -- unrelated to this failure mode.
+No production code changed. Fix: the `workdir` fixture
+(`tests/test_dashboard_smoke.py`) now calls `st.cache_data.clear()`
+immediately after `chdir`, so every test starts with a cold cache and
+can only ever read data it (or a step earlier in the same test)
+actually wrote. No `src/dashboard`/`src/analytics` code was touched.
+
+Sandbox-reverified after the fix: 677 passed, same 2 known
+environment-only artifacts, `test_dashboard_smoke.py`'s 9 tests still
+correctly skipped in-sandbox (no Streamlit installed there -- the fix
+itself cannot be sandbox-exercised, only reasoned through and handed
+back for a second real run). Real-`pytest` reconfirmation on the dev
+machine (expected 688 passed: 682 + the 6 tests this fix should now
+turn green) is pending -- this sprint is not yet marked verified.

@@ -165,6 +165,28 @@ and reasoning.
   failure so a third occurrence would be conclusive rather than another
   guess. Sandbox-reverified: 677 passed, unchanged. A third real-`pytest`
   run is pending -- see `DECISIONS.md`, ADR-0042 for the full account.
+- **Third correction -- the actual root cause:** the third real
+  `pytest` run returned **1 failed, 687 passed**, and the enriched
+  assertion from the second correction did its job -- it showed the
+  portfolio had zero open positions, not one. `RSI_CLOSES`'s recovery
+  leg was strong enough that `RSIMeanReversionStrategy` (period 5)
+  exited back to FLAT before the series ended, so
+  `PortfolioValuationService` never had a position to price and never
+  had a reason to warn -- correct behavior, wrong test premise (a
+  comment claiming this was "proven" by `test_run_experiment_script.py`
+  was checked directly and found false). Fixed with a new
+  `OPEN_POSITION_CLOSES` fixture (the decline only, no recovery) --
+  since every delta is a loss, RSI is pinned at exactly 0 for the whole
+  series (verified against the real `relative_strength_index()`
+  formula and the real `run_experiment()` pipeline: 1 trade, 1 open
+  `QQQ` position, entry `$98.0`, 0 closed). The three tests that
+  actually need an open position now use it, each gained a
+  `len(portfolio.positions) == 1` sanity check, and the "with an open
+  position" test gained a real assertion that the per-position
+  dataframe renders `"QQQ"` -- a code path never actually exercised
+  before this fix. Sandbox-reverified: 677 passed, unchanged. A fourth
+  real-`pytest` run (expected 688 passed, 0 failed) is pending -- see
+  `DECISIONS.md`, ADR-0042 for the full account.
 
 ## Sprint 8 -- 2026-09-16, Market Data Integrity & Session Awareness
 

@@ -3160,3 +3160,70 @@ change touches sandbox-reachable code paths -- `test_dashboard_smoke.py`
 is still correctly skipped there). A third real-`pytest` run is
 pending; if the price-unavailable test fails again, its enriched
 assertion message is the next debugging input, not another guess.
+
+**Third correction (post-commit cleanup) -- the actual root cause.**
+The third real `pytest` run returned **1 failed, 687 passed** -- the
+timeout fix held, and the enriched assertion added in the second
+correction did exactly its job: it printed
+`info=['No open positions.'] metrics=[('Cash', '$98,673.47'), ('Equity',
+'$98,673.47'), ('Unrealized P&L', '$0.00'), ...]`. The portfolio had
+**zero open positions** -- not one, as
+`test_paper_portfolio_page_degrades_gracefully_when_price_unavailable`
+(and two sibling tests) had assumed from a comment claiming this was
+"proven already by `tests/test_run_experiment_script.py`'s sibling
+assertions." That claim was checked directly against the actual file
+and found false: `test_run_experiment_with_rsi_mean_reversion` asserts
+`run_result.result.trades` is non-empty and the spec fields match --
+it never asserts anything about `run_result.portfolio.positions` for
+this symbol/strategy/params/closes combination. Both of the two
+earlier corrections in this entry (the extra cache-clear, the
+timeout bump) were real, harmless improvements, but neither was ever
+the cause of this specific failure -- the portfolio never had a
+priced position to fail to price in the first place, so
+`PortfolioValuationService.value()`'s loop never ran and never had a
+reason to append a warning. Correct behavior, wrong test premise.
+
+Root cause, confirmed empirically (not just reasoned): `RSI_CLOSES`
+(`[100 - i*2 for i in range(15)]` then `[70 + i*3 for i in range(15)]`)
+recovers strongly enough in its second half that
+`RSIMeanReversionStrategy` (period 5) exits back to FLAT before the
+series ends, closing the position it opened during the decline --
+matching what the dashboard smoke test's own diagnostic output showed
+(zero open positions, a nonzero realized P&L). `src.indicators.
+formulas.relative_strength_index` computes RSI via
+`ewm(alpha=1/period)` over gains and losses (no rolling-window
+warmup -- it's defined from the second bar onward), so a strategy
+watching it reacts as soon as the underlying series does anything,
+including a strong-enough recovery.
+
+Fix, verified the same way: a new `OPEN_POSITION_CLOSES` constant
+(`tests/test_dashboard_smoke.py`) -- just the declining half,
+`[100 - i*2 for i in range(15)]`, with no recovery leg at all. Since
+every delta is a loss and none is a gain, `avg_gain` is pinned at
+exactly `0.0` by the `ewm` formula from the second bar onward, so RSI
+reads exactly `0` for the rest of the series -- deeply oversold,
+never overbought, so `RSIMeanReversionStrategy` enters LONG at the
+second bar and can never emit an exit signal (there is no up-day to
+ever push RSI back to `overbought`). Running the real
+`run_experiment()` pipeline directly against this series (symbol
+`QQQ`, `rsi_mean_reversion`, `period=5`) confirms: 1 trade, 1 open
+position (`QQQ`, entry price `98.0`, quantity `~102.04`), 0 closed
+positions -- exactly the fixture every affected test actually needed.
+The three tests that specifically need an open position now use
+`OPEN_POSITION_CLOSES` instead of `RSI_CLOSES`, each gained a sanity
+check asserting `len(portfolio.positions) == 1` before the `AppTest`
+even runs (so a future regression here fails at the assertion closest
+to the actual cause, not several layers downstream in a Streamlit
+render), and `test_app_runs_paper_portfolio_page_with_an_open_position`
+gained a real assertion that the per-position dataframe
+(`render_paper_portfolio`'s `if snapshot.positions:` branch) actually
+renders with `"QQQ"` in it -- a code path this file had never
+genuinely exercised before, since every "open position" fixture
+before this fix was, in fact, closed by the end of its own run.
+`RSI_CLOSES` itself is untouched and still used where an open position
+isn't required (the Comparison-page tests, which only need a second,
+differently-configured experiment to compare against).
+
+Sandbox-reverified: 677 passed, unchanged. A fourth real-`pytest` run
+(expected **688 passed, 0 failed**) is pending -- this sprint is
+genuinely ready to be marked verified once that lands clean.

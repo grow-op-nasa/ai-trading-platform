@@ -41,6 +41,19 @@ APP_PATH = str(Path(__file__).resolve().parent.parent / "src" / "dashboard" / "a
 EMA_CLOSES = [110, 108, 106, 104, 102, 100, 105, 110, 115, 120, 110, 100, 90, 80]
 RSI_CLOSES = [100 - i * 2 for i in range(15)] + [70 + i * 3 for i in range(15)]
 
+# A pure, unbroken decline -- unlike RSI_CLOSES (whose second half recovers
+# enough to close the position out again by the end: confirmed empirically,
+# not just by comment, after a real dashboard-smoke run showed 0 open
+# positions and a realized P&L for that series). `src.indicators.formulas.
+# relative_strength_index` computes RSI via `ewm(alpha=1/period)` over gains
+# and losses, so a series with *zero gains ever* pins `avg_gain` at 0 and
+# therefore RSI at exactly 0 from the second bar onward, well under any
+# `oversold` threshold -- `RSIMeanReversionStrategy` enters LONG almost
+# immediately and, since RSI can never climb back to `overbought` without a
+# single up-day, never exits. Used wherever a test genuinely needs an open
+# position at the end of the run, not just a plausible-looking one.
+OPEN_POSITION_CLOSES = [100 - i * 2 for i in range(15)]
+
 
 def make_candles(closes: list[float]) -> pd.DataFrame:
     dates = pd.date_range("2024-01-01", periods=len(closes), freq="D", name="timestamp")
@@ -173,37 +186,50 @@ def test_app_runs_comparison_page_with_fewer_than_two_selected(workdir):
 
 
 def test_app_runs_paper_portfolio_page_with_an_open_position(workdir):
-    # rsi_mean_reversion against RSI_CLOSES leaves an open position at
-    # the end of the run (proven already by
-    # tests/test_run_experiment_script.py's sibling assertions) -- a
-    # real exercise of the priced-position rendering path.
+    # rsi_mean_reversion against OPEN_POSITION_CLOSES leaves a genuinely
+    # open position at the end of the run (see that constant's own
+    # comment) -- a real exercise of the priced-position rendering path,
+    # not just the always-rendered top-level metrics.
     run_result = _populate_one_experiment(
-        symbol="QQQ", strategy="rsi_mean_reversion", params={"period": 5}, closes=RSI_CLOSES
+        symbol="QQQ",
+        strategy="rsi_mean_reversion",
+        params={"period": 5},
+        closes=OPEN_POSITION_CLOSES,
     )
+    registry = ExperimentRegistry()
+    assert len(registry.get_portfolio(run_result.experiment_id).positions) == 1  # sanity check
+
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
     assert any(str(run_result.experiment_id) in h.value for h in at.header)
     metric_labels = {m.label for m in at.metric}
     assert {"Cash", "Equity", "Unrealized P&L", "Realized P&L"} <= metric_labels
+    # The per-position dataframe (`render_paper_portfolio`'s
+    # `if snapshot.positions:` branch) -- previously never exercised by
+    # this file, since every "open position" fixture before this fix
+    # was actually closed out by the end of its own run.
+    assert any("QQQ" in df.value.to_string() for df in at.dataframe)
 
 
 def test_paper_portfolio_page_degrades_gracefully_when_price_unavailable(workdir, monkeypatch):
     run_result = _populate_one_experiment(
-        symbol="QQQ", strategy="rsi_mean_reversion", params={"period": 5}, closes=RSI_CLOSES
+        symbol="QQQ",
+        strategy="rsi_mean_reversion",
+        params={"period": 5},
+        closes=OPEN_POSITION_CLOSES,
     )
+    registry = ExperimentRegistry()
+    assert len(registry.get_portfolio(run_result.experiment_id).positions) == 1  # sanity check
 
     def _raise_no_data(self, symbol, period="5d", interval="1d"):
         raise NoDataError("no data available")
 
     monkeypatch.setattr(MarketDataService, "get_history", _raise_no_data)
-    # The 60s TTL on `_cached_latest_price`/`_value_portfolio` is correct
-    # production behavior (a real outage's UI reflection can lag up to a
-    # minute), but this test wants to assert the outcome of a price
-    # lookup that fails *right now* -- clear again so nothing computed
-    # under the success stub above (or leftover from another test) can
-    # still be sitting in cache under this test's own (db_path,
-    # experiment_id)/symbol keys.
+    # Defensive, not load-bearing: the 60s TTL on `_cached_latest_price`/
+    # `_value_portfolio` is correct production behavior (a real outage's
+    # UI reflection can lag up to a minute), but clearing again here
+    # means this test's outcome never depends on cache timing either way.
     st.cache_data.clear()
 
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
@@ -227,12 +253,16 @@ def test_paper_portfolio_page_degrades_gracefully_when_price_unavailable(workdir
 
 def test_rendering_the_dashboard_never_mutates_the_saved_portfolio(workdir):
     run_result = _populate_one_experiment(
-        symbol="QQQ", strategy="rsi_mean_reversion", params={"period": 5}, closes=RSI_CLOSES
+        symbol="QQQ",
+        strategy="rsi_mean_reversion",
+        params={"period": 5},
+        closes=OPEN_POSITION_CLOSES,
     )
     registry = ExperimentRegistry()
     before = registry.get_portfolio(run_result.experiment_id)
     before_cash = before.cash
     before_open = {p.symbol: p.quantity for p in before.positions.values()}
+    assert before_open  # this test is only meaningful with a genuinely open position
 
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)

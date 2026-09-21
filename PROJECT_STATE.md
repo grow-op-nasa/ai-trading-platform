@@ -1,25 +1,29 @@
 # Project State
 
-_Last updated: 2026-09-21 -- **Sprint 9 (Analytics & Dashboard) is
-implemented; two real `pytest` runs on the dev machine have each
-found and fixed a `tests/test_dashboard_smoke.py` issue, and a third
-run is pending.** Run 1: 6 failed, 682 passed -- a test-isolation bug
-(`@st.cache_data` keyed on a db-path string shared across every test's
-own `tmp_path`), fixed by clearing the cache in the `workdir` fixture.
-Run 2: 2 failed, 686 passed -- one genuine `AppTest` timeout (its
-default 3s budget too tight for a real analytics page), fixed by
-raising every `.run()` call to `timeout=15`; one
-(`test_paper_portfolio_page_degrades_gracefully_when_price_unavailable`)
-whose exact cause couldn't be fully confirmed from static reading
-alone, addressed with a defensive extra cache-clear plus a richer
-diagnostic assertion so a third occurrence would be conclusive. No
-`src/dashboard`/`src/analytics` production code changed in either
-fix. Sandbox-reverified at 677 passed both times, same 2 known
-environment-only failures, plus 1 correctly-skipped module
-(`tests/test_dashboard_smoke.py` -- no Streamlit in this sandbox, so
-neither fix could be sandbox-exercised). A third real-`pytest` run
-(expected 688 passed) is pending -- see `DECISIONS.md`, ADR-0042 for
-the full account.** A new `src/analytics/`
+_Last updated: 2026-09-22 -- **Sprint 9 (Analytics & Dashboard) is
+implemented; three real `pytest` runs on the dev machine each found
+and fixed a `tests/test_dashboard_smoke.py` issue, and a fourth run is
+pending.** Run 1: 6 failed, 682 passed -- a test-isolation cache bug,
+fixed by clearing `st.cache_data` in the `workdir` fixture. Run 2: 2
+failed, 686 passed -- a genuine `AppTest` timeout (fixed by raising
+every `.run()` call to `timeout=15`) and a defensive-but-not-yet-
+diagnosed cache clear for a warning-rendering test. Run 3: 1 failed,
+687 passed -- the enriched diagnostic added in run 2's fix revealed
+the actual cause: the fixture data three tests relied on for "an open
+position" had, in fact, been fully closed out by the end of its own
+run (a comment claiming otherwise, checked directly, was false).
+Fixed with a new `OPEN_POSITION_CLOSES` series (verified empirically
+against the real `run_experiment()` pipeline to leave exactly one open
+position) in place of `RSI_CLOSES` in the three tests that actually
+need one, plus sanity checks and a real assertion that the
+per-position dataframe renders. No `src/dashboard`/`src/analytics`
+production code changed in any of the three fixes. Sandbox-reverified
+at 677 passed each time, same 2 known environment-only failures, plus
+1 correctly-skipped module (`tests/test_dashboard_smoke.py` -- no
+Streamlit in this sandbox, so none of the three fixes could be
+sandbox-exercised). A fourth real-`pytest` run (expected 688 passed, 0
+failed) is pending -- see `DECISIONS.md`, ADR-0042 for the full
+account.** A new `src/analytics/`
 package (`models.py`/`metrics.py`/`service.py`/`valuation.py`) turns a
 backtest or experiment's raw trades/equity curve into deterministic
 metrics -- every value is either a real number or an explicit
@@ -781,9 +785,9 @@ For why things were built the way they were, see `DECISIONS.md`.
 
 ## Current Module
 
-**Sprint 9 (Analytics & Dashboard) is implemented; a real-`pytest`
-run surfaced and this session fixed a test-isolation bug in
-`tests/test_dashboard_smoke.py`, and a second real-`pytest`
+**Sprint 9 (Analytics & Dashboard) is implemented; three real-`pytest`
+runs each surfaced and this session fixed a different
+`tests/test_dashboard_smoke.py` issue, and a fourth real-`pytest`
 confirmation is pending.** `src/analytics/` computes deterministic backtest and
 portfolio metrics from a backtest's `Trade` list and equity curve (now
 persisted by `ExperimentRegistry`, not just held in memory) -- every
@@ -819,9 +823,18 @@ second real `pytest` run returned 686 passed, 2 failed -- one a genuine
 page, fixed by raising every `.run()` call to `timeout=15`), one
 (the price-unavailable degrade test) whose exact cause wasn't fully
 confirmed from static reading alone, addressed with a defensive extra
-cache-clear plus a richer diagnostic assertion. A third real-`pytest`
-run (expected 688 passed) is pending. See `DECISIONS.md`, ADR-0042 for
-the full design and both corrections.
+cache-clear plus a richer diagnostic assertion. The third real
+`pytest` run returned 687 passed, 1 failed -- and that same enriched
+assertion revealed the actual cause: three tests' fixture data
+(`RSI_CLOSES`) was fully closed out by the end of its own run, not
+left open as a comment claimed (checked directly and found false).
+Fixed with a new `OPEN_POSITION_CLOSES` series that empirically leaves
+exactly one open position (confirmed by running the real
+`run_experiment()` pipeline directly), used in the three tests that
+actually need one, with sanity checks and a real assertion that the
+per-position dataframe renders. A fourth real-`pytest` run (expected
+688 passed, 0 failed) is pending. See `DECISIONS.md`, ADR-0042 for the
+full design and all three corrections.
 
 **Sprint 8 (Market Data Integrity & Session Awareness), including its
 canonicalization-idempotence cleanup, is complete and confirmed via
@@ -942,31 +955,39 @@ yfinance API; pre-market/after-hours session support is reserved
 ## Next Task
 
 Sprint 9 (Analytics & Dashboard) is implemented and committed
-(`aeca0c8`, `38e693b`). Two real `pytest` runs on the dev machine have
-each found and fixed a `tests/test_dashboard_smoke.py` issue -- the
-one file this sandbox could only ever skip, never execute. Run 1:
-**682 passed, 6 failed**, caused by `@st.cache_data`-backed loaders
-caching on a relative db-path string shared across every test's own
-`tmp_path`; fixed by clearing `st.cache_data` in the `workdir` fixture.
-Run 2: **686 passed, 2 failed** -- one a genuine `AppTest` timeout
-(default 3s budget too tight for a real analytics page now that the
-cache fix let the test reach it; fixed by raising every `.run()` call
-to `timeout=15`), one
-(`test_paper_portfolio_page_degrades_gracefully_when_price_unavailable`)
-whose exact cause wasn't fully confirmed from static reading alone --
-addressed with a defensive extra `st.cache_data.clear()` plus a
-richer diagnostic assertion (dumps `at.error`/`at.info`/`at.metric` on
-failure) so a third occurrence would be conclusive rather than another
-guess. No `src/dashboard`/`src/analytics` production code changed in
-either fix; see `DECISIONS.md`, ADR-0042 for the full account.
-Sandbox-reverified at 677 passed both times, same 2 known
-environment-only failures, `test_dashboard_smoke.py` still correctly
-skipped here (neither fix is sandbox-exercisable). What remains: a
-third real `pytest` run on the dev machine (expected **688 passed**),
-then `git commit`/`push` for this fix -- and if the price-unavailable
-test fails again, its enriched assertion message, not a guess, is the
-next debugging input. AI/ML signal generation (`ROADMAP.md`'s other
-Sprint 9 candidate) remains explicit future work, not started.
+(`aeca0c8`, `38e693b`, `e9ff798`). Three real `pytest` runs on the dev
+machine have each found and fixed a `tests/test_dashboard_smoke.py`
+issue -- the one file this sandbox could only ever skip, never
+execute. Run 1: **682 passed, 6 failed**, a `@st.cache_data`
+cross-test cache-poisoning bug; fixed by clearing the cache in the
+`workdir` fixture. Run 2: **686 passed, 2 failed** -- a genuine
+`AppTest` timeout (fixed by raising every `.run()` call to
+`timeout=15`) and a not-yet-diagnosed warning-rendering failure,
+addressed defensively with an extra cache-clear plus a richer
+diagnostic assertion. Run 3: **687 passed, 1 failed** -- that
+diagnostic assertion did its job: it showed the portfolio had *zero*
+open positions, not one as three tests' shared fixture data
+(`RSI_CLOSES`) and a comment assumed -- checked directly against the
+file the comment cited and found false.
+`RSIMeanReversionStrategy` had, in fact, closed the position by the
+end of that specific series' recovery leg. Fixed with a new
+`OPEN_POSITION_CLOSES` series (the decline only, no recovery -- RSI
+pinned at exactly 0 the whole way per the real `ewm`-based formula),
+empirically confirmed via the real `run_experiment()` pipeline to
+leave exactly one open `QQQ` position. The three tests that actually
+need an open position now use it, each gained a
+`len(portfolio.positions) == 1` sanity check, and the "with an open
+position" test gained a real assertion that the per-position
+dataframe renders `"QQQ"` -- a code path never actually exercised
+before this fix. No `src/dashboard`/`src/analytics` production code
+changed in any of the three fixes; see `DECISIONS.md`, ADR-0042 for
+the full account. Sandbox-reverified at 677 passed each time, same 2
+known environment-only failures, `test_dashboard_smoke.py` still
+correctly skipped here (none of the three fixes is
+sandbox-exercisable). What remains: a fourth real `pytest` run on the
+dev machine (expected **688 passed, 0 failed**), then `git
+commit`/`push` for this fix. AI/ML signal generation (`ROADMAP.md`'s
+other Sprint 9 candidate) remains explicit future work, not started.
 
 Sprint 8 (Market Data Integrity & Session Awareness) is implemented,
 committed (`53db66c`), and its follow-up canonicalization-idempotence
@@ -1199,11 +1220,13 @@ pytest                    # expected ~688 passed on the real dev machine, once
                           # real, see below). Real-pytest run 1 returned 682
                           # passed, 6 failed, all 6 inside dashboard_smoke -- a
                           # test-isolation cache bug (fixed). Run 2 returned
-                          # 686 passed, 2 failed -- an AppTest timeout and one
-                          # not-fully-confirmed warning-rendering case (both
-                          # addressed; see DECISIONS.md ADR-0042). This "~688"
-                          # figure is the expectation for the *next* real run,
-                          # not yet confirmed.
+                          # 686 passed, 2 failed -- an AppTest timeout (fixed)
+                          # and a not-yet-diagnosed warning-rendering case. Run
+                          # 3 returned 687 passed, 1 failed -- the added
+                          # diagnostics showed the real cause: wrong fixture
+                          # data, now fixed (see DECISIONS.md ADR-0042). This
+                          # "~688" figure is the expectation for the *next*
+                          # real run, not yet confirmed.
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until
@@ -1277,6 +1300,37 @@ so a third occurrence would be conclusive. Sandbox-reverified at 677
 passed, unchanged. A third real-`pytest` run (still expected 688
 passed) is pending -- see `DECISIONS.md`, ADR-0042 for the full
 account.
+
+**Third correction (Sprint 9) -- the actual root cause:** the third
+real `pytest` run returned **687 passed, 1 failed**, and the enriched
+assertion from the second correction printed exactly the missing
+piece: `info=['No open positions.']`. The portfolio had zero open
+positions, not one -- `RSI_CLOSES`'s recovery leg was strong enough
+that `RSIMeanReversionStrategy` (period 5) exited back to FLAT before
+the series ended, closing the position it opened during the decline.
+A comment on the failing test (and two siblings) had claimed this was
+"proven already by `tests/test_run_experiment_script.py`'s sibling
+assertions" -- checked directly against that file and found false; it
+never asserts anything about open positions for this combination.
+Neither of the first two corrections above was ever the actual cause:
+`PortfolioValuationService.value()` correctly never had a position to
+price, so it correctly never had a reason to warn. Fixed with a new
+`OPEN_POSITION_CLOSES` constant -- the decline only, no recovery leg
+-- since `src.indicators.formulas.relative_strength_index`'s
+`ewm`-based RSI is pinned at exactly 0 for a series with zero gains
+ever, keeping the strategy oversold (and therefore LONG and never
+exiting) for the whole series. Verified empirically, not just
+reasoned through, by running the real `run_experiment()` pipeline
+directly against this series: 1 trade, 1 open `QQQ` position (entry
+`$98.0`, quantity `~102.04`), 0 closed. The three tests that actually
+need an open position now use `OPEN_POSITION_CLOSES`, each gained a
+`len(portfolio.positions) == 1` sanity check before the `AppTest` even
+runs, and the "with an open position" test gained a real assertion
+that the per-position dataframe renders `"QQQ"` -- exercising a code
+path this file had never actually covered before. Sandbox-reverified
+at 677 passed, unchanged. A fourth real-`pytest` run (expected **688
+passed, 0 failed**) is pending -- see `DECISIONS.md`, ADR-0042 for the
+full account.
 
 **Correction (Sprint 8):** an earlier version of this section claimed
 "Confirmed via real `pytest` on the dev machine: 569 passed, 0 failed,

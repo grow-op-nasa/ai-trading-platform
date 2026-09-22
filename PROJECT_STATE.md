@@ -1,8 +1,8 @@
 # Project State
 
 _Last updated: 2026-09-22 -- **Sprint 10 (ML Signal Research & AI
-Strategy Integration) is implemented and sandbox-verified; real-`pytest`
-confirmation on the dev machine is pending.** A new `src/ai/` package
+Strategy Integration) is complete and confirmed via real `pytest` on
+the dev machine: 784 passed, 0 failed, all green.** A new `src/ai/` package
 (`features.py`/`labels.py`/`dataset.py`/`splitting.py`/`model.py`/
 `identity.py`/`artifacts.py`/`registry.py`/`evaluation.py`/
 `training.py`) is a reproducible, leakage-safe ML research layer:
@@ -775,10 +775,12 @@ For why things were built the way they were, see `DECISIONS.md`.
 
 ## Current Module
 
-**Sprint 10 (ML Signal Research & AI Strategy Integration) is
-implemented and sandbox-verified; real-`pytest` confirmation on the
-dev machine is pending** (scikit-learn/joblib aren't installed in this
-sandbox -- the same gap Streamlit had for Sprint 9). `src/ai/` is a
+**Sprint 10 (ML Signal Research & AI Strategy Integration) is complete
+and confirmed via real `pytest` on the dev machine: 784 passed, 0
+failed, all green** (scikit-learn/joblib aren't installed in the
+sandbox used during development -- the same gap Streamlit had for
+Sprint 9 -- so this sprint's sklearn-dependent tests only ran for real
+once handed off to the dev machine). `src/ai/` is a
 nine-module research-only ML capability: `features.py`
 (`FeatureBuilder` -- 8 past-only columns built on the existing
 `IndicatorEngine`, never a reimplemented indicator formula) and
@@ -826,14 +828,22 @@ architecture test scans their actual source for exactly that, plus
 confirms `src/ai` never imports `src.broker`/`src.execution`/
 `src.risk`/`src.portfolio`/`src.dashboard`/`yfinance` directly. No LLM
 anywhere in this chain (the AI Research Reporter's own separate LLM/
-fallback narrative path, `src/research/`, is untouched). Sandbox suite:
-**725 passed**, same 2 known environment-only failures, 8 skipped (5
-whole test modules plus 2 gated assertions inside
-`tests/test_architecture.py`, all gated on scikit-learn/joblib not
-being installed in this sandbox -- `pytest.importorskip`, the exact
-pattern Sprint 9 established for Streamlit). See `DECISIONS.md`,
-ADR-0043 for the full design and the exact list of what's gated and
-why.
+fallback narrative path, `src/research/`, is untouched). Sandbox suite
+(scikit-learn/joblib unavailable there): 725 passed, same 2 known
+environment-only failures, 8 skipped (5 whole test modules plus 2
+gated assertions inside `tests/test_architecture.py`, all gated via
+`pytest.importorskip`, the exact pattern Sprint 9 established for
+Streamlit). **Real `pytest` on the dev machine (scikit-learn/joblib
+installed): 784 passed, 0 failed** -- the 8 sandbox-skipped items ran
+and passed for real, and the 2 sandbox-only environment failures
+(Python-version check, config) don't reproduce on the dev machine's
+own supported Python version. That first real run also surfaced two
+test-authoring bugs (never production bugs), both fixed in a follow-up
+commit: a Trade-equality check that compared randomly-generated
+`Signal` UUIDs across two independent runs instead of trade economics,
+and an architecture substring check that false-positived on
+`AISignalStrategy`. See `DECISIONS.md`, ADR-0043 for the full design
+and the exact list of what was gated and why.
 
 **Sprint 9 (Analytics & Dashboard) is complete and confirmed via real
 `pytest` on the dev machine: 688 passed, 0 failed, all green.**
@@ -998,32 +1008,39 @@ yfinance API; pre-market/after-hours session support is reserved
 
 ## Next Task
 
-Sprint 10 (ML Signal Research & AI Strategy Integration) is
-implemented and sandbox-verified: **725 passed, 2 known
-environment-only failures (unchanged from prior sprints), 8 skipped**.
-The 8 skips are every test that needs a real model fit --
-`tests/test_ai_model.py`, `test_ai_registry.py`, `test_ai_training.py`,
-`test_ai_signal_strategy.py`, `test_ai_end_to_end.py` (5 whole
-modules), plus 2 gated assertions inside `tests/test_architecture.py`
--- gated on `scikit-learn`/`joblib` via `pytest.importorskip`, since
-neither is installed in this sandbox (a real, `requirements.txt`-pinned
-dependency, exactly the gap Streamlit had for Sprint 9). Everything
-that doesn't need a fitted model --
-`tests/test_ai_features.py` (10), `test_ai_labels.py` (11),
-`test_ai_dataset.py` (7), `test_ai_splitting.py` (15), plus 4
-non-gated new assertions in `test_architecture.py` -- ran for real in
-this sandbox and passed. The gated modules were reviewed carefully
-against the real scikit-learn API (Pipeline/StandardScaler/
-LogisticRegression/predict_proba/classification metrics) but, per this
-platform's own standing process, are not claimed "verified" until a
-real `pytest` run on the dev machine confirms them -- **what remains:
-a real `pytest` run on the dev machine (expected ~735-740 passed,
-0 failed, once the 5 gated modules and 2 gated assertions actually run
-for real there -- see the exact module test counts above)**, then
-`git commit`/`push` for the final docs-confirmed state. No
-`src/backtesting`/`src/risk`/`src/execution`/`src/portfolio`/
-`src/dashboard`/`src/analytics` production code changed this sprint;
-see `DECISIONS.md`, ADR-0043 for the full account.
+Sprint 10 (ML Signal Research & AI Strategy Integration) is complete
+and **confirmed via real `pytest` on the dev machine: 784 passed, 0
+failed, all green.** It took two real-pytest rounds to get there. The
+sandbox suite (scikit-learn/joblib unavailable there, the same gap
+Streamlit had for Sprint 9) had shown 725 passed, 2 known
+environment-only failures, 8 skipped -- every test needing a real
+model fit (`tests/test_ai_model.py`, `test_ai_registry.py`,
+`test_ai_training.py`, `test_ai_signal_strategy.py`,
+`test_ai_end_to_end.py`, plus 2 gated assertions inside
+`test_architecture.py`). Run 1 on the dev machine (782 passed, 2
+failed) surfaced two genuine test-authoring bugs the sandbox review
+couldn't catch without a real scikit-learn: (1)
+`test_repeated_backtests_against_the_same_frozen_model_are_identical`
+compared full `Trade` dataclasses, including `entry_signal_id`/
+`exit_signal_id` -- but `Signal.id` is `field(default_factory=uuid4)`
+(`src/signals/models.py`), so two independent runs mint fresh random
+ids for otherwise-identical signals even with a fully deterministic
+model; fixed by comparing trade economics (entry/exit time, direction,
+entry/exit price) instead of raw dataclass equality; (2) the
+`test_ai_signal_strategy_emits_canonical_signal_objects` architecture
+guard used `"class AISignal" not in text`, a plain substring check
+that also matches inside the real, intended `class AISignalStrategy`
+-- a guaranteed false positive; fixed with a word-boundary regex.
+Neither was a production-code bug -- `src/ai`/`src/strategies/
+ai_signal.py` were correct as designed. Run 2 confirmed **784 passed,
+0 failed** -- notably the sandbox's 2 "known environment-only"
+failures (Python-version check, config) don't reproduce on the dev
+machine's own supported Python version either, so this run has zero
+failures of any kind. No `src/backtesting`/`src/risk`/`src/execution`/
+`src/portfolio`/`src/dashboard`/`src/analytics` production code
+changed this sprint; see `DECISIONS.md`, ADR-0043 for the full
+account. Sprint 11+ (LLM-based reasoning as a second AI signal
+approach, an AI-specific dashboard page) is future work, not started.
 
 Sprint 9 (Analytics & Dashboard) is implemented, committed
 (`aeca0c8`, `38e693b`, `e9ff798`, plus a final docs-only commit for
@@ -1297,12 +1314,14 @@ pytest                    # Sprint 9 baseline: 688 passed, confirmed on the
                           # up from 21) + 46 gated on scikit-learn/joblib
                           # (12 ai_model + 12 ai_registry + 9 ai_training +
                           # 10 ai_signal_strategy + 3 ai_end_to_end, plus 2 of
-                          # the 7 new architecture assertions). Expected real-
-                          # pytest total once scikit-learn/joblib actually run
-                          # for real on the dev machine (both are pinned in
-                          # requirements.txt): **784 passed, 2 known
-                          # environment-only failures, 0 skipped** (688 + 96).
-                          # This sandbox has neither scikit-learn nor joblib
+                          # the 7 new architecture assertions).
+                          # **Confirmed via real pytest on the dev machine:
+                          # 784 passed, 0 failed, all green** (688 + 96) --
+                          # even the 2 previously "known environment-only"
+                          # failures (cli/doctor Python-version check, config)
+                          # don't reproduce there, since the dev machine runs
+                          # its own actually-supported Python version. This
+                          # sandbox has neither scikit-learn nor joblib
                           # installed and no network access to add them -- its
                           # own stub-based runner shows 725 passed, 2 known
                           # environment-only failures (cli/doctor 28/29,
@@ -1310,10 +1329,14 @@ pytest                    # Sprint 9 baseline: 688 passed, confirmed on the
                           # modules + 2 gated architecture assertions,
                           # scikit-learn-gated via pytest.importorskip -- the
                           # exact pattern Sprint 9 used for dashboard_smoke's
-                          # Streamlit gate; see DECISIONS.md, ADR-0043). A
-                          # real pytest run on the dev machine confirming 784
-                          # passed, 0 failed beyond the 2 known ones is still
-                          # pending.
+                          # Streamlit gate; see DECISIONS.md, ADR-0043). The
+                          # first real-pytest round found 2 failures -- both
+                          # test-authoring bugs the sandbox couldn't catch
+                          # without a real scikit-learn (a Trade-equality
+                          # check comparing random Signal UUIDs, and an
+                          # architecture substring check that false-positived
+                          # on AISignalStrategy) -- fixed, then reconfirmed at
+                          # 784 passed, 0 failed on the second round.
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until

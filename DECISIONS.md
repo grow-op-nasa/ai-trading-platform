@@ -3232,10 +3232,9 @@ genuinely verified, not just implemented or sandbox-verified.
 
 ## ADR-0043: Sprint 10 -- ML Signal Research & AI Strategy Integration
 
-**Status:** Implemented, sandbox-verified where the environment allows
-it; pending real-`pytest` confirmation on the dev machine (scikit-learn
-is a real `requirements.txt` dependency, not installed in this
-sandbox -- see "Sandbox verification" below).
+**Status:** Implemented and confirmed via real `pytest` on the dev
+machine: **784 passed, 0 failed, all green** -- see "Sandbox
+verification" below for the two-round path to that result.
 
 **Context:** `ROADMAP.md` named Sprint 10 ("AI") as explicit future
 work when Sprint 9 resolved in favor of Analytics & Dashboard, and left
@@ -3452,8 +3451,48 @@ modules gated on scikit-learn/joblib, plus the 2 gated assertions
 inside `test_architecture.py`). The gated modules --
 `tests/test_ai_model.py`, `tests/test_ai_registry.py`,
 `tests/test_ai_training.py`, `tests/test_ai_signal_strategy.py`,
-`tests/test_ai_end_to_end.py` -- are reviewed carefully against the
-real scikit-learn API but, per this platform's own standing process,
-are not claimed "verified" until a real `pytest` run on the dev machine
-confirms them. See `PROJECT_STATE.md` for the exact expected count and
-what remains.
+`tests/test_ai_end_to_end.py` -- had been reviewed carefully against
+the real scikit-learn API, but per this platform's own standing
+process were not claimed "verified" until a real `pytest` run
+confirmed them.
+
+Real `pytest` on the dev machine, round 1: **782 passed, 2 failed**.
+Both failures were bugs in the *tests themselves*, not in `src/ai` or
+`src/strategies/ai_signal.py` -- exactly the kind of thing sandbox
+review, without a real scikit-learn to run against, could not have
+caught:
+
+- `test_repeated_backtests_against_the_same_frozen_model_are_identical`
+  asserted `result_a.trades == result_b.trades` on full `Trade`
+  dataclasses, which include `entry_signal_id`/`exit_signal_id`.
+  `Signal.id` is `field(default_factory=uuid4)` (`src/signals/models.py`)
+  -- an existing, deliberate design from long before this sprint, not
+  something Sprint 10 introduced. Two independent calls to
+  `AISignalStrategy.generate_signals()` against the same frozen model
+  and the same candles produce identical directions, timestamps, and
+  probabilities (confirmed directly in the same test), but each call
+  constructs fresh `Signal` objects with new random UUIDs -- so full
+  dataclass equality was guaranteed to fail regardless of how
+  deterministic the model was. Fixed by comparing trade economics
+  (`entry_time`, `exit_time`, `direction`, `entry_price`, `exit_price`)
+  instead of raw dataclass identity -- this is what "the same trades"
+  actually means for a backtest-integrity check; the signal ids were
+  never part of that claim.
+- `test_ai_signal_strategy_emits_canonical_signal_objects`'s guard
+  against a parallel "AISignal" domain model used
+  `assert "class AISignal" not in text` -- a plain substring check that
+  also matches inside the real, intended `class AISignalStrategy`,
+  making it a guaranteed false positive on the very code it was meant
+  to pass. Fixed with a word-boundary regex,
+  `re.search(r"class AISignal\b(?!Strategy)", text) is None`, which
+  still catches a genuine rogue `AISignal` class while letting
+  `AISignalStrategy` through.
+
+Real `pytest` on the dev machine, round 2 (after both fixes):
+**784 passed, 0 failed, all green.** Notably, the sandbox's 2 "known
+environment-only" failures (the cli/doctor Python-version check and a
+`test_config` failure, carried forward unchanged since Sprint 7) don't
+reproduce on the dev machine at all, since it runs its own genuinely
+supported Python version -- so this confirmation run has zero failures
+of any kind, not just zero *new* ones. See `PROJECT_STATE.md` and
+`CHANGELOG.md` for the same account.

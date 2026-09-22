@@ -111,9 +111,29 @@ ADR-0043 for the full design and reasoning.
   8 skipped** (5 whole modules gated on scikit-learn/joblib, plus 2
   gated assertions inside `test_architecture.py`, plus
   `test_dashboard_smoke.py`'s pre-existing Streamlit gate).
-- Real-`pytest` confirmation on the dev machine (where scikit-learn is
-  actually installed per `requirements.txt`) is pending -- see
-  `PROJECT_STATE.md`.
+- Real `pytest` on the dev machine, round 1: **782 passed, 2 failed**.
+  Both failures were test-authoring bugs the sandbox review couldn't
+  catch without a real scikit-learn -- never production bugs in
+  `src/ai`/`src/strategies/ai_signal.py`:
+  - `test_repeated_backtests_against_the_same_frozen_model_are_identical`
+    compared full `Trade` dataclasses across two independent runs,
+    including `entry_signal_id`/`exit_signal_id`. `Signal.id` is
+    `field(default_factory=uuid4)` (`src/signals/models.py`), so two
+    runs mint fresh random ids for otherwise-identical signals even
+    with a fully deterministic model. Fixed by comparing trade
+    economics (entry/exit time, direction, entry/exit price) instead
+    of raw dataclass equality.
+  - `test_ai_signal_strategy_emits_canonical_signal_objects`'s "no
+    parallel domain model" guard used `"class AISignal" not in text`,
+    a plain substring check that also matches inside the real,
+    intended `class AISignalStrategy` -- a guaranteed false positive.
+    Fixed with a word-boundary regex
+    (`class AISignal\b(?!Strategy)`).
+- Real `pytest` on the dev machine, round 2 (after both fixes):
+  **784 passed, 0 failed, all green.** The sandbox's 2 "known
+  environment-only" failures (cli/doctor Python-version check, config)
+  don't reproduce on the dev machine's own supported Python version
+  either -- this run has zero failures of any kind.
 
 ## Sprint 9 -- 2026-09-21, Analytics & Dashboard
 

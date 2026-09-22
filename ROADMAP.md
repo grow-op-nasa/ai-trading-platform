@@ -762,7 +762,7 @@ rounds, each finding and fixing a genuine issue in
 `DECISIONS.md`, ADR-0042 for the full account, and `PROJECT_STATE.md`
 for the current status.
 
-## Sprint 10 -- ML Signal Research & AI Strategy Integration ✅ Complete (sandbox-verified, pending real-pytest confirmation)
+## Sprint 10 -- ML Signal Research & AI Strategy Integration ✅ Complete (confirmed via real pytest: 784 passed, 0 failed)
 
 Sprint 9's deferred Candidate B, now built: classic ML (scikit-learn
 `LogisticRegression`) on engineered features, consumed by
@@ -807,12 +807,17 @@ optimizer; no automatic "best model" selection; no live inference
 daemon, continuous retraining, or autonomous trading; no new
 AI-specific dashboard page.
 
-Sandbox-confirmed at 725 passed, 2 known environment-only failures
-(unchanged from prior sprints), 8 skipped (scikit-learn/joblib not
-installed in this sandbox -- see `DECISIONS.md`, ADR-0043 for exactly
-which modules are gated and why). Real-`pytest` confirmation on the
-dev machine (where scikit-learn is actually installed) is still
-pending -- see `PROJECT_STATE.md`.
+Sandbox-confirmed at 725 passed, 2 known environment-only failures, 8
+skipped (scikit-learn/joblib not installed in this sandbox), then
+confirmed by real pytest on the dev machine at **784 passed, 0
+failed** -- the 2 sandbox-only failures (Python-version check, config)
+don't reproduce there since the dev machine runs the actual supported
+Python version, and the 8 sandbox-skipped modules ran and passed for
+real once scikit-learn/joblib were available. Two test-authoring bugs
+the real run surfaced (a Trade-equality comparison that included
+randomly-generated Signal UUIDs, and a substring architecture check
+that false-positived on `AISignalStrategy`) were fixed in a follow-up
+commit -- see `DECISIONS.md`, ADR-0043 for the full account.
 
 ## Sprint 11+ -- future work (planned)
 

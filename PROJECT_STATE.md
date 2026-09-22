@@ -1,32 +1,33 @@
 # Project State
 
-_Last updated: 2026-09-22 -- **Sprint 9 (Analytics & Dashboard) is
-complete and confirmed via real `pytest` on the dev machine: 688
-passed, 0 failed, all green.** Getting there took three real-`pytest`
-rounds, each surfacing and fixing a genuine issue in
-`tests/test_dashboard_smoke.py` (never in production code): a
-cross-test `@st.cache_data` cache-poisoning bug, an `AppTest` timeout
-too tight for a real analytics page, and -- the one that actually
-mattered -- a test fixture (`RSI_CLOSES`) that a comment claimed left
-a position open but, checked directly and confirmed empirically
-against the real `run_experiment()` pipeline, did not; replaced with a
-new `OPEN_POSITION_CLOSES` series that genuinely does. Full account,
-including all three corrections, in `DECISIONS.md`, ADR-0042. A new
-`src/analytics/`
-package (`models.py`/`metrics.py`/`service.py`/`valuation.py`) turns a
-backtest or experiment's raw trades/equity curve into deterministic
-metrics -- every value is either a real number or an explicit
-`UNDEFINED` with a reason, never a silently fabricated `0`/`inf`/`nan`
-(`DECISIONS.md`, ADR-0042). A new `src/dashboard/` package is a
-read-only Streamlit interface over it (`streamlit run
-src/dashboard/app.py`): Overview, Backtest/Experiment Analysis,
-Strategy Comparison, and Paper Portfolio pages, none of which can
-submit an order, change a risk limit, or mutate any
-`Portfolio`/`Experiment`/`Strategy` state. `ExperimentRegistry` gained
-additive persistence for a backtest's trades, equity curve, resulting
-`Portfolio`, and research report, so the dashboard can inspect a past
-experiment, not only one just run in the same process. See
-`DECISIONS.md`, ADR-0042 for the full design._
+_Last updated: 2026-09-22 -- **Sprint 10 (ML Signal Research & AI
+Strategy Integration) is implemented and sandbox-verified; real-`pytest`
+confirmation on the dev machine is pending.** A new `src/ai/` package
+(`features.py`/`labels.py`/`dataset.py`/`splitting.py`/`model.py`/
+`identity.py`/`artifacts.py`/`registry.py`/`evaluation.py`/
+`training.py`) is a reproducible, leakage-safe ML research layer:
+past-only engineered features, a separately-configured 3-class
+forward-return label, chronological train/validation/test splitting
+with a purge/embargo (never shuffled), a `scikit-learn`
+`LogisticRegression` baseline behind an extensible `AIModel` interface,
+deterministic model identity, joblib artifact persistence, and a
+JSON-metadata `ModelRegistry`. A new `src/strategies/ai_signal.py`
+(`AISignalStrategy`) is the entire seam to the rest of the platform --
+loads an already-trained, frozen model and maps its predictions onto
+the existing `Signal`/`SignalDirection`, sparsely, with model
+provenance in signal metadata; it never trains, never sizes a
+position, never touches an order. `Backtester`/`src.risk`/
+`src.execution`/`src.portfolio`/`src.dashboard` gained zero AI-specific
+code -- AI is one more signal source, not a replacement for any of
+them (an architecture test enforces this structurally). No LLM
+anywhere in this chain; the existing AI Research Reporter's separate
+LLM/fallback narrative path is untouched. `scikit-learn`/`joblib` are
+real `requirements.txt` dependencies but aren't installed in this
+sandbox (same gap Streamlit had for Sprint 9) -- every test needing a
+real model fit is gated with `pytest.importorskip`, skips cleanly here,
+and is pending confirmation on the dev machine. Sandbox suite: **725
+passed**, 2 known environment-only failures (unchanged from prior
+sprints), 8 skipped. Full design in `DECISIONS.md`, ADR-0043._
 
 _As of 2026-09-16 -- **Sprint 8 (Market Data Integrity &
 Session Awareness), including its canonicalization-idempotence
@@ -774,6 +775,66 @@ For why things were built the way they were, see `DECISIONS.md`.
 
 ## Current Module
 
+**Sprint 10 (ML Signal Research & AI Strategy Integration) is
+implemented and sandbox-verified; real-`pytest` confirmation on the
+dev machine is pending** (scikit-learn/joblib aren't installed in this
+sandbox -- the same gap Streamlit had for Sprint 9). `src/ai/` is a
+nine-module research-only ML capability: `features.py`
+(`FeatureBuilder` -- 8 past-only columns built on the existing
+`IndicatorEngine`, never a reimplemented indicator formula) and
+`labels.py` (`LabelBuilder` -- a separately-configured 3-class
+forward-return target, `LONG`/`SHORT`/`FLAT`) are deliberately
+distinct classes, composed (never hidden inside each other) by
+`dataset.py`'s `build_training_table()`. `splitting.py`'s
+`chronological_split()` never shuffles and drops a `purge_bars`
+embargo (always the label's own `horizon_bars`) at each internal
+boundary so no training label's outcome window can reach into
+validation or test -- proved directly in
+`tests/test_ai_splitting.py`, not just asserted; `walk_forward_splits()`
+gives a diagnostic expanding-window evaluator alongside the one
+chronological holdout. `model.py`'s `AIModel` interface wraps a
+`scikit-learn` `Pipeline(StandardScaler, LogisticRegression)` --
+scaler fit only on the training split, schema-checked at inference
+time (a missing/reordered/renamed feature fails loudly, never a
+silently wrong prediction) -- behind a `register_model_type()` seam so
+a second model implementation is "implement it, register it," not a
+rewrite of `MLTrainingService`/`AISignalStrategy`. `identity.py`'s
+`model_spec_id()` gives every trained model a deterministic identity
+distinct from `artifacts.py`'s SHA-256 artifact content hash;
+`registry.py`'s `ModelRegistry` (JSON metadata + joblib artifacts under
+`data/models/`, no new SQLite schema) answers "which exact model
+artifact produced this experiment" the same way `ExperimentRegistry`
+answers it for experiments. `training.py`'s `MLTrainingService` is the
+one application-facing entry point wiring the whole chain together --
+`Backtester -> Analytics` and `evaluation.py`'s classification metrics
+are kept strictly separate questions (model quality vs. trading
+performance), never conflated into one number.
+
+`src/strategies/ai_signal.py`'s `AISignalStrategy` is the entire seam
+between `src.ai` and the rest of the platform: loads an already-
+trained, frozen model by `model_id` at construction (never trains
+again), maps predictions onto the existing `Signal`/`SignalDirection`
+(no second, AI-specific decision model), emits sparsely (state-change
+only, ADR-0015) with model provenance (`model_id`/`model_artifact_hash`/
+`predicted_class`/`class_probability`/`feature_set_id`/
+`label_horizon_bars`) in signal metadata, and reconstructs from
+`ExperimentSpec`'s existing, unmodified `strategy_params` field alone
+-- no `ExperimentSpec`/`ExperimentRegistry` schema change was needed
+this sprint. `Backtester`/`src.risk`/`src.execution`/`src.portfolio`/
+`src.dashboard`/`src.analytics` gained zero AI-specific code -- an
+architecture test scans their actual source for exactly that, plus
+confirms `src/ai` never imports `src.broker`/`src.execution`/
+`src.risk`/`src.portfolio`/`src.dashboard`/`yfinance` directly. No LLM
+anywhere in this chain (the AI Research Reporter's own separate LLM/
+fallback narrative path, `src/research/`, is untouched). Sandbox suite:
+**725 passed**, same 2 known environment-only failures, 8 skipped (5
+whole test modules plus 2 gated assertions inside
+`tests/test_architecture.py`, all gated on scikit-learn/joblib not
+being installed in this sandbox -- `pytest.importorskip`, the exact
+pattern Sprint 9 established for Streamlit). See `DECISIONS.md`,
+ADR-0043 for the full design and the exact list of what's gated and
+why.
+
 **Sprint 9 (Analytics & Dashboard) is complete and confirmed via real
 `pytest` on the dev machine: 688 passed, 0 failed, all green.**
 `src/analytics/` computes deterministic backtest and portfolio
@@ -936,6 +997,33 @@ yfinance API; pre-market/after-hours session support is reserved
 (`SessionPolicy`) but unimplemented.
 
 ## Next Task
+
+Sprint 10 (ML Signal Research & AI Strategy Integration) is
+implemented and sandbox-verified: **725 passed, 2 known
+environment-only failures (unchanged from prior sprints), 8 skipped**.
+The 8 skips are every test that needs a real model fit --
+`tests/test_ai_model.py`, `test_ai_registry.py`, `test_ai_training.py`,
+`test_ai_signal_strategy.py`, `test_ai_end_to_end.py` (5 whole
+modules), plus 2 gated assertions inside `tests/test_architecture.py`
+-- gated on `scikit-learn`/`joblib` via `pytest.importorskip`, since
+neither is installed in this sandbox (a real, `requirements.txt`-pinned
+dependency, exactly the gap Streamlit had for Sprint 9). Everything
+that doesn't need a fitted model --
+`tests/test_ai_features.py` (10), `test_ai_labels.py` (11),
+`test_ai_dataset.py` (7), `test_ai_splitting.py` (15), plus 4
+non-gated new assertions in `test_architecture.py` -- ran for real in
+this sandbox and passed. The gated modules were reviewed carefully
+against the real scikit-learn API (Pipeline/StandardScaler/
+LogisticRegression/predict_proba/classification metrics) but, per this
+platform's own standing process, are not claimed "verified" until a
+real `pytest` run on the dev machine confirms them -- **what remains:
+a real `pytest` run on the dev machine (expected ~735-740 passed,
+0 failed, once the 5 gated modules and 2 gated assertions actually run
+for real there -- see the exact module test counts above)**, then
+`git commit`/`push` for the final docs-confirmed state. No
+`src/backtesting`/`src/risk`/`src/execution`/`src/portfolio`/
+`src/dashboard`/`src/analytics` production code changed this sprint;
+see `DECISIONS.md`, ADR-0043 for the full account.
 
 Sprint 9 (Analytics & Dashboard) is implemented, committed
 (`aeca0c8`, `38e693b`, `e9ff798`, plus a final docs-only commit for
@@ -1184,8 +1272,8 @@ resulting `BrokerOrder` and a `PaperBroker`-simulated `Fill` into
 ## How to verify this file is accurate
 
 ```bash
-pytest                    # 688 passed, confirmed on the real dev machine
-                          # (21 architecture + 8 attribution
+pytest                    # Sprint 9 baseline: 688 passed, confirmed on the
+                          # real dev machine (21 architecture + 8 attribution
                           # + 12 backtesting + 34 broker + 6 cache + 19 calendar
                           # + 29 cli/doctor + 7 config + 15 data_canonical
                           # + 24 data_validation + 59 analytics
@@ -1200,21 +1288,32 @@ pytest                    # 688 passed, confirmed on the real dev machine
                           # + 10 regime + 17 research + 17 risk
                           # + 14 rsi_mean_reversion_strategy + 9 run_experiment_script
                           # + 13 signals + 10 sprint7_integration + 9 strategy_registry
-                          # + 13 strategy_sdk + 15 tiger + 6 timeframe_agnostic)
-                          # -- the sandbox's own stub-based runner shows 677
-                          # passed, 2 known environment-only failures
-                          # (cli/doctor 28/29, config 6/7), plus 1 module
-                          # correctly skipped (dashboard_smoke -- no Streamlit
-                          # installed in this sandbox; its 9 tests only run for
-                          # real, see below). Real-pytest run 1 returned 682
-                          # passed, 6 failed, all 6 inside dashboard_smoke -- a
-                          # test-isolation cache bug (fixed). Run 2 returned
-                          # 686 passed, 2 failed -- an AppTest timeout (fixed)
-                          # and a not-yet-diagnosed warning-rendering case. Run
-                          # 3 returned 687 passed, 1 failed -- the added
-                          # diagnostics showed the real cause: wrong fixture
-                          # data, now fixed (see DECISIONS.md ADR-0042). Run 4
-                          # confirmed it: 688 passed, 0 failed, all green.
+                          # + 13 strategy_sdk + 15 tiger + 6 timeframe_agnostic).
+                          #
+                          # Sprint 10 adds 96 more test functions: 10
+                          # ai_features + 11 ai_labels + 7 ai_dataset + 15
+                          # ai_splitting (all network-free and scikit-learn-
+                          # free) + 7 new architecture assertions (28 total,
+                          # up from 21) + 46 gated on scikit-learn/joblib
+                          # (12 ai_model + 12 ai_registry + 9 ai_training +
+                          # 10 ai_signal_strategy + 3 ai_end_to_end, plus 2 of
+                          # the 7 new architecture assertions). Expected real-
+                          # pytest total once scikit-learn/joblib actually run
+                          # for real on the dev machine (both are pinned in
+                          # requirements.txt): **784 passed, 2 known
+                          # environment-only failures, 0 skipped** (688 + 96).
+                          # This sandbox has neither scikit-learn nor joblib
+                          # installed and no network access to add them -- its
+                          # own stub-based runner shows 725 passed, 2 known
+                          # environment-only failures (cli/doctor 28/29,
+                          # config 6/7, unchanged), 8 skipped (5 whole AI test
+                          # modules + 2 gated architecture assertions,
+                          # scikit-learn-gated via pytest.importorskip -- the
+                          # exact pattern Sprint 9 used for dashboard_smoke's
+                          # Streamlit gate; see DECISIONS.md, ADR-0043). A
+                          # real pytest run on the dev machine confirming 784
+                          # passed, 0 failed beyond the 2 known ones is still
+                          # pending.
 python src/main.py        # should log startup + watchlist
 python -m src.cli doctor  # should print one line per check and end with "Everything Healthy"
                           # (Broker Connection shows NOT_IMPLEMENTED until

@@ -762,17 +762,69 @@ rounds, each finding and fixing a genuine issue in
 `DECISIONS.md`, ADR-0042 for the full account, and `PROJECT_STATE.md`
 for the current status.
 
-## Sprint 10+ -- AI (planned)
+## Sprint 10 -- ML Signal Research & AI Strategy Integration ✅ Complete (sandbox-verified, pending real-pytest confirmation)
 
-- `src/ai/`: ML/LLM-based signal generation, consumed by
-  `src/strategies` as one signal source among others (see
-  `DECISIONS.md`, ADR-0001) -- not a rewrite of the strategy layer.
-  Specific approach (classic ML on engineered features vs. LLM-based
-  reasoning over market context) to be decided closer to the sprint,
-  once indicators and strategies exist to feed it. This is Sprint 9's
-  Candidate B, deferred (not abandoned) in favor of Analytics &
-  Dashboard (Candidate A, now built above) -- see `DECISIONS.md`,
-  ADR-0042.
+Sprint 9's deferred Candidate B, now built: classic ML (scikit-learn
+`LogisticRegression`) on engineered features, consumed by
+`src/strategies` as one signal source among others (`DECISIONS.md`,
+ADR-0001) -- not a rewrite of the strategy layer, and not the
+LLM-based-reasoning alternative (that remains explicit future work).
+See `DECISIONS.md`, ADR-0043 for the full design and reasoning.
+
+- ✅ **`src/ai/`**: `features.py`/`labels.py` (past-only features, a
+  separately-configured 3-class forward-return label),
+  `dataset.py` (aligned, leakage-free training table),
+  `splitting.py` (chronological split with purge/embargo, expanding
+  walk-forward evaluation), `model.py` (`AIModel` interface +
+  `LogisticRegressionModel`, extensible via `register_model_type()`),
+  `identity.py`/`artifacts.py`/`registry.py` (deterministic model
+  identity, joblib artifact persistence, JSON metadata registry),
+  `evaluation.py` (classification-quality metrics, distinct from
+  trading performance), `training.py` (`MLTrainingService`, the one
+  application-facing entry point).
+- ✅ **`src/strategies/ai_signal.py`**: `AISignalStrategy` -- loads a
+  frozen, already-trained model, maps predictions onto the existing
+  `Signal`/`SignalDirection`, sparse emission (ADR-0015), model
+  provenance in signal metadata. `Backtester`/`src.risk`/
+  `src.execution`/`src.portfolio`/`src.dashboard` all remain exactly
+  as AI-agnostic as before -- no AI-specific branch anywhere in any of
+  them.
+- ✅ **~50 new tests**: `tests/test_ai_features.py`,
+  `test_ai_labels.py`, `test_ai_dataset.py`, `test_ai_splitting.py`
+  (network-free, scikit-learn-free, run in every environment);
+  `test_ai_model.py`, `test_ai_registry.py`, `test_ai_training.py`,
+  `test_ai_signal_strategy.py`, `test_ai_end_to_end.py` (gated on
+  scikit-learn/joblib via `pytest.importorskip`, the same pattern
+  Sprint 9 established for Streamlit); 6 new boundary assertions added
+  to `tests/test_architecture.py`.
+
+**Explicitly not built this round** (per the sprint's own scope): no
+LLM anywhere in the AI signal layer (the AI Research Reporter's
+separate LLM/fallback narrative path is untouched); no model zoo
+(`LogisticRegression` only, though a second implementation is now
+"implement it, register it," not a rewrite); no hyperparameter
+optimizer; no automatic "best model" selection; no live inference
+daemon, continuous retraining, or autonomous trading; no new
+AI-specific dashboard page.
+
+Sandbox-confirmed at 725 passed, 2 known environment-only failures
+(unchanged from prior sprints), 8 skipped (scikit-learn/joblib not
+installed in this sandbox -- see `DECISIONS.md`, ADR-0043 for exactly
+which modules are gated and why). Real-`pytest` confirmation on the
+dev machine (where scikit-learn is actually installed) is still
+pending -- see `PROJECT_STATE.md`.
+
+## Sprint 11+ -- future work (planned)
+
+- LLM-based reasoning over market context as a second AI signal
+  approach, if warranted after Sprint 10's classic-ML baseline is
+  evaluated -- `src.ai.model`'s `register_model_type()` seam exists
+  specifically so this is additive, not a rewrite.
+- An AI-specific dashboard page once multiple trained models/
+  experiments exist to compare (Sprint 10 spec explicitly deferred
+  this; the existing Overview/Analysis/Comparison/Paper Portfolio
+  pages cover today's needs).
+- CI running the full suite automatically (see "Ongoing" below).
 
 ## Ongoing, not sprint-scoped
 

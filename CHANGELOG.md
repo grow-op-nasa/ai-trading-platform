@@ -11,6 +11,110 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 10 -- 2026-09-22, ML Signal Research & AI Strategy Integration
+
+A reproducible, leakage-safe machine-learning research layer feeding
+the existing Strategy -> Signal -> Risk -> Execution pipeline as one
+more signal source. Classic ML (scikit-learn `LogisticRegression`),
+never a replacement for strategy/risk/execution/portfolio/backtesting,
+and no LLM anywhere in the trading-signal path. See `DECISIONS.md`,
+ADR-0043 for the full design and reasoning.
+
+### Added
+
+- `src/ai/` (new top-level package, previously an empty placeholder) --
+  research-only ML capability, zero dependency on `src.broker`/
+  `src.execution`/`src.risk`/`src.portfolio`/`src.dashboard`.
+  - `features.py`: `FeatureSpec`/`FeatureBuilder` -- 8 past-only
+    columns (1/5/20-bar return, `(EMA12-EMA26)/close`, `RSI(14)`,
+    `ATR(14)/close`, normalized MACD histogram,
+    `volume / rolling(20) mean`), built on the existing
+    `IndicatorEngine`, never a reimplemented formula.
+    `feature_set_id()` -- deterministic identity for a feature
+    configuration.
+  - `labels.py`: `LabelSpec`/`LabelBuilder` -- 3-class forward-return
+    target (`LONG`/`SHORT`/`FLAT`), configurable `horizon_bars`/
+    `neutral_threshold`, deliberately separate from feature
+    construction. `label_spec_id()`.
+  - `dataset.py`: `build_training_table()` -- aligns features and
+    labels, drops warmup/horizon-undefined rows once, in one place.
+  - `splitting.py`: `chronological_split()` (train/validation/test,
+    never shuffled, with a `purge_bars` embargo at each boundary) and
+    `walk_forward_splits()` (expanding-window evaluation, diagnostic
+    only).
+  - `model.py`: `AIModel` interface, `ModelConfig`, `LogisticRegressionModel`
+    (`sklearn.pipeline.Pipeline(StandardScaler, LogisticRegression)`,
+    scaler fit only on the training split), plus a
+    `register_model_type()`/`build_model()` registry mirroring
+    `src.strategies.registry`'s pattern.
+  - `identity.py`: `model_spec_id()` -- deterministic hash of model
+    type, hyperparameters, feature/label spec ids, training dataset
+    fingerprint, training range, and random state.
+  - `artifacts.py`: `ModelArtifactStore` -- joblib persistence under
+    `data/models/{model_id}/`, SHA-256 artifact content hash, loads
+    only from this platform-controlled directory.
+  - `registry.py`: `ModelMetadata`/`ModelRegistry` -- full provenance
+    record plus `save_metadata`/`get_metadata`/`list_models`/
+    `load_model`.
+  - `evaluation.py`: `classification_metrics()` -- accuracy, balanced
+    accuracy, per-class precision/recall, confusion matrix, log loss,
+    class-distribution and signal-coverage diagnostics. Explicitly
+    never a trading-performance number.
+  - `training.py`: `MLTrainingService`/`TrainingResult`/
+    `WalkForwardFoldResult` -- the one application-facing entry point
+    wiring the whole chain together; consumes a `CandleDataset` only,
+    never `yfinance` directly.
+- `src/strategies/ai_signal.py`: `AISignalStrategy` -- loads a frozen,
+  already-trained model by `model_id`, maps its predictions onto the
+  existing `Signal`/`SignalDirection`, emits sparsely (state-change
+  only, ADR-0015), attaches model provenance to signal metadata. Never
+  trains, never sizes a position, never touches an order.
+- `tests/test_ai_features.py` (10), `tests/test_ai_labels.py` (11),
+  `tests/test_ai_dataset.py` (7), `tests/test_ai_splitting.py` (15) --
+  network-free and scikit-learn-free; run for real in every
+  environment.
+- `tests/test_ai_model.py`, `tests/test_ai_registry.py`,
+  `tests/test_ai_training.py`, `tests/test_ai_signal_strategy.py`,
+  `tests/test_ai_end_to_end.py` -- gated on scikit-learn/joblib via
+  `pytest.importorskip`, the same pattern `test_dashboard_smoke.py`
+  established for Streamlit (ADR-0042); skip cleanly in this sandbox,
+  run for real on the dev machine.
+- 6 new assertions in `tests/test_architecture.py` protecting the
+  Sprint 10 boundaries: `src/ai` doesn't depend on broker/execution/
+  risk/portfolio/dashboard, never imports `yfinance` directly,
+  `Backtester` gained no AI-specific branch, `AISignalStrategy` emits
+  canonical `Signal` objects, `AIModel` carries no trading vocabulary.
+
+### Decided
+
+- Classic ML (scikit-learn `LogisticRegression`) chosen over LLM-based
+  reasoning for this round's AI signal layer -- deterministic,
+  interpretable, fast to test, sufficient to prove the whole
+  architecture. LLM-based trading decisions remain explicit future
+  work; the existing AI Research Reporter's separate LLM/fallback
+  narrative path is unaffected. See `DECISIONS.md`, ADR-0043.
+- Model persistence is filesystem-based (`ModelArtifactStore` +
+  `ModelRegistry`'s JSON metadata), not a second SQLite schema bolted
+  onto `ExperimentRegistry` -- a deliberately smaller mechanism for
+  what is, this sprint, a handful of models.
+- No changes needed to `ExperimentSpec`/`ExperimentRegistry` --
+  `AISignalStrategy`'s `model_id`/`min_probability` flow through the
+  existing, generic `strategy_params` field; full AI provenance is
+  reachable by following `model_id` into `ModelRegistry`.
+
+### Verified
+
+- Sandbox (stub-based runner, no scikit-learn/joblib installed): every
+  test that doesn't require a real model fit passed --
+  **725 passed, 2 failed (the same pre-existing cli/doctor and config
+  environment-only failures every prior sprint has carried forward),
+  8 skipped** (5 whole modules gated on scikit-learn/joblib, plus 2
+  gated assertions inside `test_architecture.py`, plus
+  `test_dashboard_smoke.py`'s pre-existing Streamlit gate).
+- Real-`pytest` confirmation on the dev machine (where scikit-learn is
+  actually installed per `requirements.txt`) is pending -- see
+  `PROJECT_STATE.md`.
+
 ## Sprint 9 -- 2026-09-21, Analytics & Dashboard
 
 A read-only Streamlit research and paper-portfolio analytics interface

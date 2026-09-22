@@ -452,6 +452,135 @@ def test_dashboard_only_touches_market_data_service_via_analytics_valuation():
     )
 
 
+# ---------------------------------------------------------------------------
+# Sprint 10 (DECISIONS.md, ADR-0043): AI is a signal source, not the
+# trading engine. src/ai must not depend on src.broker/src.execution/
+# src.risk/src.portfolio/src.dashboard, must never import yfinance
+# directly, and the pipeline it feeds into (Backtester, Risk, Execution,
+# Dashboard) must stay exactly as AI-agnostic as it was before Sprint 10.
+# ---------------------------------------------------------------------------
+
+
+def test_ai_package_does_not_depend_on_broker_execution_risk_portfolio_or_dashboard():
+    # Checks actual import statements, not prose -- src/ai's own
+    # docstrings legitimately *mention* these packages to explain the
+    # dependency direction, without importing them.
+    import_pattern = re.compile(
+        r"^\s*(?:from|import)\s+src\.(broker|execution|risk|portfolio|dashboard)\b",
+        re.MULTILINE,
+    )
+    offenders = {}
+    for path in (SRC_ROOT / "ai").glob("*.py"):
+        match = import_pattern.search(path.read_text())
+        if match:
+            offenders[path.name] = match.group(1)
+    assert offenders == {}, (
+        f"src/ai must not depend on src.broker/src.execution/src.risk/"
+        f"src.portfolio/src.dashboard -- AI is one more signal source "
+        f"feeding the existing Strategy -> Signal -> Risk -> Execution "
+        f"pipeline, never a replacement for any of it (DECISIONS.md, "
+        f"ADR-0043). Offending files: {offenders}"
+    )
+
+
+def test_ai_package_never_imports_yfinance_directly():
+    import_pattern = re.compile(
+        r"^\s*(?:from\s+yfinance\b|import\s+yfinance\b|"
+        r"from\s+src\.data\.yfinance_provider\s+import|"
+        r"import\s+src\.data\.yfinance_provider\b|"
+        r"from\s+src\.data(?:\.\w+)?\s+import\s+.*\bYFinanceProvider\b)",
+        re.MULTILINE,
+    )
+    offenders = [
+        path.name
+        for path in (SRC_ROOT / "ai").glob("*.py")
+        if import_pattern.search(path.read_text())
+    ]
+    assert offenders == [], (
+        f"src/ai must consume market data only via a canonical "
+        f"CandleDataset (src.data.models), never yfinance/YFinanceProvider "
+        f"directly (DECISIONS.md, ADR-0043, Sprint 10 spec section 33). "
+        f"Offending files: {offenders}"
+    )
+
+
+def test_ai_signal_strategy_emits_canonical_signal_objects():
+    # The positive half: AISignalStrategy actually builds and returns
+    # real src.signals.models.Signal objects, the same as every other
+    # strategy -- never a second, AI-specific "decision" model.
+    #
+    # src.strategies.ai_signal transitively imports src.ai.model, which
+    # imports scikit-learn -- not installed in every environment this
+    # suite runs in (same gap tests/test_dashboard_smoke.py has for
+    # Streamlit), so this one test skips cleanly rather than failing
+    # the whole architecture module at collection time.
+    pytest.importorskip("sklearn")
+    from src.strategies.ai_signal import AISignalStrategy
+
+    import inspect
+
+    source = inspect.getsource(AISignalStrategy)
+    assert "Signal" in source
+    assert "SignalDirection" in source
+    # And it must not invent a parallel domain model instead.
+    assert "class AISignal" not in (SRC_ROOT / "strategies" / "ai_signal.py").read_text()
+
+
+def test_backtester_has_no_ai_specific_branch():
+    text = (SRC_ROOT / "backtesting" / "engine.py").read_text()
+    for forbidden in ("ai_signal", "AISignalStrategy", "src.ai", "import src.ai"):
+        assert forbidden not in text, (
+            f"Backtester must remain generic -- it should never special-case "
+            f"AI strategies by name or import src.ai (DECISIONS.md, ADR-0043, "
+            f"Sprint 10 spec section 66). Found {forbidden!r}."
+        )
+
+
+def test_risk_and_execution_do_not_depend_on_src_ai():
+    import_pattern = re.compile(r"^\s*(?:from|import)\s+src\.ai\b", re.MULTILINE)
+    for package_name in ("risk", "execution", "portfolio"):
+        for path in (SRC_ROOT / package_name).glob("*.py"):
+            match = import_pattern.search(path.read_text())
+            assert match is None, (
+                f"src/{package_name} must stay AI-agnostic -- a model's "
+                f"predictions arrive only as an ordinary Signal, never as a "
+                f"direct src.ai dependency (DECISIONS.md, ADR-0043). Found in "
+                f"{path.name}."
+            )
+
+
+def test_dashboard_and_analytics_do_not_depend_on_src_ai():
+    import_pattern = re.compile(r"^\s*(?:from|import)\s+src\.ai\b", re.MULTILINE)
+    for package_name in ("dashboard", "analytics"):
+        for path in (SRC_ROOT / package_name).glob("*.py"):
+            match = import_pattern.search(path.read_text())
+            assert match is None, (
+                f"src/{package_name} must stay AI-agnostic in Sprint 10 -- no "
+                f"AI-specific dashboard page or analytics metric was added "
+                f"this sprint (DECISIONS.md, ADR-0043, Sprint 10 spec section "
+                f"55/67). Found in {path.name}."
+            )
+
+
+def test_ai_model_interface_has_no_trading_vocabulary():
+    # AIModel must never grow an order/broker/portfolio/risk-shaped
+    # method -- it predicts a class and a probability, nothing else
+    # (Sprint 10 spec, section 13). src.ai.model imports scikit-learn --
+    # skip cleanly where it isn't installed (see the test above).
+    pytest.importorskip("sklearn")
+    from src.ai.model import AIModel
+
+    forbidden_methods = (
+        "submit_order",
+        "place_order",
+        "size_position",
+        "allocate_capital",
+        "mark_to_market",
+    )
+    for method_name in forbidden_methods:
+        assert not hasattr(AIModel, method_name)
+
+
 def test_account_state_equity_is_computed_from_frozen_entry_price_only():
     from src.risk.models import SizingDecision
 

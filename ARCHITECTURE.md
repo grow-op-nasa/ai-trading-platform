@@ -468,7 +468,7 @@ actually produces: not an order, not a market event, a decision.
 
 ### `src/strategies`
 
-**Purpose:** the seam strategies plug into, plus the platform's two
+**Purpose:** the seam strategies plug into, plus the platform's three
 permanent strategies. `EMACrossStrategy` (Sprint 4) and
 `RSIMeanReversionStrategy` (Sprint 6, `DECISIONS.md` ADR-0037) are
 deliberately opposite trading ideas -- trend following vs. mean
@@ -476,6 +476,11 @@ reversion -- chosen specifically to prove the interface below
 generalizes rather than having been quietly shaped around one
 strategy's needs. Neither is tuned for profitability; both exist to
 exercise the platform end to end on a real (if minimal) trading idea.
+`AISignalStrategy` (Sprint 10, `DECISIONS.md` ADR-0043) is a third,
+structurally different kind of proof: the same `Strategy` interface
+satisfied by a strategy whose decision logic comes from a trained
+`src.ai` model instead of a hand-written rule, with zero change to the
+interface itself.
 
 - **Inputs/outputs:** see `DECISIONS.md`, ADR-0015 for the full
   `Strategy` contract (supersedes ADR-0011).
@@ -528,6 +533,21 @@ exercise the platform end to end on a real (if minimal) trading idea.
     trading idea from `EMACrossStrategy` -- proof the registry/
     `ExperimentSpec` seam genuinely generalizes, not a relabeled
     variant of the first strategy.
+  - `ai_signal.py` (Sprint 10, `DECISIONS.md` ADR-0043) --
+    `AISignalStrategy`, registered as `"ai_signal"`. Loads an
+    already-trained, frozen `src.ai` model by `model_id` at
+    construction and never trains it again; `prepare()` builds that
+    model's exact feature columns (`src.ai.features.FeatureBuilder`,
+    reconstructed from the model's own saved feature spec) and fails
+    loudly on any schema mismatch; `generate_signals()` maps the
+    model's predicted class and top probability onto the existing
+    `Signal`/`SignalDirection`, downgrading to `FLAT` below
+    `min_probability`, emitting sparsely (state-change only, same as
+    the other two strategies). `params` returns exactly `{"model_id",
+    "min_probability"}` -- enough for `ExperimentSpec.
+    reconstruct_strategy()` to rebuild an equivalent instance, with the
+    rest of the model's provenance reachable via `src.ai.registry.
+    ModelRegistry` by that `model_id`.
 - **Does not:** compute indicators or regimes itself -- a conforming strategy's `prepare()`
   is expected to call `IndicatorEngine`/`MarketRegimeEngine`. Does not
   emit one `Signal` per candle -- only at genuine decision points.
@@ -539,7 +559,10 @@ exercise the platform end to end on a real (if minimal) trading idea.
 - **Depends on:** `src/signals` (for the `Signal` return type);
   `sdk.py` also depends on `src/indicators` (for `IndicatorEngine`) and
   `src/data` (for `REQUIRED_COLUMNS`); `identity.py` depends on
-  `src/utils` (for `sha256_hex`).
+  `src/utils` (for `sha256_hex`); `ai_signal.py` additionally depends
+  on `src/ai` (`FeatureBuilder`/`FeatureSpec`, `ModelRegistry`) --
+  strictly one-directional, `src/ai` has no dependency back on
+  `src/strategies`.
 
 ### `src/backtesting`
 
@@ -1465,13 +1488,96 @@ trading terminal. Sprint 9 (`DECISIONS.md`, ADR-0042).
 
 ### `src/ai`
 
-Not yet implemented -- exists only as an empty package with a
-docstring stating its intended purpose (see `src/ai/__init__.py`).
-`ROADMAP.md` named this the other Sprint 9 candidate; Sprint 9 itself
-resolved that ambiguity in favor of Analytics & Dashboard (above),
-leaving `src/ai` untouched and explicitly deferred. It will get its
-own section here, following the same purpose/inputs/outputs format,
-once built.
+**Purpose:** reproducible, leakage-safe machine-learning signal
+research -- features, labels, time-aware training/evaluation, model
+identity, and artifact persistence. Sprint 10 (`DECISIONS.md`,
+ADR-0043). Produces knowledge (a trained, evaluated classifier and its
+provenance) for `src/strategies/ai_signal.py` to consume; it has no
+idea a `Signal`, an order, a broker, a risk limit, or a `Portfolio`
+exists.
+
+- **Inputs:** a canonical `CandleDataset` (`src.data.models`) --
+  never `yfinance` directly, never a raw provider fetch
+  (`tests/test_architecture.py` enforces this, mirroring the same rule
+  already applied to `src/strategies`/`src/backtesting`/
+  `src/experiments`, ADR-0041).
+- **Outputs:** a `TrainingResult` (model id, artifact hash, feature/
+  label/model configuration, train/validation/test ranges, and
+  classification-quality metrics for each split) plus a persisted
+  model artifact + metadata record, retrievable later by `model_id`.
+- **Key files:**
+  - `features.py` -- `FeatureSpec`/`FeatureBuilder`: 8 past-only
+    columns (1/5/20-bar return, `(EMA12-EMA26)/close`, `RSI(14)`,
+    `ATR(14)/close`, normalized MACD histogram,
+    `volume / rolling(20) mean`), built on the existing
+    `src.indicators.IndicatorEngine` -- never a reimplemented formula.
+    `feature_set_id()` is a deterministic hash of the configuration.
+  - `labels.py` -- `LabelSpec`/`LabelBuilder`: a 3-class forward-return
+    target (`LONG`/`SHORT`/`FLAT`), configurable `horizon_bars`/
+    `neutral_threshold`. Deliberately its own class, not a step inside
+    `FeatureBuilder` -- a feature describes information available at
+    `t`, a label describes an outcome after `t`.
+  - `dataset.py` -- `build_training_table()`: aligns `FeatureBuilder`
+    and `LabelBuilder` output into one `(X, y)` table, dropping
+    warmup/horizon-undefined rows exactly once, in one place.
+  - `splitting.py` -- `chronological_split()` (never shuffles; a
+    `purge_bars` embargo -- always the label's own `horizon_bars` --
+    dropped at each internal boundary so no training label's outcome
+    window can reach into validation/test) and `walk_forward_splits()`
+    (an expanding-window diagnostic evaluator, not a hyperparameter
+    search).
+  - `model.py` -- `AIModel` (the interface: `fit`/`predict`/
+    `predict_proba`, a schema check that fails loudly on a missing/
+    reordered/renamed feature column), `LogisticRegressionModel`
+    (`sklearn.pipeline.Pipeline(StandardScaler, LogisticRegression)`,
+    scaler fit only on whatever `fit()` receives), and a
+    `register_model_type()`/`build_model()` registry mirroring
+    `src.strategies.registry`'s own pattern -- a second model
+    implementation is "implement it, register it," not a rewrite of
+    `MLTrainingService`/`AISignalStrategy`.
+  - `identity.py` -- `model_spec_id()`: a deterministic hash of model
+    type, hyperparameters, feature/label spec ids, the training
+    dataset's own content hash (not a hash of the derived feature
+    matrix), training range, and random state.
+  - `artifacts.py` -- `ModelArtifactStore`: `joblib` persistence under
+    `data/models/{model_id}/model.joblib`, a SHA-256 artifact content
+    hash distinct from `model_spec_id()`. Loads only from this
+    platform-controlled directory -- no method anywhere accepts an
+    arbitrary filesystem path for deserialization.
+  - `registry.py` -- `ModelMetadata`/`ModelRegistry`: one JSON metadata
+    file per model, alongside its artifact -- deliberately not a
+    second SQLite schema bolted onto `ExperimentRegistry`.
+  - `evaluation.py` -- `classification_metrics()`: accuracy, balanced
+    accuracy, per-class precision/recall, confusion matrix, log loss,
+    class-distribution/signal-coverage diagnostics. Answers "how well
+    did the model classify outcomes" -- never "how well did the
+    trading policy perform" (that's `Backtester` + `AnalyticsService`,
+    unchanged).
+  - `training.py` -- `MLTrainingService`/`TrainingResult`/
+    `WalkForwardFoldResult`: the one application-facing entry point
+    wiring features -> labels -> split -> fit -> evaluate -> persist
+    together. Not a Streamlit page, not a strategy, not inlined in a
+    script.
+- **Does not:** size a position, place an order, select a broker,
+  touch account/portfolio state, or render anything -- no file in
+  `src/ai` imports `src.broker`/`src.execution`/`src.risk`/
+  `src.portfolio`/`src.dashboard` (`tests/test_architecture.py`
+  enforces this structurally). Use an LLM anywhere in this chain (the
+  AI Research Reporter's own separate LLM/fallback narrative path,
+  `src/research/`, is a different capability, untouched by this
+  sprint). Auto-select a "best" model or compute a composite AI score
+  -- model/evaluation evidence is presented, human research decisions
+  stay explicit.
+- **Depends on:** `src.data` (`CandleDataset`, for training input
+  only), `src.indicators` (`IndicatorEngine`, for feature formulas),
+  `src.utils.hashing` (`sha256_hex`, for every identity seam). Nothing
+  else in this codebase. Extension Cost (ADR-0014): one new top-level
+  package (9 files) plus one new strategy adapter
+  (`src/strategies/ai_signal.py`); zero changes to `src/backtesting`,
+  `src/risk`, `src/execution`, `src/portfolio`, `src/dashboard`,
+  `src/analytics`, or `src/experiments` (`ExperimentSpec`'s existing,
+  generic `strategy_params` field already carries `model_id`/
+  `min_probability` -- no schema change needed).
 
 ## Testing philosophy
 

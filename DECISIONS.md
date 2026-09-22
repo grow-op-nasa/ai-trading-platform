@@ -3229,3 +3229,231 @@ Sandbox-reverified: 677 passed, unchanged. **Confirmed via real
 fourth real run, and the first one this sprint's own test suite
 actually passed outright. Sprint 9 (Analytics & Dashboard) is now
 genuinely verified, not just implemented or sandbox-verified.
+
+## ADR-0043: Sprint 10 -- ML Signal Research & AI Strategy Integration
+
+**Status:** Implemented, sandbox-verified where the environment allows
+it; pending real-`pytest` confirmation on the dev machine (scikit-learn
+is a real `requirements.txt` dependency, not installed in this
+sandbox -- see "Sandbox verification" below).
+
+**Context:** `ROADMAP.md` named Sprint 10 ("AI") as explicit future
+work when Sprint 9 resolved in favor of Analytics & Dashboard, and left
+the approach itself an open choice between classic ML on engineered
+features and LLM-based reasoning over market context. This round
+chooses classic ML -- deterministic, lightweight, interpretable,
+fast to test -- and defers LLM-based trading decisions entirely (the
+existing AI Research Reporter's LLM/fallback narrative path,
+`src/research/`, is a different capability and is untouched). The
+platform's standing architectural principle (ADR-0000: every new
+component is an extension, not a rewrite) sets the one hard constraint
+this sprint has to satisfy: **AI is another signal source, not a
+replacement for strategy, risk, execution, portfolio, or backtesting.**
+A model that required changing `Backtester`, `PortfolioRiskEngine`, or
+`PaperBroker` to work would be evidence the AI layer was placed in the
+wrong layer, not a reason to change those.
+
+**Decision:**
+
+1. **`src/ai/` -- research capability only, never a decision-maker.**
+   Nine small modules, each with one job: `features.py`
+   (`FeatureBuilder`/`FeatureSpec` -- 8 past-only columns: 1/5/20-bar
+   return, `(EMA12-EMA26)/close`, `RSI(14)`, `ATR(14)/close`, MACD
+   histogram normalized by close, `volume / rolling(20) mean`, all
+   built on `src.indicators.IndicatorEngine`, never a reimplemented
+   formula); `labels.py` (`LabelBuilder`/`LabelSpec` -- 3-class
+   forward-return target, `LONG`/`SHORT`/`FLAT`, configurable
+   `horizon_bars`/`neutral_threshold`, deliberately a separate class
+   from `FeatureBuilder` since a feature describes information at `t`
+   and a label describes an outcome after `t`); `dataset.py`
+   (`build_training_table()` -- the one place features and labels are
+   combined and warmup/horizon-undefined rows are dropped);
+   `splitting.py` (`chronological_split()` with a `purge_bars` embargo,
+   `walk_forward_splits()` for expanding-window evaluation -- see
+   decision 3); `model.py` (`AIModel` interface,
+   `LogisticRegressionModel`, a `register_model_type()`/`build_model()`
+   registry mirroring `src.strategies.registry`'s own pattern);
+   `identity.py` (`model_spec_id()`); `artifacts.py`
+   (`ModelArtifactStore`, joblib + SHA-256); `registry.py`
+   (`ModelMetadata`/`ModelRegistry`); `evaluation.py`
+   (`classification_metrics()`); `training.py`
+   (`MLTrainingService`/`TrainingResult`/`WalkForwardFoldResult`). None
+   of these nine files imports `src.broker`, `src.execution`,
+   `src.risk`, `src.portfolio`, or `src.dashboard` -- enforced
+   structurally by `tests/test_architecture.py`, not just by
+   convention. `src/ai/` produces knowledge (a trained classifier, its
+   evaluation metrics, its provenance) for the next layer to consume;
+   it never sizes a position, places an order, or touches account
+   state.
+
+2. **Classic ML, one model, scikit-learn only.** `LogisticRegressionModel`
+   wraps `sklearn.pipeline.Pipeline(StandardScaler, LogisticRegression)`
+   -- no PyTorch/TensorFlow/XGBoost/LightGBM/LLM API added merely
+   because it might be useful later (Sprint 10 spec, section 3). The
+   scaler is fit exactly once per model, inside `Pipeline.fit()`, on
+   whatever `X`/`y` `AIModel.fit()` receives -- `MLTrainingService` is
+   the only caller, and it only ever passes the training split;
+   `tests/test_ai_model.py`'s
+   `test_scaler_is_fit_only_on_the_data_passed_to_fit_not_refit_on_predict`
+   pins this structurally (predicting against a wildly different-scaled
+   `X` must not change the fitted pipeline's own learned scaling).
+   `AIModel.predict()`/`predict_proba()` reject a mismatched feature
+   schema (missing column, reordered column, wrong name) with a loud
+   `ValueError` rather than a silently wrong prediction (Sprint 10
+   spec, section 60) -- the same "fail loud, never fabricate" posture
+   `src.analytics.models.Metric` already established for undefined
+   numbers.
+
+3. **Leakage prevention is structural, not a convention to remember.**
+   `chronological_split()` never shuffles; it splits a `pd.Index` by
+   position and drops `purge_bars` rows off the end of train and of
+   validation, where `purge_bars` is always the label's own
+   `horizon_bars` -- a label at row `t` encodes `close[t+horizon]`, so a
+   training row within `horizon_bars` of a boundary has an outcome
+   window reaching into the next split; purging removes exactly that
+   overlap. `walk_forward_splits()` applies the same embargo per fold
+   in an expanding-window evaluator (Sprint 10 spec, section 12) --
+   diagnostic only, never persisting an artifact, and explicitly not a
+   hyperparameter optimizer. `tests/test_ai_splitting.py` proves the
+   embargo arithmetic directly (`last_train_position + horizon_bars <
+   first_validation_position`), not just that the code runs.
+   `tests/test_ai_labels.py`'s leakage regression test is the sharpest
+   version of this guarantee: two datasets identical through row `t`,
+   differing only in a close far beyond `t + horizon`, must produce
+   **identical** feature rows through `t` (proven with
+   `pd.testing.assert_frame_equal`) while their labels at the affected
+   row are free to differ.
+
+4. **Model identity is a specification hash, never a name.** Two
+   models both called `"logistic_regression"` can differ in
+   hyperparameters, feature configuration, label configuration, or
+   training data -- `model_spec_id()` (`src/ai/identity.py`) hashes all
+   of those together (model type, hyperparameters, `feature_set_id`,
+   `label_spec_id`, the training dataset's own `content_hash` --
+   Sprint 8's dataset identity, not a hash of the derived feature
+   matrix -- plus the training range and random state) into one
+   deterministic id. `FeatureBuilder.feature_set_id()` and
+   `LabelBuilder.label_spec_id()` are the same pattern one level down:
+   a 5-bar-horizon model and a 20-bar-horizon model, or a
+   14-period-RSI feature set and a 21-period one, never collide under
+   an ambiguous shared name (`tests/test_ai_training.py`,
+   `test_different_label_horizon_produces_a_different_model_id`).
+   Deliberately distinct from the **artifact hash**
+   (`ModelArtifactStore.save()`'s SHA-256 of the actual persisted
+   joblib bytes) -- the spec id says what the model is supposed to be,
+   the artifact hash says exactly which trained object was persisted.
+
+5. **Model persistence: filesystem, not a second SQLite schema.**
+   `ModelArtifactStore` saves one `joblib`-serialized artifact per
+   `model_id` under `data/models/{model_id}/model.joblib`;
+   `ModelRegistry` saves one `metadata.json` alongside it. Chosen over
+   extending `ExperimentRegistry`'s SQLite schema (Sprint 10 spec,
+   section 18 explicitly warns against "an unnecessarily large database
+   abstraction" for what is, this sprint, a handful of models) --
+   `list_models()`/`get_metadata()`/`load_model()` give the same
+   query surface `ExperimentRegistry` gives for experiments, at a
+   fraction of the mechanism. `ModelRegistry.load_model()` only ever
+   reads from this platform-controlled directory, keyed by a `model_id`
+   the platform itself generated -- there is no method anywhere that
+   accepts an arbitrary filesystem path for deserialization (`joblib`/
+   `pickle` can execute code on load; the trust boundary is "this
+   platform's own training pipeline wrote it," never "a caller-supplied
+   path," Sprint 10 spec section 61). `data/models/` needs no
+   `.gitignore` change -- `data/*` is already ignored (the same
+   `data/experiments.db` precedent, ADR-0016) -- so model binaries are
+   runtime-generated state, never committed.
+
+6. **`AISignalStrategy` -- the entire seam between `src.ai` and the
+   rest of the platform.** `src/strategies/ai_signal.py` loads an
+   already-trained, frozen model by `model_id` at construction
+   (`ModelRegistry.load_model()`) and never calls `.fit()` again. Its
+   `params` property returns exactly `{"model_id", "min_probability"}`
+   -- enough for `ExperimentSpec.reconstruct_strategy()`
+   (`src.experiments.spec`, unchanged since Sprint 6) to rebuild an
+   equivalent instance from those two values alone, with no mutable
+   external default in the way (`ModelRegistry()`'s default directory
+   is a fixed constant, the same posture `ExperimentRegistry`'s
+   `DEFAULT_DB_PATH` already takes). Model output maps onto the
+   existing `Signal`/`SignalDirection` -- there is no second,
+   AI-specific decision model. Predictions below `min_probability` are
+   treated as `FLAT`/no-change regardless of which class the model
+   favored (confidence is never translated into position size -- that
+   stays `src.risk`'s job entirely, untouched this sprint), and signals
+   are emitted sparsely -- only when the *effective*, post-threshold
+   direction changes (ADR-0015's existing sparse-signal convention,
+   proven by `tests/test_ai_signal_strategy.py`,
+   `test_signals_are_sparse_not_one_per_valid_row`) -- never one Signal
+   per candle merely because the model has an opinion on every row.
+   Signal metadata carries `model_id`/`model_artifact_hash`/
+   `predicted_class`/`class_probability`/`feature_set_id`/
+   `label_horizon_bars` -- enough evidence to trace a signal back to
+   its exact model without dumping the full feature vector into every
+   row (Sprint 10 spec, section 29).
+
+7. **No `ExperimentSpec`/`ExperimentRegistry` changes needed.**
+   Investigated first, per this sprint's own "extend only where
+   necessary" instruction: `ExperimentSpec.capture()` already reads
+   `strategy.params` generically, so `AISignalStrategy`'s `model_id`/
+   `min_probability` flow through the *existing* `strategy_params`
+   field with zero changes to `ExperimentSpec`, `ExperimentRegistry`,
+   or their schemas. An AI-backed experiment answers Sprint 10 spec
+   section 31's provenance questions by composition, not by a second
+   lineage system: "which ML model / which artifact / which feature
+   set / which label definition / which training dataset+range" all
+   live in `ModelRegistry`, looked up by the `model_id` already
+   sitting in the experiment's own recorded `strategy_params`.
+
+8. **Existing pipeline stays exactly as generic as it was.**
+   `Backtester` gained no AI-specific branch (verified structurally by
+   `tests/test_architecture.py`,
+   `test_backtester_has_no_ai_specific_branch` -- a literal source-text
+   scan for `"ai_signal"`/`"AISignalStrategy"`/`"src.ai"`);
+   `EMACrossStrategy`/`RSIMeanReversionStrategy` are untouched;
+   `src.risk`/`src.execution`/`src.portfolio`/`src.dashboard`/
+   `src.analytics` gained no dependency on `src.ai` in either direction.
+   `AnalyticsService`/`Backtester` are what answer "how did the
+   resulting trading policy perform" -- `src.ai.evaluation`'s
+   classification metrics (accuracy, balanced accuracy, precision/
+   recall, confusion matrix, log loss, class-distribution/signal-
+   coverage diagnostics) answer the different question "how well did
+   the model classify outcomes," and the two are never conflated into
+   one number (Sprint 10 spec, sections 22, 58, 67).
+
+**Non-goals, explicit:** no LLM in the AI signal layer (OpenAI,
+Anthropic, Gemini, local LLM, prompt-based trading -- all explicitly
+out; the AI Research Reporter's own separate LLM path is unaffected
+and unchanged); no model zoo (`LogisticRegression` is the only
+production model this sprint; the `register_model_type()` seam exists
+so a second implementation is "implement it, register it," not a
+rewrite, but Sprint 10 ships exactly one); no hyperparameter optimizer;
+no automatic "best model" selection or composite AI score; no live
+inference daemon, continuous retraining, or autonomous trading; no new
+AI-specific dashboard page (the existing Overview/Analysis/Comparison/
+Paper Portfolio pages are untouched).
+
+**Sandbox verification:** scikit-learn (and `joblib`) are real
+`requirements.txt`-pinned dependencies, exactly like Streamlit was for
+Sprint 9 (ADR-0042) -- and, exactly like Streamlit, neither is
+installed in this sandbox, which has no network access to install
+them. The same established pattern applies: every test that needs a
+real model fit is gated with `pytest.importorskip("sklearn")` (and
+`"joblib"` where relevant) at module level, so it skips cleanly here
+and runs for real on the dev machine, rather than either crashing the
+suite or being stubbed into something that no longer tests the real
+library. Everything that doesn't need a fitted model --
+`tests/test_ai_features.py` (10), `tests/test_ai_labels.py` (11),
+`tests/test_ai_dataset.py` (7), `tests/test_ai_splitting.py` (15), plus
+6 new boundary assertions in `tests/test_architecture.py` (4 run for
+real in-sandbox, 2 gated the same way) -- passed in the sandbox's own
+stub-based runner: **725 passed, 2 failed (the same pre-existing
+cli/doctor and config environment-only failures every prior sprint has
+carried forward, unrelated to this change), 8 skipped** (6 whole
+modules gated on scikit-learn/joblib, plus the 2 gated assertions
+inside `test_architecture.py`). The gated modules --
+`tests/test_ai_model.py`, `tests/test_ai_registry.py`,
+`tests/test_ai_training.py`, `tests/test_ai_signal_strategy.py`,
+`tests/test_ai_end_to_end.py` -- are reviewed carefully against the
+real scikit-learn API but, per this platform's own standing process,
+are not claimed "verified" until a real `pytest` run on the dev machine
+confirms them. See `PROJECT_STATE.md` for the exact expected count and
+what remains.

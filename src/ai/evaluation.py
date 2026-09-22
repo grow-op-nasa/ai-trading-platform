@@ -25,6 +25,7 @@ metrics are undefined, represent that explicitly").
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import pandas as pd
@@ -115,11 +116,33 @@ def classification_metrics(
 
     predicted_distribution = _class_distribution(pd.Series(y_pred_list), classes)
 
+    # balanced_accuracy_score has no `labels` parameter (unlike
+    # precision_recall_fscore_support/confusion_matrix above), so it
+    # infers its label set from y_true alone. On a split whose y_true
+    # happens to be missing one of the three classes -- routine on the
+    # small evaluation windows a walk-forward fold or a short holdout
+    # can produce -- a model that still predicts that missing class
+    # elsewhere makes sklearn emit "y_pred contains classes not in
+    # y_true" and exclude it from the average. That's the *correct*
+    # behavior (there's no true-positive rate to compute for a class
+    # with zero true instances in this split), not a bug; the warning
+    # is just redundant with what true_class_distribution/
+    # predicted_class_distribution below already report structurally.
+    # Suppressed narrowly by exact message so any other, unrelated
+    # warning from this call still surfaces.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="y_pred contains classes not in y_true",
+            category=UserWarning,
+        )
+        balanced_accuracy = balanced_accuracy_score(y_true_list, y_pred_list)
+
     return {
         "status": "ok",
         "n_samples": n,
         "accuracy": float(accuracy_score(y_true_list, y_pred_list)),
-        "balanced_accuracy": float(balanced_accuracy_score(y_true_list, y_pred_list)),
+        "balanced_accuracy": float(balanced_accuracy),
         "precision": dict(zip(classes_list, (float(p) for p in precision))),
         "recall": dict(zip(classes_list, (float(r) for r in recall))),
         "confusion_matrix": {"labels": classes_list, "matrix": matrix.tolist()},

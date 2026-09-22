@@ -569,14 +569,30 @@ interface itself.
 **Purpose:** the framework, not a strategy. Runs any `Strategy` against
 candles: run strategy -> collect trades -> calculate metrics ->
 generate report. Part of the Sprint 2 research engine (`DECISIONS.md`,
-ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
+ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015), and
+extended in Sprint 11 (`DECISIONS.md`, ADR-0044) with a second,
+portfolio-aware execution mode sitting alongside the original one.
 
 - **Inputs:** a `Strategy`, an OHLCV candles DataFrame, and (Sprint 8,
-  optional) the `CandleDataset` `candles` came from.
+  optional) the `CandleDataset` `candles` came from -- or, for the
+  Sprint 11 portfolio-aware path, one `Strategy` and one candles
+  DataFrame *per symbol*, plus a `BacktestConfig`.
 - **Outputs:** a `BacktestResult` (`strategy_name`, `trades: list[Trade]`,
   `equity_curve: pd.Series`, `metrics: dict`, `signals: list[Signal]`,
   `dataset_identity: DatasetIdentity | None` (Sprint 8, `DECISIONS.md`
-  ADR-0041), plus a `.report()` method for a human-readable summary).
+  ADR-0041), plus (Sprint 11) `risk_mode: RiskMode`,
+  `backtest_config: BacktestConfig | None`,
+  `signal_outcomes: list[SignalOutcome] | None`,
+  `final_portfolio: Portfolio | None` -- populated by `run_portfolio()`,
+  left at their defaults by `run()` -- plus a `.report()` method for a
+  human-readable summary).
+- **Two execution modes, never mixed (Sprint 11, `DECISIONS.md`
+  ADR-0044):** `RiskMode(str, Enum)` -- `LEGACY_UNIT` (the original
+  ADR-0011 model, produced by `run()`) and `PORTFOLIO_RISK` (produced
+  by `run_portfolio()`) -- is carried on `BacktestConfig` and echoed
+  back on `BacktestResult.risk_mode`, so any consumer can tell which
+  sizing model produced a given result. Neither method shares state
+  with the other.
 - **Key files:**
   - `engine.py` -- `Backtester.run(strategy, candles, dataset=None)`.
     Consumes the sparse `list[Signal]` from
@@ -589,10 +605,56 @@ ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
     `result.dataset_identity` records which symbol/timeframe/content-
     hash/session-convention the backtest actually ran against; every
     existing call site (passing a synthetic or hand-built DataFrame)
-    omits it and is unaffected.
+    omits it and is unaffected. `run_portfolio(strategies, candles,
+    config, datasets=None)` (Sprint 11) is a thin front door delegating
+    to `PortfolioBacktestEngine` -- kept as a separate module rather
+    than folded into this method (Sprint 11 spec: "don't cram this into
+    one 500-line `Backtester` method").
+  - `config.py` (Sprint 11) -- `RiskMode`, `BacktestConfig` (frozen
+    dataclass: `initial_cash`, `risk_mode`, `risk_limits`,
+    `portfolio_risk_limits`, `stop_policy`; `__post_init__` requires a
+    `stop_policy` when `risk_mode is PORTFOLIO_RISK` and
+    `initial_cash > 0` always).
+  - `stop_policy.py` (Sprint 11) -- `StopPolicy` protocol, `StopResult`
+    (`available`/`stop_price`/`reason`), and `ATRStopPolicy`
+    (period=14, multiple=2.0 defaults) built on the existing
+    `IndicatorEngine`. LONG stops below entry, SHORT stops above
+    entry; `available=False` (never a bad number) when ATR isn't
+    computable yet or is zero. `PortfolioBacktestEngine` always
+    truncates history to `.loc[:signal.timestamp]` before calling this,
+    so a stop can never see data the signal itself postdates.
+  - `portfolio_engine.py` (Sprint 11) -- `PortfolioBacktestEngine`, the
+    actual multi-symbol, risk-sized simulation: merges each symbol's
+    sparse signals onto one sorted timeline; for each signal in order,
+    derives an entry price from that bar's close and a stop from
+    `StopPolicy`, then hands both to the *existing, unmodified*
+    `PortfolioRiskEngine.decide()` (entries) or `.decide_close()`
+    (exits/FLATs) against a real, evolving `Portfolio` -- never a
+    stale snapshot. Fills approved intents at the signal bar's close
+    (same convention as `run()`), applies fills via `Portfolio`'s own
+    `open_position()`/`close_position()`, and marks-to-market for the
+    equity curve via a read-only valuation pass that never mutates
+    `Position.current_price`. Never recomputes `risk_amount`/
+    `risk_quantity`/`capital_quantity`/`allocation_quantity`/
+    `portfolio_exposure_quantity`/`symbol_exposure_quantity` itself --
+    those come from `PortfolioRiskEngine` exclusively
+    (`tests/test_architecture.py` enforces this by source-text scan).
+    Contains no `isinstance`/name-based branch for any particular
+    strategy, `AISignalStrategy` included.
+  - `risk_audit.py` (Sprint 11) -- `SignalOutcome` (per-signal
+    accept/reject record; `rejection_reason` reports
+    `"STOP_UNAVAILABLE"` when a stop couldn't be computed, without ever
+    reaching the risk engine) and `RiskAuditSummary`/
+    `summarize_outcomes()` (totals and rejection counts by reason) --
+    "signal generated," "trade approved," and "trade rejected" are
+    always distinguishable from the result alone.
   - `models.py` -- `Trade` (references its opening/closing signals by
     `entry_signal_id`/`exit_signal_id: UUID`, not by embedding the
-    `Signal` objects -- see ADR-0015/ADR-0016), `BacktestResult`.
+    `Signal` objects -- see ADR-0015/ADR-0016; gained an optional
+    `quantity: float | None` field in Sprint 11, `None` for every
+    pre-Sprint-11/`LEGACY_UNIT` trade, real gross P&L -- `qty *
+    (exit - entry)` long, `qty * (entry - exit)` short -- when set),
+    `BacktestResult` (Sprint 11 fields described above).
   - `metrics.py` -- `calculate_metrics()`, `sharpe_ratio()`,
     `max_drawdown()`, `infer_periods_per_year()` (Pre-Sprint 7,
     `DECISIONS.md` ADR-0038), each independently testable.
@@ -604,30 +666,49 @@ ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015).
     `calculate_metrics()`/`sharpe_ratio()`'s `periods_per_year` defaults
     to `None` (infer) with an explicit override still accepted.
 
-  Timeframe-agnostic by construction (ADR-0038): nothing in `engine.py`
-  or `metrics.py` treats a row as "one trading day" -- trade extraction,
-  the position series, the equity curve, and now Sharpe annualization
-  all derive from `candles`' own timestamps, so the identical
-  `Backtester` runs daily, hourly, or 1-minute candles unmodified.
-  `Backtester.__init__` accepts an optional `periods_per_year` override
-  for callers that want to bypass inference.
+  Timeframe-agnostic by construction (ADR-0038, extended by ADR-0044):
+  nothing in `engine.py`, `portfolio_engine.py`, or `metrics.py` treats
+  a row as "one trading day" -- trade extraction, the position series,
+  the equity curve, Sharpe annualization, and the Sprint 11 merged
+  multi-symbol timeline all derive from `candles`' own timestamps, so
+  the identical `Backtester` runs daily, hourly, or 1-minute candles
+  unmodified. `Backtester.__init__` accepts an optional
+  `periods_per_year` override for callers that want to bypass
+  inference.
 
   `Signal` gaining a required `symbol` field (`DECISIONS.md`, ADR-0033)
   required zero changes here -- `Backtester` passes `Signal` objects
   through into `BacktestResult.signals` untouched, so the new field
   survives automatically; `tests/test_architecture.py` proves the
   symbol (and the signal's UUID identity) survives strategy -> backtest
-  -> registry end to end.
+  -> registry end to end. `Signal` itself still has no quantity or stop
+  field -- strategies never control sizing (ADR-0044 decision 3);
+  `PortfolioBacktestEngine` derives both externally, per signal.
 - **Does not:** model realistic execution (partial fills, slippage,
   transaction costs) -- that's `src/execution`'s job later, deliberately
-  out of scope here. Does not decide position sizing beyond a single
-  unit, regardless of a signal's `confidence` -- that's `src/risk`'s
-  job later. Does not persist results, and does not store `Signal`
-  objects itself -- `ExperimentRegistry` owns that (ADR-0016).
+  out of scope here, in both modes. Does not decide position sizing in
+  `LEGACY_UNIT` mode beyond a single unit, regardless of a signal's
+  `confidence`. In `PORTFOLIO_RISK` mode, does not implement any sizing
+  formula itself -- composes `src/risk`'s `PortfolioRiskEngine`
+  unmodified rather than reimplementing or extending it; no Kelly
+  sizing, VaR/CVaR, correlation optimization, or volatility targeting
+  was added. Does not support pyramiding, partial closes, or scaling
+  into an open position -- a same-symbol operation while already open
+  is rejected via `PortfolioRiskEngine`'s existing
+  `POSITION_SCALING_NOT_SUPPORTED`/`UNSUPPORTED_POSITION_OPERATION`
+  reasons, not new reversal logic. Does not persist results, and does
+  not store `Signal` objects itself -- `ExperimentRegistry` owns that
+  (ADR-0016).
 - **Depends on:** `src/strategies` (for the `Strategy` contract),
   `src/signals` (for `Signal`/`SignalDirection`), `src/data` (Sprint 8,
   only for `CandleDataset`/`DatasetIdentity` -- `Backtester` never
-  fetches data itself or imports a provider).
+  fetches data itself or imports a provider); in `PORTFOLIO_RISK` mode
+  only, `src/risk` (`PortfolioRiskEngine`/`RiskDecision`/
+  `PortfolioRiskLimits`/`RiskLimits`) and `src/portfolio`
+  (`Portfolio`/`Position`) and `src/execution` (`ApprovedTradeIntent`)
+  -- all used exactly as `PaperBroker` already uses them, never
+  reimplemented. `LEGACY_UNIT` mode (`run()`) has none of these
+  dependencies, unchanged from before Sprint 11.
 
 ### `src/attribution`
 

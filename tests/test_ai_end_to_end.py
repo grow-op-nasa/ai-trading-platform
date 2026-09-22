@@ -167,6 +167,57 @@ def test_repeated_backtests_against_the_same_frozen_model_are_identical(tmp_path
     assert analytics_a == analytics_b
 
 
+def test_ai_strategy_runs_through_the_portfolio_aware_backtester(tmp_path):
+    # Sprint 11 (DECISIONS.md, ADR-0044): the important architectural
+    # milestone spec section 61 calls out -- a trained ML model's
+    # AISignalStrategy must traverse the exact same portfolio-aware risk
+    # path (PortfolioRiskEngine -> Portfolio -> Analytics) as any other
+    # strategy, with zero AI-specific code anywhere in that path. This
+    # exercises run_portfolio() rather than the legacy run() the other
+    # tests in this module use.
+    from src.backtesting.config import BacktestConfig
+    from src.backtesting.stop_policy import ATRStopPolicy
+    from src.risk.models import PortfolioRiskLimits, RiskLimits
+
+    candles = _make_candles(n=400, seed=7)
+    dataset = _make_dataset(candles, symbol="QQQ")
+
+    store = ModelArtifactStore(tmp_path)
+    registry = ModelRegistry(tmp_path, artifact_store=store)
+    training_result = MLTrainingService(registry=registry, artifact_store=store).train(dataset)
+
+    strategy = AISignalStrategy(
+        symbol="QQQ", model_id=training_result.model_id, min_probability=0.4, registry=registry
+    )
+    config = BacktestConfig(
+        initial_cash=100_000.0,
+        stop_policy=ATRStopPolicy(period=14, multiple=2.0),
+        risk_limits=RiskLimits(allocation_per_trade_pct=0.2, max_portfolio_exposure_pct=1.0),
+        portfolio_risk_limits=PortfolioRiskLimits(risk_pct_per_trade=0.01),
+    )
+
+    result = Backtester().run_portfolio({"QQQ": strategy}, {"QQQ": candles}, config, datasets={"QQQ": dataset})
+
+    from src.backtesting.config import RiskMode
+
+    assert result.risk_mode is RiskMode.PORTFOLIO_RISK
+    assert result.final_portfolio is not None
+    assert result.dataset_identities == {"QQQ": dataset.identity}
+    # Every trade produced through this path carries a real, risk-approved
+    # quantity -- never a fabricated unit size, and never requiring the
+    # engine to know this strategy is AI-driven at all.
+    for trade in result.trades:
+        assert trade.quantity is not None
+        assert trade.quantity > 0
+
+    analytics = AnalyticsService().analyze_backtest(result)
+    assert analytics.trade_count == len(result.trades)
+    # If any trades closed, the dollar-based metrics must be populated --
+    # the same analytics path a non-AI PORTFOLIO_RISK result gets.
+    if result.trades:
+        assert analytics.has_quantity_detail is True
+
+
 def test_experiment_is_reproducible_from_its_recorded_spec(tmp_path):
     # The reproducibility claim Sprint 10 spec section 31 asks for:
     # given only what ExperimentSpec recorded (strategy name + params),

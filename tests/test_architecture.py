@@ -586,6 +586,93 @@ def test_ai_model_interface_has_no_trading_vocabulary():
         assert not hasattr(AIModel, method_name)
 
 
+# ---------------------------------------------------------------------------
+# Sprint 11 (DECISIONS.md, ADR-0044): Backtester may depend on Risk/
+# Portfolio to run the portfolio-aware path, but the dependency is
+# strictly one-directional -- Risk/Portfolio never depend back on
+# Backtester, Backtester never talks to a real broker or yfinance
+# directly, and it never reimplements any risk-sizing arithmetic of its
+# own (it composes PortfolioRiskEngine, never recomputes what it returns).
+# ---------------------------------------------------------------------------
+
+
+def test_risk_and_portfolio_do_not_depend_on_backtesting():
+    import_pattern = re.compile(r"^\s*(?:from|import)\s+src\.backtesting\b", re.MULTILINE)
+    for package_name in ("risk", "portfolio"):
+        for path in (SRC_ROOT / package_name).glob("*.py"):
+            match = import_pattern.search(path.read_text())
+            assert match is None, (
+                f"src/{package_name} must not depend on src.backtesting -- the "
+                f"dependency direction is strictly Backtester -> Risk/Portfolio, "
+                f"never the reverse (DECISIONS.md, ADR-0044). Found in {path.name}."
+            )
+
+
+def test_backtesting_package_never_imports_broker_or_yfinance():
+    import_pattern = re.compile(
+        r"^\s*(?:from\s+src\.broker\b|import\s+src\.broker\b|"
+        r"from\s+yfinance\b|import\s+yfinance\b|"
+        r"from\s+src\.data\.yfinance_provider\s+import|"
+        r"import\s+src\.data\.yfinance_provider\b|"
+        r"from\s+src\.data(?:\.\w+)?\s+import\s+.*\bYFinanceProvider\b)",
+        re.MULTILINE,
+    )
+    offenders = [
+        path.name
+        for path in (SRC_ROOT / "backtesting").glob("*.py")
+        if import_pattern.search(path.read_text())
+    ]
+    assert offenders == [], (
+        f"src/backtesting must never talk to a real broker or fetch data "
+        f"directly from yfinance -- the portfolio-aware path simulates fills "
+        f"against a fresh, isolated Portfolio only (DECISIONS.md, ADR-0044, "
+        f"Sprint 11 spec sections 14, 32). Offending files: {offenders}"
+    )
+
+
+def test_portfolio_backtest_engine_does_not_duplicate_risk_sizing_arithmetic():
+    # Mirrors test_execution_does_not_duplicate_risk_sizing_logic()'s own
+    # reasoning: PortfolioBacktestEngine must construct and call
+    # PortfolioRiskEngine, never reimplement risk_amount/risk_quantity/
+    # capital_quantity/allocation_quantity/*_exposure_quantity math of
+    # its own. Checked as forbidden *assignment* patterns (an
+    # engine.decision.risk_quantity *read* is fine and expected) --
+    # a bare substring check would false-positive on those reads.
+    text = (SRC_ROOT / "backtesting" / "portfolio_engine.py").read_text()
+    forbidden_assignments = re.compile(
+        r"\b(risk_amount|risk_quantity|capital_quantity|allocation_quantity|"
+        r"portfolio_exposure_quantity|symbol_exposure_quantity)\s*="
+    )
+    match = forbidden_assignments.search(text)
+    assert match is None, (
+        f"PortfolioBacktestEngine must never compute its own "
+        f"{match.group(1) if match else ''} -- that arithmetic belongs "
+        f"exclusively to PortfolioRiskEngine (DECISIONS.md, ADR-0044, Sprint "
+        f"11 spec sections 10-11). Found an assignment to a risk-computation "
+        f"variable name in portfolio_engine.py."
+    )
+    # Positive half: it does actually call the real engine.
+    assert "PortfolioRiskEngine(" in text
+    assert ".decide(" in text
+    assert ".decide_close(" in text
+
+
+def test_portfolio_backtest_engine_has_no_ai_specific_branch():
+    # The same architectural guarantee test_backtester_has_no_ai_specific_
+    # branch() pins for the legacy path (DECISIONS.md, ADR-0043) --
+    # extended to the new portfolio-aware engine (ADR-0044, Sprint 11 spec
+    # section 29): EMACrossStrategy, RSIMeanReversionStrategy, and
+    # AISignalStrategy must all traverse the identical code path here.
+    text = (SRC_ROOT / "backtesting" / "portfolio_engine.py").read_text()
+    for forbidden in ("ai_signal", "AISignalStrategy", "src.ai", "import src.ai"):
+        assert forbidden not in text, (
+            f"PortfolioBacktestEngine must remain generic -- it should never "
+            f"special-case AI strategies by name or import src.ai "
+            f"(DECISIONS.md, ADR-0044, Sprint 11 spec section 29). Found "
+            f"{forbidden!r}."
+        )
+
+
 def test_account_state_equity_is_computed_from_frozen_entry_price_only():
     from src.risk.models import SizingDecision
 

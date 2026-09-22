@@ -11,6 +11,89 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 11 -- 2026-09-22, Portfolio-Aware Backtesting & Unified Risk Simulation
+
+Connects the backtesting engine to the Sprint 7 portfolio-aware
+risk/position-management architecture, so a strategy evaluated in
+backtesting can be subject to the same risk-sizing and portfolio-
+admission rules that already govern paper trading. A risk-consistency
+sprint, not an execution-realism one -- slippage, costs, and partial
+fills remain future work for `src/execution/`. See `DECISIONS.md`,
+ADR-0044 for the full design and reasoning.
+
+### Added
+
+- `src/backtesting/config.py` -- `RiskMode(str, Enum)`
+  (`LEGACY_UNIT`/`PORTFOLIO_RISK`) and `BacktestConfig` (frozen
+  dataclass: `initial_cash`, `risk_mode`, `risk_limits`,
+  `portfolio_risk_limits`, `stop_policy`). `__post_init__` requires a
+  non-`None` `stop_policy` when `risk_mode is PORTFOLIO_RISK`, and
+  `initial_cash > 0` always.
+- `src/backtesting/stop_policy.py` -- `StopPolicy` protocol,
+  `StopResult` (`available: bool`, `stop_price: float | None`,
+  `reason: str | None`, validated in `__post_init__`), and
+  `ATRStopPolicy` (period=14, multiple=2.0 defaults) built on the
+  existing `IndicatorEngine`. LONG stops below entry, SHORT stops
+  above entry; returns `available=False` (never a bad number) when ATR
+  can't be computed yet or is zero.
+- `src/backtesting/portfolio_engine.py` -- `PortfolioBacktestEngine`,
+  the actual multi-symbol, risk-sized simulation: merges each symbol's
+  sparse signals onto one sorted timeline, derives an entry price and
+  stop per signal, calls the existing `PortfolioRiskEngine.decide()`/
+  `.decide_close()` against a real, evolving `Portfolio`, fills
+  approved intents at the signal bar's close, and marks positions to
+  market for the equity curve via a read-only valuation pass (never
+  mutates `Position.current_price`).
+- `src/backtesting/risk_audit.py` -- `SignalOutcome` (per-signal
+  accept/reject record, `rejection_reason` reporting
+  `"STOP_UNAVAILABLE"` when a stop couldn't be computed) and
+  `RiskAuditSummary`/`summarize_outcomes()` (totals and rejection
+  counts by reason).
+- `Backtester.run_portfolio(strategies: dict[str, Strategy], candles:
+  dict[str, pd.DataFrame], config: BacktestConfig, datasets=None)` --
+  a thin front door delegating to `PortfolioBacktestEngine`.
+  `Backtester.run()` (ADR-0011, unit-sized) is completely unchanged.
+- `Trade.quantity: float | None` (new, defaults to `None`) --
+  `Trade.gross_pnl` now reflects real quantity when set (`qty *
+  (exit - entry)` long, `qty * (entry - exit)` short); every existing
+  unsized `Trade` is unaffected.
+- `BacktestResult` gained `risk_mode`, `backtest_config`,
+  `signal_outcomes`, and `final_portfolio` fields, populated by
+  `run_portfolio()` (all `None`/default for `run()`'s legacy path).
+- `src/analytics/metrics.py` -- `has_quantity_detail(trades)` plus
+  dollar-denominated metrics (`net_pnl_dollars`,
+  `gross_profit_dollars`, `gross_loss_dollars`, `expectancy_dollars`,
+  `average_winner_dollars`, `average_loser_dollars`,
+  `largest_winner_dollars`, `largest_loser_dollars`), each returning
+  `Metric.undefined(...)` when trades aren't sized. Original fraction-
+  based metrics unchanged.
+- `BacktestAnalytics` (`src/analytics/models.py`) gained the 9
+  corresponding fields; `AnalyticsService._analyze()` populates them.
+- `experiment_trades` schema (`src/experiments/registry.py`) gained a
+  nullable `quantity REAL` column (same precedent as ADR-0033's
+  `symbol` column); `_row_to_trade()` degrades gracefully via
+  `"quantity" in row.keys()` for a pre-migration database.
+  `Portfolio`/`Position` serialization and `ExperimentSpec.
+  backtest_config` needed zero schema change -- both already
+  round-tripped this generically since Sprint 9/pre-Sprint-11.
+
+### Verified
+
+- Sandbox (stub-based runner, no scikit-learn/joblib installed):
+  **790 passed, 2 failed (the same pre-existing cli/doctor and config
+  environment-only failures every prior sprint has carried forward),
+  8 skipped** (scikit-learn/joblib/Streamlit import gates, unchanged
+  from Sprint 10).
+- Caught and fixed during test-writing: an earlier docstring in
+  `engine.py`/`portfolio_engine.py` named `AISignalStrategy`/
+  `EMACrossStrategy`/`RSIMeanReversionStrategy` illustratively, which
+  tripped the existing AI-no-special-branch architecture guards.
+  Reworded to describe the same guarantee generically; re-verified
+  green.
+- Real `pytest` on the dev machine: **pending** -- not yet run. Sprint
+  11 is not declared fully confirmed until that run has executed and
+  its exact result is reported (see `PROJECT_STATE.md`, "Next Task").
+
 ## Sprint 10 -- 2026-09-22, ML Signal Research & AI Strategy Integration
 
 A reproducible, leakage-safe machine-learning research layer feeding

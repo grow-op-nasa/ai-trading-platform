@@ -438,6 +438,56 @@ def test_trades_are_scoped_to_their_own_experiment(tmp_path):
     assert registry.get_trades(second_id)[0].entry_price == 200.0
 
 
+# ---------------------------------------------------------------------------
+# Sprint 11 (DECISIONS.md, ADR-0044): Trade.quantity round-trips through
+# the registry -- nullable, so a LEGACY_UNIT trade (quantity=None) and a
+# PORTFOLIO_RISK trade (a real quantity) are never conflated.
+# ---------------------------------------------------------------------------
+
+
+def test_trade_quantity_round_trips(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_id = new_experiment(registry)
+    trade = make_trade(entry_price=100.0, exit_price=110.0, quantity=20.0)
+
+    registry.save_trades(experiment_id, [trade])
+    fetched = registry.get_trades(experiment_id)
+
+    assert fetched == [trade]
+    assert fetched[0].quantity == 20.0
+    assert fetched[0].gross_pnl == pytest.approx(200.0)
+
+
+def test_legacy_unit_trade_quantity_persists_as_none(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_id = new_experiment(registry)
+    trade = make_trade(entry_price=100.0, exit_price=110.0)  # quantity defaults to None
+
+    registry.save_trades(experiment_id, [trade])
+    fetched = registry.get_trades(experiment_id)
+
+    assert fetched[0].quantity is None
+    assert fetched[0].gross_pnl is None
+
+
+def test_mixed_quantity_and_no_quantity_trades_round_trip_independently(tmp_path):
+    registry = make_registry(tmp_path)
+    experiment_id = new_experiment(registry)
+    sized_trade = make_trade(entry_price=100.0, exit_price=110.0, quantity=50.0)
+    unsized_trade = make_trade(
+        entry_time=pd.Timestamp("2024-01-06", tz="UTC"),
+        exit_time=pd.Timestamp("2024-01-08", tz="UTC"),
+        entry_price=200.0,
+        exit_price=190.0,
+    )
+
+    registry.save_trades(experiment_id, [sized_trade, unsized_trade])
+    fetched = {t.entry_price: t for t in registry.get_trades(experiment_id)}
+
+    assert fetched[100.0].quantity == 50.0
+    assert fetched[200.0].quantity is None
+
+
 def test_get_equity_curve_returns_empty_series_when_none_saved(tmp_path):
     registry = make_registry(tmp_path)
     experiment_id = new_experiment(registry)

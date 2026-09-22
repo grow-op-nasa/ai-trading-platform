@@ -16,13 +16,28 @@ asks for (`DECISIONS.md`, ADR-0038), and `src.analytics` depending on
 
 Per-trade metrics (profit factor, expectancy, average/largest winner
 and loser) are computed from `Trade.return_pct` -- a fraction of entry
-price -- rather than a dollar amount. This platform's backtester
-(`DECISIONS.md`, ADR-0011) has no persistent per-trade share count to
-derive a dollar P&L from without inventing one; `return_pct` is the one
-per-trade number that already exists and is unambiguous. `total_pnl`/
-`total_return`, by contrast, are read directly off the equity curve --
+price -- rather than a dollar amount. This is unconditionally true for
+every `RiskMode.LEGACY_UNIT` trade (`DECISIONS.md` ADR-0011), which has
+no persistent per-trade share count to derive a dollar P&L from without
+inventing one; `return_pct` is the one per-trade number that already
+exists and is unambiguous there. `total_pnl`/`total_return`, by
+contrast, are read directly off the equity curve --
 `BacktestResult.equity_curve` -- so those two are genuine dollar/
-fractional totals for the whole run, not per-trade constructs.
+fractional totals for the whole run regardless of risk mode, not
+per-trade constructs.
+
+As of Sprint 11 (`DECISIONS.md`, ADR-0044), a `RiskMode.PORTFOLIO_RISK`
+trade *does* carry a real `quantity`, so `Trade.gross_pnl` is a genuine
+dollar figure per trade. Rather than reinterpret the existing
+fraction-based functions above, this module adds explicit dollar-suffixed
+siblings (`net_pnl_dollars`, `gross_profit_dollars`,
+`gross_loss_dollars`, `expectancy_dollars`, `average_winner_dollars`,
+`average_loser_dollars`, `largest_winner_dollars`,
+`largest_loser_dollars`) gated by `has_quantity_detail()` -- the
+fraction-based originals keep their exact existing behavior for every
+caller and every historical experiment, and a caller must opt into the
+dollar view explicitly rather than have `None` quantities silently
+reinterpreted as zero-sized trades.
 """
 
 from __future__ import annotations
@@ -255,6 +270,91 @@ def volatility(
     return AnnualizedMetric(
         metric=Metric.of(float(std * (resolved**0.5))), periods_per_year=resolved
     )
+
+
+def has_quantity_detail(trades: list[Trade]) -> bool:
+    """Whether every trade in `trades` carries a real `quantity`
+    (Sprint 11, `DECISIONS.md` ADR-0044) -- true only for a non-empty
+    `RiskMode.PORTFOLIO_RISK` trade list. `False` for an empty list or
+    any `RiskMode.LEGACY_UNIT` trade (where `quantity` is `None`), and
+    also `False` for a mixed list -- this platform never actually
+    produces one (a `BacktestResult`'s trades all come from the same
+    risk mode), but the dollar-based functions below refuse to average
+    dollar and fraction terms together rather than assume that can't
+    happen.
+    """
+    return bool(trades) and all(t.quantity is not None for t in trades)
+
+
+def net_pnl_dollars(trades: list[Trade]) -> Metric:
+    """Sum of every trade's `gross_pnl` -- total dollar profit/loss for
+    the run, before any costs (`DECISIONS.md`, ADR-0044). `UNDEFINED`
+    when `trades` lacks quantity detail (a `RiskMode.LEGACY_UNIT` run,
+    or no trades at all), never silently computed from `return_pct`
+    instead -- that would mix fraction and dollar terms.
+    """
+    if not has_quantity_detail(trades):
+        return Metric.undefined("no quantity detail -- trades were not sized (LEGACY_UNIT mode)")
+    return Metric.of(sum(t.gross_pnl for t in trades))
+
+
+def gross_profit_dollars(trades: list[Trade]) -> Metric:
+    """Sum of `gross_pnl` across winning trades only."""
+    if not has_quantity_detail(trades):
+        return Metric.undefined("no quantity detail -- trades were not sized (LEGACY_UNIT mode)")
+    return Metric.of(sum(t.gross_pnl for t in trades if t.gross_pnl > 0))
+
+
+def gross_loss_dollars(trades: list[Trade]) -> Metric:
+    """Absolute sum of `gross_pnl` across losing trades only."""
+    if not has_quantity_detail(trades):
+        return Metric.undefined("no quantity detail -- trades were not sized (LEGACY_UNIT mode)")
+    return Metric.of(abs(sum(t.gross_pnl for t in trades if t.gross_pnl < 0)))
+
+
+def expectancy_dollars(trades: list[Trade]) -> Metric:
+    """Average `gross_pnl` per closed trade, in dollar terms -- the
+    dollar analogue of `expectancy()` (which stays fraction-based for
+    every trade list, quantity or not)."""
+    if not has_quantity_detail(trades):
+        return Metric.undefined("no quantity detail -- trades were not sized (LEGACY_UNIT mode)")
+    return Metric.of(sum(t.gross_pnl for t in trades) / len(trades))
+
+
+def average_winner_dollars(trades: list[Trade]) -> Metric:
+    if not has_quantity_detail(trades):
+        return Metric.undefined("no quantity detail -- trades were not sized (LEGACY_UNIT mode)")
+    winners = [t.gross_pnl for t in trades if t.gross_pnl > 0]
+    if not winners:
+        return Metric.undefined("no winning trades")
+    return Metric.of(sum(winners) / len(winners))
+
+
+def average_loser_dollars(trades: list[Trade]) -> Metric:
+    if not has_quantity_detail(trades):
+        return Metric.undefined("no quantity detail -- trades were not sized (LEGACY_UNIT mode)")
+    losers = [t.gross_pnl for t in trades if t.gross_pnl < 0]
+    if not losers:
+        return Metric.undefined("no losing trades")
+    return Metric.of(sum(losers) / len(losers))
+
+
+def largest_winner_dollars(trades: list[Trade]) -> Metric:
+    if not has_quantity_detail(trades):
+        return Metric.undefined("no quantity detail -- trades were not sized (LEGACY_UNIT mode)")
+    winners = [t.gross_pnl for t in trades if t.gross_pnl > 0]
+    if not winners:
+        return Metric.undefined("no winning trades")
+    return Metric.of(max(winners))
+
+
+def largest_loser_dollars(trades: list[Trade]) -> Metric:
+    if not has_quantity_detail(trades):
+        return Metric.undefined("no quantity detail -- trades were not sized (LEGACY_UNIT mode)")
+    losers = [t.gross_pnl for t in trades if t.gross_pnl < 0]
+    if not losers:
+        return Metric.undefined("no losing trades")
+    return Metric.of(min(losers))
 
 
 def exposure_time(trades: list[Trade], equity_curve: pd.Series) -> Metric:

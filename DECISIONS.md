@@ -3496,3 +3496,244 @@ reproduce on the dev machine at all, since it runs its own genuinely
 supported Python version -- so this confirmation run has zero failures
 of any kind, not just zero *new* ones. See `PROJECT_STATE.md` and
 `CHANGELOG.md` for the same account.
+
+## ADR-0044: Sprint 11 -- Portfolio-Aware Backtesting & Unified Risk Simulation
+
+**Status:** Accepted (sandbox-confirmed; pending real `pytest` on the
+dev machine).
+
+**Context:**
+
+Since ADR-0011, `Backtester.run()` has sized every trade as exactly
+one unit -- a deliberate simplification so the framework could focus
+on turning a sparse `Signal` list into trades, a position series, and
+an equity curve, without also solving position sizing. That
+simplification has held for ten sprints, through the introduction of
+timeframe-agnosticism (ADR-0038), the AI strategy path (ADR-0043), and
+the entire Sprint 7 portfolio-risk architecture
+(`PortfolioRiskEngine`/`RiskDecision`/`PortfolioRiskLimits`/`RiskLimits`
+/`Portfolio`/`Position`/`ApprovedTradeIntent`), which today governs
+every trade `PaperBroker` places -- but has never been asked to govern
+a single trade inside `Backtester`.
+
+The result is a real gap: a strategy's backtested performance and its
+paper-traded performance are shaped by two unrelated sizing models.
+Backtest equity curves say nothing about what would happen once
+concurrent-position limits, portfolio exposure caps, or per-trade risk
+budgets are applied -- because they never are. A strategy can look
+excellent unit-sized and behave completely differently once real
+position sizing and portfolio admission rules are in the loop. This
+sprint closes that gap: the same risk model that already constrains
+paper trading can now constrain historical research too.
+
+This is explicitly a risk-*consistency* sprint, not an execution-
+realism sprint. Slippage, transaction costs, partial fills, and
+realistic order-book modeling remain future work for `src/execution/`
+-- untouched here, same as every prior sprint.
+
+**Decision:**
+
+1. **Two explicit, typed execution modes, never silently mixed.**
+   `RiskMode(str, Enum)` -- `LEGACY_UNIT` and `PORTFOLIO_RISK` -- is
+   carried on a new `BacktestConfig` (`src/backtesting/config.py`) and
+   echoed back on `BacktestResult.risk_mode`, so any consumer (the
+   dashboard, `ExperimentRegistry`, a human reading a report) can tell
+   at a glance which sizing model produced a given result.
+   `Backtester.run()` -- the original ADR-0011 method -- is completely
+   unchanged and always reports `LEGACY_UNIT`; the new
+   `Backtester.run_portfolio()` always reports `PORTFOLIO_RISK`.
+   Neither method shares state with the other, and both remain
+   available side by side indefinitely -- see non-goal 1 below on why
+   legacy mode isn't being deprecated.
+
+2. **`PortfolioBacktestEngine` composes Sprint 7's risk engine; it
+   never reimplements it.** The new module
+   `src/backtesting/portfolio_engine.py` runs each symbol's strategy,
+   merges the resulting sparse signals onto one sorted, multi-symbol
+   timeline, and for each signal in chronological order: looks up the
+   signal-bar close as the entry price, asks a `StopPolicy` for a stop,
+   and hands both to the *existing*, *unmodified*
+   `PortfolioRiskEngine.decide()` (for entries) or `.decide_close()`
+   (for exits/FLATs) against a real, evolving `Portfolio` object --
+   never a stale snapshot, never a synthetic replica. `risk_amount`,
+   `risk_quantity`, `capital_quantity`, `allocation_quantity`,
+   `portfolio_exposure_quantity`, and `symbol_exposure_quantity` are
+   computed exactly once, inside `PortfolioRiskEngine`, and nowhere
+   else; `test_architecture.py`'s
+   `test_portfolio_backtest_engine_does_not_duplicate_risk_sizing_arithmetic`
+   enforces this by scanning `portfolio_engine.py`'s source text for
+   any local assignment to those names. The resulting `RiskDecision` is
+   wrapped in an `ApprovedTradeIntent` and filled at the signal bar's
+   close (the same fill convention `run()` already uses), then applied
+   to the `Portfolio` via its existing `open_position()`/
+   `close_position()` methods -- no second `Position` model, no second
+   P&L engine, no second copy of anything Sprint 7 already owns.
+
+3. **A new `StopPolicy` abstraction, not a new `Signal` field.**
+   `PortfolioRiskEngine.decide()` requires a stop price to size a
+   trade, but strategies deliberately have no concept of one --
+   `Signal` stays exactly as small as ADR-0015 left it, with no
+   quantity or stop field ever added to it (Sprint 11 spec, sections 5
+   and 24: strategies never control sizing, and never will).
+   `src/backtesting/stop_policy.py` introduces a `StopPolicy` protocol
+   and one concrete implementation, `ATRStopPolicy` (period=14,
+   multiple=2.0 by default), built on the existing `IndicatorEngine` --
+   LONG stops below entry, SHORT stops above entry, by
+   `multiple * ATR`. `PortfolioBacktestEngine` always truncates each
+   symbol's candle history to `.loc[:signal.timestamp]` before handing
+   it to the stop policy, so a stop can never be computed from data the
+   strategy itself couldn't have seen yet
+   (`test_stop_price_is_unaffected_by_data_after_the_signal_timestamp`
+   in `tests/test_stop_policy.py` regresses this directly). When ATR
+   can't be computed yet (insufficient warmup history) or comes back
+   zero, the policy returns an explicit `StopResult(available=False,
+   reason=...)` rather than a bad number, and `PortfolioBacktestEngine`
+   turns that into an explicit `STOP_UNAVAILABLE` rejection -- it never
+   falls back to unit quantity or any other silent default.
+
+4. **`Trade` gains a persistent, optional `quantity` field; P&L becomes
+   real dollars when it's known.** `Trade.quantity: float | None`
+   defaults to `None`, so every `LEGACY_UNIT` trade (past and future)
+   is unaffected. When `quantity` is set, `Trade.gross_pnl` reflects
+   it directly -- `qty * (exit - entry)` for longs, `qty * (entry -
+   exit)` for shorts -- as gross realized P&L before costs. Analytics
+   (`src/analytics/metrics.py`) gates a full family of new dollar
+   metrics (`net_pnl_dollars`, `gross_profit_dollars`,
+   `expectancy_dollars`, `average_winner_dollars`, and so on) behind a
+   new `has_quantity_detail(trades)` check, returning an explicit
+   `Metric.undefined(...)` rather than silently reinterpreting an
+   unsized trade list as dollar-denominated. The original fraction-
+   based metrics are untouched and still apply to every trade list
+   regardless of mode.
+
+5. **Persistence needed almost no schema change.** `Portfolio`/
+   `Position` serialization in `src/experiments/registry.py`
+   (`_position_to_dict`/`_dict_to_position`) has round-tripped
+   `quantity`/`side`/`stop_price` generically since Sprint 9 -- zero
+   change. `ExperimentSpec.backtest_config` has been a reserved,
+   extensible JSON field since before this sprint -- zero schema
+   change. The only actual schema change is one new nullable
+   `quantity REAL` column on `experiment_trades`
+   (`_TRADES_SCHEMA`), following the same precedent ADR-0033 set for
+   the `symbol` column; `_row_to_trade()` checks
+   `"quantity" in row.keys()` so a pre-migration on-disk database
+   (missing the column entirely) degrades gracefully to `None` instead
+   of raising, while a present-but-`NULL` value round-trips as `None`
+   normally.
+
+6. **AI strategies get zero special-casing, by construction and by
+   test.** `run_portfolio()` takes a `dict[str, Strategy]` and treats
+   every entry identically -- `EMACrossStrategy`, `RSIMeanReversionStrategy`,
+   and `AISignalStrategy` all traverse the exact same signal-generation,
+   stop-policy, and risk-decision path, with no `isinstance` branch
+   anywhere in `portfolio_engine.py` or `engine.py`. This isn't just
+   asserted in prose: `test_architecture.py`'s
+   `test_portfolio_backtest_engine_has_no_ai_specific_branch` does a
+   literal source-text scan of `portfolio_engine.py` for any mention of
+   `AISignalStrategy`, `ai_signal`, or `src.ai`, and
+   `tests/test_ai_end_to_end.py` proves it empirically by running a
+   trained `AISignalStrategy` through `run_portfolio()` end to end and
+   confirming every resulting trade is properly sized and priced. (A
+   docstring in an earlier draft of this sprint's code named
+   `AISignalStrategy`/`EMACrossStrategy`/`RSIMeanReversionStrategy`
+   illustratively and tripped exactly this guard -- see
+   `PROJECT_STATE.md`'s Sprint 11 notes and the sandbox verification
+   section below; it was reworded to describe the same guarantee
+   generically.)
+
+7. **Sparse-signal and reversal semantics are preserved exactly, not
+   reinvented.** A reversal or unsupported same-symbol operation while
+   a position is already open is rejected via the existing
+   `POSITION_SCALING_NOT_SUPPORTED`/`UNSUPPORTED_POSITION_OPERATION`
+   rejection reasons `PortfolioRiskEngine` already defines -- no new
+   reversal-handling logic was written for this sprint. A close/FLAT
+   signal always routes through `decide_close()`, which by design is
+   never subject to exposure-limit rejection (closing a position can
+   only reduce exposure).
+
+8. **Mark-to-market equity is computed by a read-only valuation pass,
+   mirroring ADR's Sprint 9 pattern.** Each symbol's close series is
+   forward-filled across one merged, sorted multi-symbol timeline, and
+   equity at each point is `cash + sum(open position value)` --
+   computed without ever mutating `Position.current_price` or any
+   other field on the live `Portfolio`. A defensive fallback to
+   `position.valuation_price` exists for a forward-filled price that
+   somehow comes back `NaN`, though no test run has ever actually
+   triggered it in a coherent scenario.
+
+9. **Every outcome is auditable, never silently dropped.**
+   `PortfolioBacktestEngine` records one `SignalOutcome` per signal --
+   `accepted: bool`, the `RiskDecision` (or `None` when a stop was
+   unavailable, in which case `rejection_reason` reports
+   `"STOP_UNAVAILABLE"` without ever reaching the risk engine), and the
+   originating signal and symbol -- and `summarize_outcomes()` rolls
+   these into a `RiskAuditSummary` with totals and rejection counts by
+   reason. Nothing is hidden: "signal generated," "trade approved," and
+   "trade rejected" are always distinguishable from the result alone.
+
+**Non-goals, explicit (Sprint 11 spec, sections 3 and 30):**
+
+- Deprecating or removing `Backtester.run()` / `LEGACY_UNIT` mode. It
+  stays, indefinitely, as the simple unit-sized baseline it has always
+  been -- some research questions genuinely don't need portfolio
+  sizing, and forcing every caller through `PORTFOLIO_RISK` would be a
+  breaking, not additive, change.
+- Any execution-realism modeling: slippage, transaction costs, partial
+  fills, realistic order-book behavior. Still `src/execution/`'s job,
+  untouched.
+- Advanced portfolio management of any kind: Kelly sizing, VaR/CVaR,
+  correlation-aware optimization, factor models, volatility targeting,
+  dynamic hedging. `PortfolioRiskEngine`'s existing sizing rules are
+  used exactly as they are; none of its formulas were touched or
+  extended.
+- Position-management expansion: pyramiding, partial closes, scaling
+  into or out of a position, multi-leg trades. A same-symbol operation
+  while already open is rejected, not supported, exactly as Sprint 7
+  already specified.
+- Live trading of any kind. `PortfolioBacktestEngine` only ever
+  operates on a fresh, isolated, in-memory `Portfolio` built for one
+  simulation run -- never the live/paper `Portfolio` `PaperBroker`
+  manages, and never anything that talks to a real broker.
+  `PaperBroker` itself was not modified in any way this sprint, and its
+  existing tests pass unchanged.
+- Any AI/ML expansion: LLM-based trading, neural signal models,
+  automatic model selection, autonomous retraining, AI-driven risk
+  models. `AISignalStrategy` (ADR-0043) is used only as one more
+  `Strategy` implementation proving decision 6 above; nothing about
+  how it trains or predicts was touched.
+- New market-data handling of any kind. `Backtester` continues
+  accepting only canonical, already-validated `candles` -- it still
+  never imports `yfinance`, reads a data cache directly, normalizes
+  provider timestamps, or implements a session calendar.
+
+**Sandbox verification:**
+
+The sandbox this work was written in has no network access (`pip
+install` fails with a proxy `403 Forbidden`), so `sklearn`, `joblib`,
+and `streamlit` remain uninstalled here, same as every prior sprint --
+the new AI end-to-end portfolio test
+(`test_ai_strategy_runs_through_the_portfolio_aware_backtester`) is
+gated behind `pytest.importorskip("sklearn")` and could only be
+verified via `py_compile`, not execution. Using the sandbox's stub
+test runner (`/tmp/runner_all.py`, the same harness prior sprints'
+ADRs describe), the full suite reports:
+
+**790 passed, 2 failed, 8 skipped.**
+
+The 2 failures are the same environment-only failures every sprint
+since Sprint 7 has carried forward unchanged --
+`test_cli_doctor.test_python_version_passes_against_running_interpreter`
+(the sandbox's Python 3.10.12 fails whatever minimum-version check
+`src/cli/checks.py` enforces) and
+`test_config.test_logger_is_importable_and_callable` (a loguru-stub
+gap) -- confirmed via `git status`/`git log` to be untouched by any
+change in this sprint, and confirmed not to reproduce on a real
+developer machine in every prior sprint's own dev-machine run. The 8
+skips are the expected `sklearn`/`joblib`/`streamlit` import guards.
+
+**This sandbox result is not a substitute for a real `pytest -q` run
+on the developer's own machine.** Per this project's standing rule
+(reaffirmed, not introduced, by this sprint), Sprint 11 is not declared
+fully confirmed until that real run has actually executed and its
+exact result has been reported -- see `PROJECT_STATE.md`'s "Next Task"
+section for the outstanding step.

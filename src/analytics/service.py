@@ -124,6 +124,15 @@ class AnalyticsService:
             sharpe_periodicity_note=_periodicity_note(sharpe.periods_per_year),
             has_trade_detail=bool(trades),
             has_equity_curve=not equity_curve.empty,
+            has_quantity_detail=m.has_quantity_detail(trades),
+            net_pnl_dollars=m.net_pnl_dollars(trades),
+            gross_profit_dollars=m.gross_profit_dollars(trades),
+            gross_loss_dollars=m.gross_loss_dollars(trades),
+            expectancy_dollars=m.expectancy_dollars(trades),
+            average_winner_dollars=m.average_winner_dollars(trades),
+            average_loser_dollars=m.average_loser_dollars(trades),
+            largest_winner_dollars=m.largest_winner_dollars(trades),
+            largest_loser_dollars=m.largest_loser_dollars(trades),
         )
 
 

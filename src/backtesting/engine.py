@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.backtesting.config import BacktestConfig
 from src.backtesting.metrics import calculate_metrics
 from src.backtesting.models import BacktestResult, Trade
 from src.data.models import CandleDataset
@@ -132,6 +133,61 @@ class Backtester:
             signals=signals,
             dataset_identity=dataset.identity if dataset is not None else None,
         )
+
+    def run_portfolio(
+        self,
+        strategies: dict[str, Strategy],
+        candles: dict[str, pd.DataFrame],
+        config: BacktestConfig,
+        datasets: dict[str, CandleDataset] | None = None,
+    ) -> BacktestResult:
+        """Run one or more strategies through the portfolio-aware risk
+        path (`DECISIONS.md`, ADR-0044, Sprint 11) -- the same
+        `PortfolioRiskEngine` sizing and admission rules paper trading
+        already uses, replayed against historical candles instead of
+        live ones. `run()` above (the original, unit-sized model,
+        `DECISIONS.md` ADR-0011) is completely unchanged by this method
+        existing -- neither shares any state or behavior with the
+        other, and both remain available side by side.
+
+        A thin front door: the actual multi-symbol, risk-sized
+        simulation lives in `src.backtesting.portfolio_engine.
+        PortfolioBacktestEngine`, kept as its own module rather than
+        folded into this method (Sprint 11 spec, section 10: "do not
+        cram all of this into one 500-line Backtester method").
+
+        Args:
+            strategies: one `Strategy` per symbol to trade, keyed by
+                symbol. Each strategy runs against only its own
+                symbol's candles -- any `Strategy` implementation plugs
+                in identically here, with no special-casing for any
+                particular signal source, including a model-driven one
+                (Sprint 11 spec, section 29).
+            candles: OHLCV data per symbol, keyed identically to
+                `strategies`.
+            config: the `BacktestConfig` describing this run's cash,
+                risk limits, and stop policy
+                (`src.backtesting.config.BacktestConfig`). Must have
+                `risk_mode == RiskMode.PORTFOLIO_RISK`.
+            datasets: optional per-symbol `CandleDataset` provenance,
+                the `run_portfolio()` analogue of `run()`'s own
+                `dataset` parameter.
+
+        Returns:
+            A `BacktestResult` with `risk_mode == RiskMode.PORTFOLIO_RISK`,
+            populated `backtest_config`/`signal_outcomes`/
+            `final_portfolio` -- see `BacktestResult`'s own docstring
+            for what each carries.
+
+        Raises:
+            ValueError: `config.risk_mode` isn't `RiskMode.PORTFOLIO_RISK`,
+                `strategies`/`candles` don't share exactly the same
+                symbol keys, `strategies` is empty, or some strategy's
+                `generate_signals()` doesn't return a `list[Signal]`.
+        """
+        from src.backtesting.portfolio_engine import PortfolioBacktestEngine
+
+        return PortfolioBacktestEngine(config).run(strategies, candles, datasets=datasets)
 
     def _extract_trades(self, candles: pd.DataFrame, signals: list[Signal]) -> list[Trade]:
         """Turn a sparse, time-ordered signal list into completed Trades.

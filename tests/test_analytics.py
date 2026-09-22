@@ -50,6 +50,7 @@ def make_trade(
     direction: int = 1,
     entry_time: pd.Timestamp | None = None,
     exit_time: pd.Timestamp | None = None,
+    quantity: float | None = None,
 ) -> Trade:
     return Trade(
         entry_time=entry_time or pd.Timestamp("2024-01-01", tz="UTC"),
@@ -58,6 +59,7 @@ def make_trade(
         entry_price=entry_price,
         exit_price=exit_price,
         entry_signal_id=uuid4(),
+        quantity=quantity,
     )
 
 
@@ -220,6 +222,126 @@ def test_largest_winner_and_loser_hand_calculated():
     trades = [make_trade(100, 110), make_trade(100, 130), make_trade(100, 80), make_trade(100, 95)]
     assert_ok(m.largest_winner(trades), 0.30)
     assert_ok(m.largest_loser(trades), -0.20)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 11 (DECISIONS.md, ADR-0044): dollar-denominated per-trade
+# metrics, gated on Trade.quantity being populated for every trade
+# (a RiskMode.PORTFOLIO_RISK result) -- the fraction-based originals
+# above stay exactly as they were for every LEGACY_UNIT trade list.
+# ---------------------------------------------------------------------------
+
+
+def test_has_quantity_detail_false_for_empty_and_legacy_trades():
+    assert m.has_quantity_detail([]) is False
+    assert m.has_quantity_detail([make_trade(100, 110)]) is False  # quantity=None
+
+
+def test_has_quantity_detail_true_when_every_trade_is_sized():
+    trades = [make_trade(100, 110, quantity=10.0), make_trade(100, 90, quantity=5.0)]
+    assert m.has_quantity_detail(trades) is True
+
+
+def test_has_quantity_detail_false_for_a_mixed_list():
+    trades = [make_trade(100, 110, quantity=10.0), make_trade(100, 90)]
+    assert m.has_quantity_detail(trades) is False
+
+
+def test_dollar_metrics_undefined_for_legacy_unit_trades():
+    trades = [make_trade(100, 110), make_trade(100, 90)]
+    for fn in (
+        m.net_pnl_dollars,
+        m.gross_profit_dollars,
+        m.gross_loss_dollars,
+        m.expectancy_dollars,
+        m.average_winner_dollars,
+        m.average_loser_dollars,
+        m.largest_winner_dollars,
+        m.largest_loser_dollars,
+    ):
+        assert_undefined(fn(trades), "no quantity detail")
+
+
+def test_dollar_metrics_undefined_for_no_trades_at_all():
+    assert_undefined(m.net_pnl_dollars([]), "no quantity detail")
+
+
+def test_net_pnl_dollars_hand_calculated():
+    # LONG 100->110 qty 20: +200. SHORT 100->110 qty 10: -100. Net: +100.
+    trades = [
+        make_trade(100, 110, direction=1, quantity=20.0),
+        make_trade(100, 110, direction=-1, quantity=10.0),
+    ]
+    assert_ok(m.net_pnl_dollars(trades), 100.0)
+
+
+def test_gross_profit_and_loss_dollars_hand_calculated():
+    trades = [
+        make_trade(100, 110, quantity=20.0),  # +200
+        make_trade(100, 130, quantity=10.0),  # +300
+        make_trade(100, 90, quantity=15.0),  # -150
+    ]
+    assert_ok(m.gross_profit_dollars(trades), 500.0)
+    assert_ok(m.gross_loss_dollars(trades), 150.0)
+
+
+def test_expectancy_dollars_hand_calculated():
+    trades = [make_trade(100, 110, quantity=20.0), make_trade(100, 90, quantity=20.0)]
+    # +200 and -200 -> average 0.0
+    assert_ok(m.expectancy_dollars(trades), 0.0)
+
+
+def test_average_winner_and_loser_dollars_hand_calculated():
+    trades = [
+        make_trade(100, 110, quantity=20.0),  # +200
+        make_trade(100, 130, quantity=10.0),  # +300
+        make_trade(100, 90, quantity=15.0),  # -150
+    ]
+    assert_ok(m.average_winner_dollars(trades), (200.0 + 300.0) / 2)
+    assert_ok(m.average_loser_dollars(trades), -150.0)
+
+
+def test_average_winner_dollars_undefined_when_no_winners():
+    assert_undefined(m.average_winner_dollars([make_trade(100, 90, quantity=10.0)]), "no winning trades")
+
+
+def test_average_loser_dollars_undefined_when_no_losers():
+    assert_undefined(m.average_loser_dollars([make_trade(100, 110, quantity=10.0)]), "no losing trades")
+
+
+def test_largest_winner_and_loser_dollars_hand_calculated():
+    trades = [
+        make_trade(100, 110, quantity=20.0),  # +200
+        make_trade(100, 130, quantity=10.0),  # +300
+        make_trade(100, 80, quantity=5.0),  # -100
+        make_trade(100, 95, quantity=30.0),  # -150
+    ]
+    assert_ok(m.largest_winner_dollars(trades), 300.0)
+    assert_ok(m.largest_loser_dollars(trades), -150.0)
+
+
+def test_analytics_service_populates_dollar_metrics_when_quantity_present():
+    trades = [make_trade(100, 110, quantity=20.0), make_trade(100, 90, quantity=20.0)]
+    curve = make_curve([100_000.0, 100_200.0, 99_800.0])
+    analytics = AnalyticsService()._analyze(
+        trades=trades, equity_curve=curve, spec=None, experiment_id=None
+    )
+    assert analytics.has_quantity_detail is True
+    assert analytics.net_pnl_dollars.value == pytest.approx(0.0)
+    # The fraction-based fields remain populated too -- additive, not replaced.
+    assert analytics.expectancy.status is MetricStatus.OK
+
+
+def test_analytics_service_dollar_metrics_undefined_for_legacy_trades():
+    trades = [make_trade(100, 110), make_trade(100, 90)]
+    curve = make_curve([100_000.0, 100_200.0, 99_800.0])
+    analytics = AnalyticsService()._analyze(
+        trades=trades, equity_curve=curve, spec=None, experiment_id=None
+    )
+    assert analytics.has_quantity_detail is False
+    assert analytics.net_pnl_dollars.status is MetricStatus.UNDEFINED
+    # Fraction-based expectancy still works for a LEGACY_UNIT trade list.
+    assert analytics.expectancy.status is MetricStatus.OK
 
 
 # ---------------------------------------------------------------------------

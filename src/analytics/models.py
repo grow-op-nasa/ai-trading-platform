@@ -124,6 +124,27 @@ class BacktestAnalytics:
     has_trade_detail: bool
     has_equity_curve: bool
 
+    # Dollar-denominated per-trade metrics (Sprint 11, `DECISIONS.md`
+    # ADR-0044) -- the dollar analogues of `expectancy`/`average_winner`/
+    # `average_loser`/`largest_winner`/`largest_loser` above, populated
+    # only when every trade carries a real `Trade.quantity` (a
+    # `RiskMode.PORTFOLIO_RISK` result). `has_quantity_detail` says
+    # explicitly whether these are populated -- never inferred by
+    # checking if a `Metric` happens to be `UNDEFINED`, since an
+    # `UNDEFINED` dollar metric can also mean "no winning trades" on a
+    # run that *does* have quantity detail. The fraction-based fields
+    # above are always populated regardless of risk mode; these are
+    # additive, never a replacement for them.
+    has_quantity_detail: bool
+    net_pnl_dollars: Metric
+    gross_profit_dollars: Metric
+    gross_loss_dollars: Metric
+    expectancy_dollars: Metric
+    average_winner_dollars: Metric
+    average_loser_dollars: Metric
+    largest_winner_dollars: Metric
+    largest_loser_dollars: Metric
+
 
 @dataclass(frozen=True)
 class ComparisonWarning:

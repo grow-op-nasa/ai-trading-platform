@@ -134,6 +134,16 @@ CREATE TABLE IF NOT EXISTS experiment_specs (
 # rows per experiment (like signals), no natural unique key of its own
 # -- `save_trades()` deletes and reinserts rather than upserting, so
 # calling it again for the same experiment_id replaces, not duplicates.
+#
+# `quantity` added in DECISIONS.md ADR-0044 (Sprint 11), alongside
+# `Trade` itself gaining the field -- nullable, since a `RiskMode.
+# LEGACY_UNIT` trade genuinely has no quantity to record (`None`, never
+# fabricated as 1). Same precedent as `symbol` on the `signals` table
+# above: `CREATE TABLE IF NOT EXISTS` means an `experiments.db` created
+# before ADR-0044 keeps its old schema (no `quantity` column) rather
+# than being migrated automatically -- a pre-existing on-disk database
+# needs a manual `ALTER TABLE experiment_trades ADD COLUMN quantity
+# REAL` or to be recreated before `Trade.quantity` will round-trip.
 _TRADES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS experiment_trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,7 +154,8 @@ CREATE TABLE IF NOT EXISTS experiment_trades (
     entry_price REAL NOT NULL,
     exit_price REAL NOT NULL,
     entry_signal_id TEXT NOT NULL,
-    exit_signal_id TEXT
+    exit_signal_id TEXT,
+    quantity REAL
 )
 """
 
@@ -391,8 +402,8 @@ class ExperimentRegistry:
             conn.executemany(
                 "INSERT INTO experiment_trades "
                 "(experiment_id, entry_time, exit_time, direction, entry_price, "
-                "exit_price, entry_signal_id, exit_signal_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "exit_price, entry_signal_id, exit_signal_id, quantity) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         experiment_id,
@@ -403,6 +414,7 @@ class ExperimentRegistry:
                         trade.exit_price,
                         str(trade.entry_signal_id),
                         str(trade.exit_signal_id) if trade.exit_signal_id is not None else None,
+                        trade.quantity,
                     )
                     for trade in trades
                 ],
@@ -575,6 +587,11 @@ def _row_to_spec(row: sqlite3.Row) -> ExperimentSpec:
 
 
 def _row_to_trade(row: sqlite3.Row) -> Trade:
+    # `quantity` (ADR-0044) may be absent on a row read from a database
+    # created before that migration -- `.keys()` check, not `row["quantity"]`
+    # directly, since sqlite3.Row raises IndexError for a genuinely
+    # missing column (as opposed to a present-but-NULL one).
+    quantity = row["quantity"] if "quantity" in row.keys() else None
     return Trade(
         entry_time=pd.Timestamp(row["entry_time"]),
         exit_time=pd.Timestamp(row["exit_time"]),
@@ -583,6 +600,7 @@ def _row_to_trade(row: sqlite3.Row) -> Trade:
         exit_price=row["exit_price"],
         entry_signal_id=UUID(row["entry_signal_id"]),
         exit_signal_id=UUID(row["exit_signal_id"]) if row["exit_signal_id"] else None,
+        quantity=quantity,
     )
 
 

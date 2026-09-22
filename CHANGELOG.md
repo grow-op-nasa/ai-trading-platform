@@ -90,9 +90,12 @@ ADR-0044 for the full design and reasoning.
   tripped the existing AI-no-special-branch architecture guards.
   Reworded to describe the same guarantee generically; re-verified
   green.
-- Real `pytest` on the dev machine: **pending** -- not yet run. Sprint
-  11 is not declared fully confirmed until that run has executed and
-  its exact result is reported (see `PROJECT_STATE.md`, "Next Task").
+- Real `pytest` on the dev machine: **850 passed, 0 failed** (Python
+  3.14.6, pytest 9.1.1, 4.57s, no skips). Strictly better than the
+  sandbox's own 790/2/8 -- every scikit-learn/joblib/Streamlit-gated
+  test the sandbox could only skip ran for real and passed, and
+  neither of the sandbox's 2 "known environment-only" failures
+  reproduced, exactly as expected.
 
 ## Sprint 10 -- 2026-09-22, ML Signal Research & AI Strategy Integration
 

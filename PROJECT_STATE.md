@@ -1,9 +1,12 @@
 # Project State
 
 _Last updated: 2026-09-22 -- **Sprint 11 (Portfolio-Aware Backtesting &
-Unified Risk Simulation) is implemented and sandbox-confirmed at 790
-passed, 2 known environment-only failures, 8 skipped -- pending real
-`pytest` confirmation on the dev machine.** The Backtester now has a
+Unified Risk Simulation) is implemented and confirmed via real `pytest`
+on the dev machine: 850 passed, 0 failed (Python 3.14.6, pytest 9.1.1,
+4.57s, no skips -- every scikit-learn/joblib/Streamlit-gated test that
+the sandbox could only skip ran for real here, and both of the
+sandbox's "known environment-only" failures did not reproduce, exactly
+as every prior sprint predicted).** The Backtester now has a
 second, genuinely risk-sized execution mode alongside the original
 Sprint 2 unit-sized one: `Backtester.run_portfolio()` (new
 `PortfolioBacktestEngine`, `src/backtesting/portfolio_engine.py`) runs
@@ -847,10 +850,11 @@ For why things were built the way they were, see `DECISIONS.md`.
 ## Current Module
 
 **Sprint 11 (Portfolio-Aware Backtesting & Unified Risk Simulation) is
-implemented and sandbox-confirmed: 790 passed, 2 known environment-only
-failures (unchanged from every prior sprint), 8 skipped
-(scikit-learn/joblib/streamlit unavailable in this sandbox) -- pending
-real `pytest` confirmation on the dev machine.** The same risk model
+implemented and confirmed via real `pytest` on the dev machine: 850
+passed, 0 failed.** (Sandbox had reported 790 passed, 2 known
+environment-only failures, 8 skipped -- the dev machine ran every
+scikit-learn/joblib/Streamlit-gated test the sandbox could only skip,
+and neither known environment-only failure reproduced.) The same risk model
 that constrains paper trading now constrains historical research:
 `Backtester.run_portfolio()` (`PortfolioBacktestEngine`,
 `src/backtesting/portfolio_engine.py`) processes one or more strategies'
@@ -1153,25 +1157,17 @@ yfinance API; pre-market/after-hours session support is reserved
 ## Next Task
 
 Sprint 11 (Portfolio-Aware Backtesting & Unified Risk Simulation) is
-implemented and **sandbox-confirmed: 790 passed, 2 known
-environment-only failures, 8 skipped** -- real `pytest` confirmation on
-the dev machine is the next and final step before this sprint can be
-called complete, following the same pattern every prior sprint used
-(sandbox numbers are directional, the dev-machine run is authoritative).
-The 2 known failures
+**complete and confirmed via real `pytest` on the dev machine: 850
+passed, 0 failed** (Python 3.14.6, pytest 9.1.1, 4.57s). This is a
+strictly better result than the sandbox's own 790 passed, 2 known
+failures, 8 skipped -- the dev machine ran every scikit-learn/joblib-
+gated AI module and the Streamlit-gated dashboard smoke module for
+real (all passing), and neither sandbox-only failure
 (`test_python_version_passes_against_running_interpreter`,
-`test_logger_is_importable_and_callable`) are the same environment-only
-artifacts every sprint since Sprint 7 has seen (sandbox Python 3.10 vs.
-the project's pin; the sandbox's own no-op `loguru` stub) -- expected to
-disappear on the dev machine exactly as they have every time before.
-The 8 skipped tests are the scikit-learn/joblib-gated AI modules (5)
-plus the Streamlit-gated dashboard smoke module (1) plus 2 gated
-architecture assertions -- none touched by this sprint's own new code,
-gated the identical way Sprint 9/10 established. Once the dev-machine
-run confirms, the final commit will follow the same "Sprint N: <summary>"
-message convention used for every prior sprint. No blocking work
-remains; this is a handoff for real-machine verification, not an
-open implementation question.
+`test_logger_is_importable_and_callable`) reproduced, exactly as every
+prior sprint predicted. The only remaining step is committing and
+pushing this confirmation on the dev machine; Sprint 12 planning is
+otherwise open, with no blocking work or open implementation question.
 
 Sprint 10 (ML Signal Research & AI Strategy Integration) is complete
 and **confirmed via real `pytest` on the dev machine: 784 passed, 0

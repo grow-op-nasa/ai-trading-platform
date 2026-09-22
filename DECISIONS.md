@@ -3499,8 +3499,8 @@ of any kind, not just zero *new* ones. See `PROJECT_STATE.md` and
 
 ## ADR-0044: Sprint 11 -- Portfolio-Aware Backtesting & Unified Risk Simulation
 
-**Status:** Accepted (sandbox-confirmed; pending real `pytest` on the
-dev machine).
+**Status:** Accepted. Confirmed via real `pytest` on the dev machine:
+850 passed, 0 failed.
 
 **Context:**
 
@@ -3727,13 +3727,12 @@ since Sprint 7 has carried forward unchanged --
 `src/cli/checks.py` enforces) and
 `test_config.test_logger_is_importable_and_callable` (a loguru-stub
 gap) -- confirmed via `git status`/`git log` to be untouched by any
-change in this sprint, and confirmed not to reproduce on a real
-developer machine in every prior sprint's own dev-machine run. The 8
-skips are the expected `sklearn`/`joblib`/`streamlit` import guards.
+change in this sprint. The 8 skips are the expected
+`sklearn`/`joblib`/`streamlit` import guards.
 
-**This sandbox result is not a substitute for a real `pytest -q` run
-on the developer's own machine.** Per this project's standing rule
-(reaffirmed, not introduced, by this sprint), Sprint 11 is not declared
-fully confirmed until that real run has actually executed and its
-exact result has been reported -- see `PROJECT_STATE.md`'s "Next Task"
-section for the outstanding step.
+**Real `pytest` on the dev machine confirms it: 850 passed, 0 failed**
+(Python 3.14.6, pytest 9.1.1, full suite in 4.57s, no skips). Neither
+sandbox-only failure reproduced, and every scikit-learn/joblib/
+Streamlit-gated test the sandbox could only skip -- including the AI
+end-to-end portfolio-backtest integration test this sprint added --
+ran for real and passed. Sprint 11 is fully confirmed.

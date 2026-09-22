@@ -819,7 +819,7 @@ randomly-generated Signal UUIDs, and a substring architecture check
 that false-positived on `AISignalStrategy`) were fixed in a follow-up
 commit -- see `DECISIONS.md`, ADR-0043 for the full account.
 
-## Sprint 11 -- Portfolio-Aware Backtesting & Unified Risk Simulation ✅ Complete (sandbox-confirmed: 790 passed, 2 known environment-only failures, 8 skipped; pending real pytest confirmation)
+## Sprint 11 -- Portfolio-Aware Backtesting & Unified Risk Simulation ✅ Complete (real pytest-confirmed: 850 passed, 0 failed)
 
 Objective: connect the existing backtesting engine to Sprint 7's
 portfolio-aware risk/position-management architecture, so a strategy
@@ -913,11 +913,13 @@ multi-leg positions); live trading; AI expansion (LLM trading, neural
 nets, automatic model selection, autonomous retraining, AI risk
 models). See `DECISIONS.md`, ADR-0044 for the full list and reasoning.
 
-Sandbox-confirmed at 790 passed (up from Sprint 10's 784 real-confirmed
-baseline + this sprint's own new tests), 2 known environment-only
-failures (unchanged), 8 skipped (scikit-learn/joblib/streamlit still
-unavailable in this sandbox). Real `pytest` confirmation on the dev
-machine is pending.
+Confirmed via real `pytest` on the dev machine: **850 passed, 0
+failed** (Python 3.14.6, pytest 9.1.1, 4.57s) -- up from Sprint 10's
+784 real-confirmed baseline plus this sprint's own new tests, with
+every scikit-learn/joblib/Streamlit-gated test the sandbox could only
+skip now running for real. (Sandbox itself had reported 790 passed, 2
+known environment-only failures, 8 skipped; neither failure
+reproduced on the dev machine.)
 
 ## Sprint 12+ -- future work (planned)
 

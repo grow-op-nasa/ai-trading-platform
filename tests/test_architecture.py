@@ -522,8 +522,13 @@ def test_ai_signal_strategy_emits_canonical_signal_objects():
     source = inspect.getsource(AISignalStrategy)
     assert "Signal" in source
     assert "SignalDirection" in source
-    # And it must not invent a parallel domain model instead.
-    assert "class AISignal" not in (SRC_ROOT / "strategies" / "ai_signal.py").read_text()
+    # And it must not invent a parallel domain model instead. Use a
+    # word-boundary regex rather than a plain substring check: "class
+    # AISignal" is itself a substring of "class AISignalStrategy" (the
+    # real, intended class), which a naive `in` check would flag as a
+    # false positive.
+    text = (SRC_ROOT / "strategies" / "ai_signal.py").read_text()
+    assert re.search(r"class AISignal\b(?!Strategy)", text) is None
 
 
 def test_backtester_has_no_ai_specific_branch():

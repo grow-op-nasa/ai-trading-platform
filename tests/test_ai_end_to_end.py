@@ -147,7 +147,22 @@ def test_repeated_backtests_against_the_same_frozen_model_are_identical(tmp_path
 
     assert [s.direction for s in result_a.signals] == [s.direction for s in result_b.signals]
     assert [s.timestamp for s in result_a.signals] == [s.timestamp for s in result_b.signals]
-    assert result_a.trades == result_b.trades
+
+    # Compare trades on their economically meaningful fields only.
+    # entry_signal_id/exit_signal_id are excluded deliberately: `Signal.id`
+    # is `field(default_factory=uuid4)` (src/signals/models.py), so two
+    # independent runs mint fresh random ids for otherwise-identical
+    # signals even when the model and its predictions are fully
+    # deterministic. That randomness is pre-existing Signal design, not
+    # something Sprint 10 introduces or should mask by changing Signal --
+    # so the test asserts on trade economics instead of raw identity.
+    def _trade_economics(trades):
+        return [
+            (t.entry_time, t.exit_time, t.direction, t.entry_price, t.exit_price)
+            for t in trades
+        ]
+
+    assert _trade_economics(result_a.trades) == _trade_economics(result_b.trades)
     pd.testing.assert_series_equal(result_a.equity_curve, result_b.equity_curve)
     assert analytics_a == analytics_b
 

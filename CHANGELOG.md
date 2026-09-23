@@ -96,8 +96,11 @@ design and reasoning.
   a test-fixture issue, not an `ExecutionModel`/`PortfolioBacktestEngine`
   defect -- `INSUFFICIENT_CASH_FOR_FEE` firing there was the correct,
   intended behavior for a genuinely unaffordable fill.
-- Real `pytest` confirmation on the dev machine is pending as of this
-  writing.
+- Real `pytest` on the dev machine: **916 passed, 0 failed** (3.92s, no
+  skips). Strictly better than the sandbox's own 855/2/8 -- every
+  scikit-learn/joblib/Streamlit-gated test the sandbox could only skip
+  ran for real and passed, and neither of the sandbox's 2 "known
+  environment-only" failures reproduced, exactly as expected.
 
 ## Sprint 11 -- 2026-09-22, Portfolio-Aware Backtesting & Unified Risk Simulation
 

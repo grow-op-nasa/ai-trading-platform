@@ -3741,9 +3741,8 @@ ran for real and passed. Sprint 11 is fully confirmed.
 
 ## ADR-0045: Sprint 12 -- Execution Realism & Transaction Cost Modeling
 
-**Status:** Accepted. Confirmed in the sandbox: 855 passed, 2 failed
-(both pre-existing, environment-only), 8 skipped. Pending real `pytest`
-confirmation on the dev machine.
+**Status:** Accepted. Confirmed via real `pytest` on the dev machine:
+916 passed, 0 failed, 3.92s.
 
 **Context:**
 
@@ -3970,21 +3969,28 @@ execution behavior. Those remain explicitly deferred, same as before.
 Same network-free sandbox as every prior sprint (`sklearn`, `joblib`,
 `streamlit` uninstalled; `pip install` fails with a proxy `403`). Using
 the sandbox's stub test runner (`/tmp/runner_all.py`), the full suite
-reports:
+reported:
 
 **855 passed, 2 failed, 8 skipped.**
 
-The 2 failures are the same environment-only failures every sprint
+The 2 failures were the same environment-only failures every sprint
 since Sprint 7 has carried forward unchanged --
 `test_cli_doctor.test_python_version_passes_against_running_interpreter`
 and `test_config.test_logger_is_importable_and_callable` -- confirmed
-untouched by this sprint's changes. The 8 skips are the expected
-`sklearn`/`joblib`/`streamlit` import guards, including the two new
-Sprint 12 AI-compatibility assertions inside
-`tests/test_ai_end_to_end.py` (`test_ai_strategy_runs_through_the_cost_
-aware_execution_model` joins the pre-existing sklearn-gated tests in
-that file) -- verified only via `py_compile`, not execution, in this
-sandbox.
+untouched by this sprint's changes. The 8 skips were the expected
+`sklearn`/`joblib`/`streamlit` import guards, including the new Sprint
+12 AI-compatibility assertion inside `tests/test_ai_end_to_end.py`
+(`test_ai_strategy_runs_through_the_cost_aware_execution_model` joined
+the pre-existing sklearn-gated tests in that file) -- verified only via
+`py_compile`, not execution, in that sandbox.
 
-Real `pytest` confirmation on the dev machine is still pending as of
-this writing.
+**Real `pytest` on the dev machine confirms it: 916 passed, 0 failed**
+(3.92s, no skips). Neither sandbox-only failure reproduced, and every
+scikit-learn/joblib/Streamlit-gated test the sandbox could only skip --
+including the new AI-compatibility test this sprint added -- ran for
+real and passed. The jump from the sandbox's 855 to 916 real passes
+(rather than 855 + 8 = 863) reflects that the sandbox's stub runner
+counts an import-gated *module* as a single skip, while real `pytest`
+collects and runs every individual test inside those modules once
+`sklearn`/`joblib`/`streamlit` are actually installed. Sprint 12 is
+fully confirmed.

@@ -921,7 +921,7 @@ skip now running for real. (Sandbox itself had reported 790 passed, 2
 known environment-only failures, 8 skipped; neither failure
 reproduced on the dev machine.)
 
-## Sprint 12 -- Execution Realism & Transaction Cost Modeling ✅ Complete (sandbox-confirmed: 855 passed, 2 known environment-only failures, 8 skipped; real pytest pending)
+## Sprint 12 -- Execution Realism & Transaction Cost Modeling ✅ Complete (real pytest-confirmed: 916 passed, 0 failed)
 
 Objective: replace the backtester's last hidden assumption -- an
 instant, frictionless fill at the signal bar's own close -- with an
@@ -989,11 +989,12 @@ broker-specific fee schedules, any change to `AlpacaBroker`/
 portfolio optimization or ML risk models. See `DECISIONS.md`, ADR-0045
 for the full list and reasoning.
 
-Sandbox-confirmed: **855 passed, 2 failed (the same pre-existing
-environment-only cli/doctor and config failures every prior sprint has
-carried), 8 skipped** (scikit-learn/joblib/Streamlit import gates,
-unchanged from Sprint 11). Real `pytest` confirmation on the dev
-machine is pending as of this writing.
+Confirmed via real `pytest` on the dev machine: **916 passed, 0
+failed** (3.92s) -- up from Sprint 11's 850 real-confirmed baseline
+plus this sprint's own new tests, with every scikit-learn/joblib/
+Streamlit-gated test the sandbox could only skip now running for real.
+(Sandbox itself had reported 855 passed, 2 known environment-only
+failures, 8 skipped; neither failure reproduced on the dev machine.)
 
 ## Sprint 13+ -- future work (planned)
 

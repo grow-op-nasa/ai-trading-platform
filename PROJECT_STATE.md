@@ -1,10 +1,11 @@
 # Project State
 
 _Last updated: 2026-09-23 -- **Sprint 12 (Execution Realism &
-Transaction Cost Modeling) is implemented and sandbox-verified: 855
-passed, 2 failed (the same pre-existing environment-only cli/doctor and
-config failures every prior sprint has carried), 8 skipped. Real
-`pytest` confirmation on the dev machine is pending.** The
+Transaction Cost Modeling) is implemented and confirmed via real
+`pytest` on the dev machine: 916 passed, 0 failed (3.92s, no skips --
+every scikit-learn/joblib/Streamlit-gated test the sandbox could only
+skip ran for real here, and both of the sandbox's own 855/2/8 "known
+environment-only" failures did not reproduce).** The
 portfolio-aware backtest path (`run_portfolio()`) no longer assumes an
 instant, frictionless fill at the signal bar's own close -- a new
 `ExecutionModel` (`src/backtesting/execution_model.py`) makes fill
@@ -896,9 +897,12 @@ For why things were built the way they were, see `DECISIONS.md`.
 ## Current Module
 
 **Sprint 12 (Execution Realism & Transaction Cost Modeling) is
-implemented and sandbox-verified: 855 passed, 2 known environment-only
-failures, 8 skipped. Real `pytest` confirmation on the dev machine is
-pending.** The `run_portfolio()` path no longer assumes an instant,
+implemented and confirmed via real `pytest` on the dev machine: 916
+passed, 0 failed.** (Sandbox had reported 855 passed, 2 known
+environment-only failures, 8 skipped -- the dev machine ran every
+scikit-learn/joblib/Streamlit-gated test the sandbox could only skip,
+and neither known environment-only failure reproduced.) The
+`run_portfolio()` path no longer assumes an instant,
 frictionless fill at the signal bar's own close: a new `ExecutionModel`
 (`src/backtesting/execution_model.py`) makes fill timing (`SIGNAL_BAR_
 CLOSE` default vs. `NEXT_BAR_OPEN`), slippage
@@ -1267,15 +1271,17 @@ yfinance API; pre-market/after-hours session support is reserved
 ## Next Task
 
 Sprint 12 (Execution Realism & Transaction Cost Modeling) is
-**implemented and sandbox-verified: 855 passed, 2 known
-environment-only failures (`test_python_version_passes_against_running
-_interpreter`, `test_logger_is_importable_and_callable`, unchanged from
-every prior sprint), 8 skipped** (the usual scikit-learn/joblib/
-Streamlit import gates -- including the new cost-aware AI-compatibility
-test added to `tests/test_ai_end_to_end.py`, verified only via
-`py_compile` in this sandbox). The only remaining step is real
-`pytest` confirmation on the dev machine, then committing and pushing.
-No blocking work or open implementation question.
+**complete and confirmed via real `pytest` on the dev machine: 916
+passed, 0 failed** (3.92s). This is a strictly better result than the
+sandbox's own 855 passed, 2 known failures, 8 skipped -- the dev
+machine ran every scikit-learn/joblib/Streamlit-gated test the sandbox
+could only skip (including the new cost-aware AI-compatibility test in
+`tests/test_ai_end_to_end.py`), all passing, and neither sandbox-only
+failure (`test_python_version_passes_against_running_interpreter`,
+`test_logger_is_importable_and_callable`) reproduced, exactly as every
+prior sprint predicted. The only remaining step is committing and
+pushing this confirmation on the dev machine; Sprint 13 planning is
+otherwise open, with no blocking work or open implementation question.
 
 Sprint 11 (Portfolio-Aware Backtesting & Unified Risk Simulation) is
 **complete and confirmed via real `pytest` on the dev machine: 850

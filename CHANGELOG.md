@@ -11,6 +11,94 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 12 -- 2026-09-23, Execution Realism & Transaction Cost Modeling
+
+Replaces the backtester's remaining hidden assumption -- instant,
+frictionless fills at the signal bar's own close -- with an explicit,
+deterministic execution model: timing, slippage, and fees. Narrowly
+scoped to candle-level research friction, not an exchange simulator:
+no order book, no partial fills, no limit/stop orders, no broker-
+specific fee schedules. See `DECISIONS.md`, ADR-0045 for the full
+design and reasoning.
+
+### Added
+
+- `src/backtesting/execution_model.py` (new module) --
+  `ExecutionTiming(str, Enum)` (`SIGNAL_BAR_CLOSE` default,
+  `NEXT_BAR_OPEN`), `ReferencePrice`/`ExecutionOutcome` (frozen
+  dataclasses, `ExecutionOutcome.__post_init__` validates
+  filled/reason consistency), `SlippageModel`/`FeeModel` protocols with
+  `PercentageSlippageModel(slippage_bps)`/`PercentageFeeModel(fee_bps,
+  fixed_fee)` implementations (both reject negative parameters, both
+  deterministic -- no randomness, no global state), `ExecutionConfig`
+  (frozen dataclass bundling timing + slippage + fee, `.describe()` for
+  provenance), and `ExecutionModel.simulate(order, candles) ->
+  ExecutionOutcome` -- the actual simulation, pure and side-effect-free.
+  `NO_EXECUTION_BAR`/`INSUFFICIENT_CASH_FOR_FEE` constants for the two
+  explicit "couldn't fill" outcomes.
+- `src/execution/models.py` -- `Fill` gained four new, defaulted fields
+  (`reference_price`, `fill_timestamp`, `slippage_amount`, `fee`);
+  every existing `PaperBroker` call site is unaffected.
+- `src/portfolio/models.py` -- `Portfolio.open_position()`/
+  `close_position()` gained an optional `fee: float = 0.0` parameter
+  (validated non-negative), debited as a cash movement additional to
+  the existing `quantity * price` one.
+- `Trade` (`src/backtesting/models.py`) gained `entry_fill_price`/
+  `exit_fill_price: float | None = None` and `entry_fee`/`exit_fee:
+  float = 0.0`, plus three new properties: `total_fees`,
+  `slippage_cost` (provably `>= 0` for non-negative slippage, `None`
+  only when a fill price is missing), and `net_pnl` (`gross_pnl -
+  slippage_cost - total_fees`, `None` only when `gross_pnl` is).
+  `entry_price`/`exit_price`/`gross_pnl` are completely unchanged --
+  they remain the frictionless reference price, never mutated to
+  incorporate a cost.
+- `src/backtesting/risk_audit.py` -- `SignalOutcome` gained
+  `execution_unavailable_reason: str | None = None`, with new
+  `__post_init__` validation (mutually exclusive with
+  `stop_unavailable_reason`, requires an approved `risk_decision`,
+  incompatible with `accepted=True`); `rejection_reason` checks it
+  after `stop_unavailable_reason`.
+- `BacktestConfig.execution_config: ExecutionConfig` (defaults to a
+  fresh zero-cost `ExecutionConfig()`, reproducing exactly what
+  `run_portfolio()` always did before this sprint); `.describe()`
+  gained the corresponding `"execution"` key.
+- `PortfolioBacktestEngine` now constructs one `ExecutionModel` per run
+  and routes every entry/exit through `.simulate()`, checking a new
+  `_unaffordable_reason()` helper (`INSUFFICIENT_CASH_FOR_FEE` when
+  `portfolio.cash + fill.cash_delta < 0`) before ever applying a fill
+  to `Portfolio`. `PortfolioRiskEngine`'s sizing arithmetic is
+  completely untouched.
+- `src/analytics/metrics.py` -- `has_execution_cost_detail(trades)`
+  plus `total_fees_dollars`, `total_slippage_cost_dollars`,
+  `net_pnl_after_costs_dollars`, each gated appropriately and returning
+  `Metric.undefined(...)` when the required detail isn't present.
+  `BacktestAnalytics` gained the 4 corresponding fields;
+  `AnalyticsService._analyze()` populates them.
+- `ExperimentSpec.backtest_config`/`ExperimentRegistry` needed zero
+  schema change -- the reserved, extensible JSON field already
+  round-trips `BacktestConfig.describe()`'s new `"execution"` key.
+
+### Verified
+
+- Sandbox (stub-based runner, no scikit-learn/joblib/streamlit
+  installed): **855 passed, 2 failed (the same pre-existing cli/doctor
+  and config environment-only failures every prior sprint has carried
+  forward), 8 skipped** (scikit-learn/joblib/Streamlit import gates,
+  unchanged from Sprint 11).
+- Caught and fixed during test-writing: several new integration test
+  fixtures paired `VOLATILE_CLOSES` (a fixture whose bar-to-bar swings
+  intentionally grow over the series, to keep `ATR(3)` warm) with an
+  essentially-unconstrained allocation config -- sizing a quantity that
+  was genuinely unaffordable once `NEXT_BAR_OPEN` moved the real fill
+  price by a double-digit swing from the signal bar's own close. Fixed
+  by adding a `cost_aware_config()` test helper with real cash headroom
+  (`allocation_per_trade_pct=0.3`, `risk_pct_per_trade=0.05`); this was
+  a test-fixture issue, not an `ExecutionModel`/`PortfolioBacktestEngine`
+  defect -- `INSUFFICIENT_CASH_FOR_FEE` firing there was the correct,
+  intended behavior for a genuinely unaffordable fill.
+- Real `pytest` confirmation on the dev machine is pending as of this
+  writing.
+
 ## Sprint 11 -- 2026-09-22, Portfolio-Aware Backtesting & Unified Risk Simulation
 
 Connects the backtesting engine to the Sprint 7 portfolio-aware

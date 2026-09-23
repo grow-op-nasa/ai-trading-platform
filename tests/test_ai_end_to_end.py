@@ -218,6 +218,66 @@ def test_ai_strategy_runs_through_the_portfolio_aware_backtester(tmp_path):
         assert analytics.has_quantity_detail is True
 
 
+def test_ai_strategy_runs_through_the_cost_aware_execution_model(tmp_path):
+    # Sprint 12 (DECISIONS.md, ADR-0045), spec section 46: the
+    # ExecutionModel must treat AISignalStrategy exactly like any
+    # rule-based strategy -- no `isinstance(strategy, AISignalStrategy)`
+    # branch anywhere in execution or backtesting (see
+    # tests/test_architecture.py's own AI-no-special-branch tests).
+    # This exercises a genuinely cost-aware ExecutionConfig (nonzero
+    # slippage/fees, NEXT_BAR_OPEN timing) through the same
+    # AISignalStrategy -> run_portfolio() path as the zero-cost test
+    # above.
+    from src.backtesting.config import BacktestConfig
+    from src.backtesting.execution_model import (
+        ExecutionConfig,
+        ExecutionTiming,
+        PercentageFeeModel,
+        PercentageSlippageModel,
+    )
+    from src.backtesting.stop_policy import ATRStopPolicy
+    from src.risk.models import PortfolioRiskLimits, RiskLimits
+
+    candles = _make_candles(n=400, seed=7)
+    dataset = _make_dataset(candles, symbol="QQQ")
+
+    store = ModelArtifactStore(tmp_path)
+    registry = ModelRegistry(tmp_path, artifact_store=store)
+    training_result = MLTrainingService(registry=registry, artifact_store=store).train(dataset)
+
+    strategy = AISignalStrategy(
+        symbol="QQQ", model_id=training_result.model_id, min_probability=0.4, registry=registry
+    )
+    config = BacktestConfig(
+        initial_cash=100_000.0,
+        stop_policy=ATRStopPolicy(period=14, multiple=2.0),
+        risk_limits=RiskLimits(allocation_per_trade_pct=0.2, max_portfolio_exposure_pct=1.0),
+        portfolio_risk_limits=PortfolioRiskLimits(risk_pct_per_trade=0.01),
+        execution_config=ExecutionConfig(
+            timing=ExecutionTiming.NEXT_BAR_OPEN,
+            slippage_model=PercentageSlippageModel(5.0),
+            fee_model=PercentageFeeModel(fee_bps=2.0),
+        ),
+    )
+
+    result = Backtester().run_portfolio({"QQQ": strategy}, {"QQQ": candles}, config, datasets={"QQQ": dataset})
+
+    assert result.final_portfolio is not None
+    closed_trades = [t for t in result.trades if t.exit_signal_id is not None]
+    for trade in closed_trades:
+        # A real fill (with real slippage/fees) was produced for this AI
+        # strategy's trades -- the exact same fields a rule-based
+        # strategy's trades carry, with no separate AI-specific shape.
+        assert trade.entry_fill_price is not None
+        assert trade.exit_fill_price is not None
+        assert trade.total_fees >= 0
+        assert trade.net_pnl is not None
+
+    analytics = AnalyticsService().analyze_backtest(result)
+    if closed_trades:
+        assert analytics.has_execution_cost_detail is True
+
+
 def test_experiment_is_reproducible_from_its_recorded_spec(tmp_path):
     # The reproducibility claim Sprint 10 spec section 31 asks for:
     # given only what ExperimentSpec recorded (strategy name + params),

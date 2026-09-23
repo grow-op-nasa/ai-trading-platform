@@ -3736,3 +3736,255 @@ sandbox-only failure reproduced, and every scikit-learn/joblib/
 Streamlit-gated test the sandbox could only skip -- including the AI
 end-to-end portfolio-backtest integration test this sprint added --
 ran for real and passed. Sprint 11 is fully confirmed.
+
+---
+
+## ADR-0045: Sprint 12 -- Execution Realism & Transaction Cost Modeling
+
+**Status:** Accepted. Confirmed in the sandbox: 855 passed, 2 failed
+(both pre-existing, environment-only), 8 skipped. Pending real `pytest`
+confirmation on the dev machine.
+
+**Context:**
+
+ADR-0044 closed the gap between backtested and paper-traded position
+*sizing* -- the same `PortfolioRiskEngine` now governs both. It
+explicitly deferred execution realism as a non-goal: every
+`run_portfolio()` fill has still been an instant, frictionless
+transaction at the signal bar's own close, with no slippage, no fees,
+and no timing gap between "signal generated" and "trade filled." That
+is the last major hidden assumption left in the research chain: a
+strategy's backtested equity curve says nothing about what a real fill
+would actually cost, or whether tomorrow's price is even knowable at
+the moment a today's-bar signal fires.
+
+This sprint replaces that hidden assumption with an explicit,
+deterministic execution model: `Signal -> Approved Trade Intent ->
+Execution Model -> Reference Execution Price -> Slippage -> Fees ->
+Fill -> Portfolio -> Analytics`. It is narrowly scoped to candle-level
+research friction -- timing, slippage, and fees -- not an exchange
+simulator: no order book, no partial fills, no limit/stop orders, no
+broker-specific fee schedules.
+
+**Decision:**
+
+1. **A new `ExecutionModel` in `src/backtesting/`, reusing the existing
+   `Fill`/`Order`/`OrderSide` shapes -- never a second fill domain
+   model.** `src/backtesting/execution_model.py` introduces
+   `ExecutionModel.simulate(order, candles) -> ExecutionOutcome`, a
+   pure function of its inputs (no global state, no randomness, no
+   wall-clock reads -- enforced by
+   `test_execution_model_has_no_hidden_random_state_or_system_time`).
+   `src/execution/models.py`'s `Fill` dataclass gained four new,
+   defaulted fields (`reference_price`, `fill_timestamp`,
+   `slippage_amount`, `fee`) rather than a parallel type -- every
+   existing `PaperBroker` call site (`Fill(order=..., fill_price=...,
+   cash_delta=...)`) is untouched and still constructs a valid `Fill`.
+
+2. **Two explicit, typed timing conventions -- `SIGNAL_BAR_CLOSE`
+   (default) and `NEXT_BAR_OPEN` -- never silently mixed.**
+   `ExecutionTiming(str, Enum)` is carried on `ExecutionConfig.timing`.
+   `SIGNAL_BAR_CLOSE` reproduces exactly what `run_portfolio()` always
+   did before this sprint (the signal's own bar close is both the
+   reference and, under zero slippage, the fill price) -- this is the
+   default specifically so no existing caller or historical experiment
+   is silently reinterpreted (Sprint 12 spec, sections 33, 56).
+   `NEXT_BAR_OPEN` is the new, realistic mode: the reference price is
+   the *next* candle's `open`, and the fill timestamp is that next
+   candle's own timestamp -- never the signal bar's. A researcher must
+   opt into `NEXT_BAR_OPEN` explicitly; nothing upgrades a config to it
+   automatically.
+
+3. **No-look-ahead is structural, not just tested.**
+   `ExecutionModel._reference_price()` only ever reads two cells under
+   `NEXT_BAR_OPEN`: `candles.index[position + 1]` (the next bar's own
+   timestamp) and that same row's `open` column. It has no code path
+   that reads a future bar's `high`/`low`/`close` at all -- the
+   look-ahead-protection regression test
+   (`test_favorable_future_high_low_close_never_improves_the_fill`)
+   proves this empirically by making the next bar's high/low/close
+   absurdly favorable while holding its `open` fixed, and showing the
+   simulated fill is unchanged.
+
+4. **No next bar, or the signal's own timestamp isn't in the candle
+   index, is an explicit outcome, never a silent fallback.** Both
+   cases return `ExecutionOutcome(filled=False, reason=NO_EXECUTION_BAR)`
+   -- never a same-bar-close fallback (which would reintroduce
+   look-ahead ambiguity for `NEXT_BAR_OPEN`) and never a fabricated
+   "next calendar timestamp" (which would be wrong across a session
+   boundary; see decision 8). `ExecutionOutcome` itself validates this
+   invariant in `__post_init__`: a `filled=True` outcome must carry a
+   `Fill`, and a `filled=False` outcome must carry a `reason`.
+
+5. **Deterministic, direction-correct slippage and fee models, both
+   swappable via a `Protocol`.** `PercentageSlippageModel(slippage_bps)`
+   -- `fill_price = reference_price * (1 + bps/10_000)` for a `BUY`,
+   `* (1 - bps/10_000)` for a `SELL`: two different formulas per side,
+   never one formula with a sign flip that could accidentally apply the
+   same direction to both (Sprint 12 spec, section 11; regression-
+   tested directly). `slippage_bps=0.0` is the default and produces a
+   fill exactly equal to the reference price -- no hardcoded nonzero
+   minimum anywhere. `PercentageFeeModel(fee_bps, fixed_fee)` computes
+   `notional * (fee_bps/10_000) + fixed_fee`, applied identically
+   regardless of side unless a caller configures it otherwise. Neither
+   model uses `random`, wall-clock time, or any global state --
+   identical inputs always produce identical output
+   (`test_slippage_is_deterministic_across_repeated_simulation`,
+   `test_simulate_is_pure_same_inputs_same_output`).
+
+6. **Costs enter the economic pipeline exactly once, at the `Fill`.**
+   `ExecutionModel.simulate()` computes `fill_price`, `fee`, and
+   `cash_delta` (`-notional - fee` for a `BUY`, `notional - fee` for a
+   `SELL`) together, in one place. `PortfolioBacktestEngine` applies
+   that same `fill.fill_price`/`fill.fee` to `Portfolio.open_position()`/
+   `close_position()` (both of which gained an optional `fee: float =
+   0.0` parameter, validated non-negative, debited as a cash movement
+   additional to the existing `quantity * price` one) and to the
+   resulting `Trade`'s new `entry_fill_price`/`exit_fill_price`/
+   `entry_fee`/`exit_fee` fields -- never recomputed independently by
+   `Portfolio`, `Trade`, or `Analytics`.
+
+7. **`Trade.entry_price`/`exit_price` stay the frictionless *reference*
+   price; the actual transacted economics live in new, separate
+   fields.** This is the single most important backward-compatibility
+   decision this sprint makes: `Trade.gross_pnl` is still computed from
+   `entry_price`/`exit_price` exactly as ADR-0044 left it, so under the
+   default zero-cost `ExecutionConfig` (where `entry_fill_price ==
+   entry_price` and `exit_fill_price == exit_price` exactly),
+   `gross_pnl` and the real fill-based P&L agree to the cent -- no
+   pre-Sprint-12 trade's numbers change. Three new properties make the
+   cost-aware picture explicit without touching that: `total_fees`
+   (`entry_fee + exit_fee`, always defined), `slippage_cost` (`gross_pnl`
+   minus the P&L the actual fill prices would produce -- `None` only
+   when a fill price is missing, and provably `>= 0` for any
+   non-negative configured slippage regardless of LONG/SHORT direction),
+   and `net_pnl` (`gross_pnl - (slippage_cost or 0.0) - total_fees`,
+   `None` only when `gross_pnl` itself is, i.e. a `LEGACY_UNIT` trade).
+   `entry_price`/`exit_price` are never mutated to "incorporate" a cost
+   (Sprint 12 spec, section 43).
+
+8. **Session boundaries fall out of the canonical candle index for
+   free -- no calendar-specific code was written.** `NEXT_BAR_OPEN`'s
+   "next bar" is `candles.index[position + 1]`, whatever that next row
+   actually is; across a Friday-to-Monday gap in a business-day-indexed
+   dataset, that is genuinely Monday's row, never a fabricated Saturday
+   (`test_next_bar_open_across_a_weekend_uses_the_next_trading_session`).
+   `ExecutionModel` never imports a calendar, never assumes a fixed
+   bars-per-day count, and operates identically on daily, hourly, or
+   any other canonical `Interval` -- the Sprint 8 data boundary
+   (ADR-0041) is untouched; `ExecutionModel` consumes only the
+   already-canonical `candles` frame the caller passes in.
+
+9. **Capital affordability accounts for fees via the smallest
+   architecture-compatible addition: a post-hoc check, not a Risk
+   redesign.** `PortfolioRiskEngine.decide()`/`decide_close()` are
+   completely unmodified -- they still size a trade with no knowledge
+   that fees exist. `PortfolioBacktestEngine._unaffordable_reason()`
+   compares `portfolio.cash + fill.cash_delta` against zero *after*
+   `ExecutionModel.simulate()` produces a real fill, and reports
+   `INSUFFICIENT_CASH_FOR_FEE` (a new `SignalOutcome.
+   execution_unavailable_reason`, mutually exclusive with
+   `stop_unavailable_reason`, requiring an approved `risk_decision`)
+   rather than ever letting `Portfolio.cash` go negative. This also
+   catches the more general case where `NEXT_BAR_OPEN`'s real fill
+   price has moved far enough from the signal bar's own close that the
+   risk-approved quantity is no longer affordable at all, fee or no
+   fee -- the same rejection path handles both without new machinery.
+
+10. **`BacktestConfig`/`BacktestResult`/`ExperimentSpec` gain execution
+    identity with zero registry schema change.** `BacktestConfig.
+    execution_config: ExecutionConfig` defaults to a fresh
+    `ExecutionConfig()` (zero-cost, `SIGNAL_BAR_CLOSE`) and flows into
+    `BacktestConfig.describe()`'s new `"execution"` key alongside the
+    existing `risk_mode`/`risk_limits`/`stop_policy` keys. Two configs
+    differing only in `slippage_bps` (or only in timing mode) describe
+    differently by construction, since `describe()` is a plain,
+    complete dict of the config's own values -- no separate hashing
+    scheme was needed. `ExperimentSpec.backtest_config` has been a
+    reserved, extensible JSON field since ADR-0044 (itself inherited
+    from an even earlier precedent) -- the new `"execution"` key
+    round-trips through `ExperimentRegistry` with zero schema
+    migration, exactly the same free ride ADR-0044's own `quantity`
+    provenance got.
+
+11. **AI strategies get zero special-casing, exactly as ADR-0044
+    established -- and it is re-verified, not just assumed to still
+    hold.** `ExecutionModel` has no knowledge of which `Strategy`
+    produced the `Signal` an `Order` traces back to; `test_architecture.
+    py`'s existing `test_portfolio_backtest_engine_has_no_ai_specific_
+    branch` scan of `portfolio_engine.py` still passes with the new
+    execution-routing code added, and a new end-to-end test
+    (`test_ai_strategy_runs_through_the_cost_aware_execution_model` in
+    `tests/test_ai_end_to_end.py`) runs a trained `AISignalStrategy`
+    through a genuinely cost-aware `ExecutionConfig` (nonzero slippage,
+    fees, `NEXT_BAR_OPEN` timing) and confirms its trades carry the
+    same fill/fee/net-P&L fields any rule-based strategy's trades do.
+
+12. **Legacy compatibility and a zero-cost baseline are both structural
+    guarantees, not conventions.** `Backtester.run()`/`RiskMode.
+    LEGACY_UNIT` are completely untouched -- `ExecutionModel` is only
+    ever constructed inside `PortfolioBacktestEngine`. Every existing
+    `PORTFOLIO_RISK` test that never mentions `execution_config`
+    continues to pass unchanged, because the default `ExecutionConfig`
+    reproduces exactly what `run_portfolio()` always did. Running the
+    same signals through the default config and an explicitly-
+    constructed zero-cost `ExecutionConfig()` produces numerically
+    identical trades
+    (`test_default_execution_config_is_backward_compatible_zero_cost_baseline`),
+    so a researcher always has a controlled frictionless baseline to
+    compare a cost-aware run against (Sprint 12 spec, section 34).
+
+**Non-goals, explicit (Sprint 12 spec, sections 24-27, 59):**
+
+- Partial fills, order-pending/rejected lifecycle states, or any
+  quantity shortfall. An approved order is either fully filled or not
+  filled at all -- `filled_quantity` is always exactly the risk-
+  approved quantity when `filled=True`.
+- Limit, stop, stop-limit, IOC, FOK, or GTC orders. The execution model
+  supports the existing market-order path only.
+- Order-book simulation of any kind: bid/ask ladders, depth, market-
+  impact curves, queue position, latency, exchange matching. The model
+  stays candle-level; slippage is the sole friction proxy this sprint,
+  never double-counted against a separate spread model.
+- Broker-specific fee schedules. `ExecutionModel`/`PercentageFeeModel`/
+  `PercentageSlippageModel` are generic and broker-independent by
+  construction -- `src/backtesting/execution_model.py` imports nothing
+  from `src.broker`, Alpaca, IBKR, IG, or Tiger
+  (`test_execution_model_does_not_import_broker_adapters_or_src_broker`).
+- Any change to `AlpacaBroker`/`IBKRBroker`/`IGBroker`/`TigerBroker` or
+  to `PaperBroker`'s own live/paper execution semantics. `PaperBroker`
+  was not modified in any way this sprint; its existing tests pass
+  unchanged.
+- Advanced portfolio optimization or ML risk models of any kind. Not
+  touched, not extended.
+
+**Research interpretation (Sprint 12 spec, section 58):** a backtest's
+return still does not equal a realized live return, even after this
+sprint. This sprint improves how execution friction (timing, slippage,
+fees) is represented -- it does not model market impact, latency,
+bid/ask microstructure, partial fills, or any specific broker's actual
+execution behavior. Those remain explicitly deferred, same as before.
+
+**Sandbox verification:**
+
+Same network-free sandbox as every prior sprint (`sklearn`, `joblib`,
+`streamlit` uninstalled; `pip install` fails with a proxy `403`). Using
+the sandbox's stub test runner (`/tmp/runner_all.py`), the full suite
+reports:
+
+**855 passed, 2 failed, 8 skipped.**
+
+The 2 failures are the same environment-only failures every sprint
+since Sprint 7 has carried forward unchanged --
+`test_cli_doctor.test_python_version_passes_against_running_interpreter`
+and `test_config.test_logger_is_importable_and_callable` -- confirmed
+untouched by this sprint's changes. The 8 skips are the expected
+`sklearn`/`joblib`/`streamlit` import guards, including the two new
+Sprint 12 AI-compatibility assertions inside
+`tests/test_ai_end_to_end.py` (`test_ai_strategy_runs_through_the_cost_
+aware_execution_model` joins the pre-existing sklearn-gated tests in
+that file) -- verified only via `py_compile`, not execution, in this
+sandbox.
+
+Real `pytest` confirmation on the dev machine is still pending as of
+this writing.

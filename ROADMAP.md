@@ -921,7 +921,81 @@ skip now running for real. (Sandbox itself had reported 790 passed, 2
 known environment-only failures, 8 skipped; neither failure
 reproduced on the dev machine.)
 
-## Sprint 12+ -- future work (planned)
+## Sprint 12 -- Execution Realism & Transaction Cost Modeling ✅ Complete (sandbox-confirmed: 855 passed, 2 known environment-only failures, 8 skipped; real pytest pending)
+
+Objective: replace the backtester's last hidden assumption -- an
+instant, frictionless fill at the signal bar's own close -- with an
+explicit, deterministic execution model covering fill timing,
+slippage, and fees. Narrowly scoped to candle-level research friction,
+not an exchange simulator. See `DECISIONS.md`, ADR-0045 for the full
+design and reasoning.
+
+- ✅ **`ExecutionModel`** (`src/backtesting/execution_model.py`), reusing
+  the existing `Fill`/`Order`/`OrderSide` shapes: `ExecutionTiming`
+  (`SIGNAL_BAR_CLOSE` default, `NEXT_BAR_OPEN`), `SlippageModel`/
+  `FeeModel` protocols with deterministic `PercentageSlippageModel`/
+  `PercentageFeeModel` implementations, and `ExecutionConfig` bundling
+  all three with a `.describe()` for provenance. Pure, side-effect-free
+  `simulate(order, candles) -> ExecutionOutcome`.
+- ✅ **No-look-ahead is structural**: `NEXT_BAR_OPEN`'s reference price
+  only ever reads the next candle's own `open` -- there is no code path
+  that reads a future bar's high/low/close, proven by a dedicated
+  look-ahead-protection regression test with an artificially favorable
+  future candle.
+- ✅ **Explicit unfillable outcomes, never a silent fallback**:
+  `NO_EXECUTION_BAR` (no next bar, or the signal timestamp isn't in the
+  candle index) and `INSUFFICIENT_CASH_FOR_FEE` (a real fill would push
+  `Portfolio.cash` negative) both surface through a new
+  `SignalOutcome.execution_unavailable_reason`, mutually exclusive with
+  the existing `stop_unavailable_reason`.
+- ✅ **Costs enter the pipeline exactly once, at the `Fill`**:
+  `src/execution/models.py`'s `Fill` gained four new, defaulted fields
+  (`reference_price`/`fill_timestamp`/`slippage_amount`/`fee`) rather
+  than a second fill model; every pre-Sprint-12 `PaperBroker` call site
+  is unaffected. `Portfolio.open_position()`/`close_position()` gained
+  an optional `fee` parameter, debited as a genuine cash movement.
+- ✅ **`Trade`'s reference-vs-actual split preserves every pre-Sprint-12
+  number exactly**: `entry_price`/`exit_price`/`gross_pnl` stay the
+  frictionless reference economics ADR-0044 established; new
+  `entry_fill_price`/`exit_fill_price`/`entry_fee`/`exit_fee` fields
+  plus `total_fees`/`slippage_cost`/`net_pnl` properties surface the
+  real, cost-aware economics. Under the zero-cost default, fill price
+  equals reference price exactly, so `net_pnl == gross_pnl` and no
+  existing trade's numbers change.
+- ✅ **`BacktestConfig.execution_config`** (default: zero-cost,
+  `SIGNAL_BAR_CLOSE`) plus 4 new `src/analytics` execution-cost metrics
+  (`has_execution_cost_detail`, `total_fees_dollars`,
+  `total_slippage_cost_dollars`, `net_pnl_after_costs_dollars`). Zero
+  schema change needed for `ExperimentSpec.backtest_config` -- the
+  reserved JSON field already round-trips the new `"execution"` key.
+- ✅ **AI requires zero special-casing, re-verified**: a dedicated
+  cost-aware end-to-end test runs a trained `AISignalStrategy` through
+  a genuinely nonzero-slippage/fee `ExecutionConfig` and confirms its
+  trades carry the same fill/fee/net-P&L fields any rule-based
+  strategy's trades do.
+- ✅ **~70 new tests**: `tests/test_execution_model.py` (27, unit-level
+  timing/look-ahead/slippage/fee/purity coverage), 15 added to
+  `tests/test_portfolio_backtest_engine.py`, 9 added to
+  `tests/test_portfolio_position.py`, 12 added to
+  `tests/test_analytics.py`, 6 added to `tests/test_architecture.py`,
+  and 1 added to `tests/test_ai_end_to_end.py`.
+
+**Explicitly not built this round** (per the sprint's own instruction):
+partial fills, order-pending/rejected lifecycle states, limit/stop/
+stop-limit/IOC/FOK/GTC orders, order-book simulation (bid/ask depth,
+market impact curves, queue position, latency, exchange matching),
+broker-specific fee schedules, any change to `AlpacaBroker`/
+`IBKRBroker`/`IGBroker`/`TigerBroker`/`PaperBroker`, and advanced
+portfolio optimization or ML risk models. See `DECISIONS.md`, ADR-0045
+for the full list and reasoning.
+
+Sandbox-confirmed: **855 passed, 2 failed (the same pre-existing
+environment-only cli/doctor and config failures every prior sprint has
+carried), 8 skipped** (scikit-learn/joblib/Streamlit import gates,
+unchanged from Sprint 11). Real `pytest` confirmation on the dev
+machine is pending as of this writing.
+
+## Sprint 13+ -- future work (planned)
 
 - LLM-based reasoning over market context as a second AI signal
   approach, if warranted after Sprint 10's classic-ML baseline is
@@ -931,6 +1005,10 @@ reproduced on the dev machine.)
   experiments exist to compare (Sprint 10 spec explicitly deferred
   this; the existing Overview/Analysis/Comparison/Paper Portfolio
   pages cover today's needs).
+- Partial fills, limit/stop orders, and order-book-level execution
+  realism -- Sprint 12 deliberately deferred all of these; the
+  `ExecutionModel` abstraction it introduced is meant to make them
+  additive extensions later, not a redesign.
 - CI running the full suite automatically (see "Ongoing" below).
 
 ## Ongoing, not sprint-scoped

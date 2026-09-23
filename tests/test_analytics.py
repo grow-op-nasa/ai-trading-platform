@@ -51,6 +51,10 @@ def make_trade(
     entry_time: pd.Timestamp | None = None,
     exit_time: pd.Timestamp | None = None,
     quantity: float | None = None,
+    entry_fill_price: float | None = None,
+    exit_fill_price: float | None = None,
+    entry_fee: float = 0.0,
+    exit_fee: float = 0.0,
 ) -> Trade:
     return Trade(
         entry_time=entry_time or pd.Timestamp("2024-01-01", tz="UTC"),
@@ -60,6 +64,10 @@ def make_trade(
         exit_price=exit_price,
         entry_signal_id=uuid4(),
         quantity=quantity,
+        entry_fill_price=entry_fill_price,
+        exit_fill_price=exit_fill_price,
+        entry_fee=entry_fee,
+        exit_fee=exit_fee,
     )
 
 
@@ -342,6 +350,124 @@ def test_analytics_service_dollar_metrics_undefined_for_legacy_trades():
     assert analytics.net_pnl_dollars.status is MetricStatus.UNDEFINED
     # Fraction-based expectancy still works for a LEGACY_UNIT trade list.
     assert analytics.expectancy.status is MetricStatus.OK
+
+
+# ---------------------------------------------------------------------------
+# Execution-cost metrics (Sprint 12, `DECISIONS.md` ADR-0045) --
+# has_execution_cost_detail / total_fees_dollars / total_slippage_cost_dollars
+# / net_pnl_after_costs_dollars. The dollar metrics above (net_pnl_dollars,
+# etc.) are computed from the frictionless reference price and remain
+# unaffected by any of this -- these are additive, cost-aware metrics.
+# ---------------------------------------------------------------------------
+
+
+def test_has_execution_cost_detail_false_for_empty_and_frictionless_trades():
+    assert m.has_execution_cost_detail([]) is False
+    # quantity present but no fill prices at all (a zero-cost/legacy PORTFOLIO_RISK run).
+    assert m.has_execution_cost_detail([make_trade(100, 110, quantity=10.0)]) is False
+
+
+def test_has_execution_cost_detail_true_when_every_trade_has_both_fill_prices():
+    trades = [
+        make_trade(100, 110, quantity=10.0, entry_fill_price=100.5, exit_fill_price=109.5),
+        make_trade(100, 90, quantity=5.0, entry_fill_price=100.2, exit_fill_price=89.8),
+    ]
+    assert m.has_execution_cost_detail(trades) is True
+
+
+def test_has_execution_cost_detail_false_for_a_mixed_list():
+    trades = [
+        make_trade(100, 110, quantity=10.0, entry_fill_price=100.5, exit_fill_price=109.5),
+        make_trade(100, 90, quantity=5.0),  # no fill prices -- e.g. a synthesized end-of-data close
+    ]
+    assert m.has_execution_cost_detail(trades) is False
+
+
+def test_total_fees_dollars_only_needs_quantity_detail_not_fill_prices():
+    # Fees default to 0.0 per trade regardless of fill-price detail --
+    # total_fees_dollars is defined as soon as quantity detail exists.
+    trades = [make_trade(100, 110, quantity=10.0, entry_fee=1.0, exit_fee=2.0)]
+    assert_ok(m.total_fees_dollars(trades), 3.0)
+
+
+def test_total_fees_dollars_undefined_for_legacy_unit_trades():
+    assert_undefined(m.total_fees_dollars([make_trade(100, 110)]), "no quantity detail")
+
+
+def test_total_fees_dollars_sums_across_multiple_trades():
+    trades = [
+        make_trade(100, 110, quantity=10.0, entry_fee=1.0, exit_fee=1.0),
+        make_trade(100, 90, quantity=5.0, entry_fee=0.5, exit_fee=0.5),
+    ]
+    assert_ok(m.total_fees_dollars(trades), 3.0)
+
+
+def test_total_slippage_cost_dollars_undefined_without_fill_price_detail():
+    assert_undefined(
+        m.total_slippage_cost_dollars([make_trade(100, 110, quantity=10.0)]),
+        "no execution fill-price detail",
+    )
+
+
+def test_total_slippage_cost_dollars_hand_calculated():
+    # LONG 100->110, qty 10, reference gross = 100. Actual fills:
+    # entry 100.5 (paid more), exit 109.5 (received less) -- fill P&L =
+    # 10*(109.5-100.5) = 90.0. slippage_cost = gross(100) - fill(90) = 10.0.
+    trades = [make_trade(100, 110, quantity=10.0, entry_fill_price=100.5, exit_fill_price=109.5)]
+    assert_ok(m.total_slippage_cost_dollars(trades), 10.0)
+
+
+def test_net_pnl_after_costs_dollars_hand_calculated():
+    # Same trade as above, plus $2 total fees:
+    # gross = 100.0, slippage_cost = 10.0, fees = 2.0 -> net = 88.0.
+    trades = [
+        make_trade(
+            100, 110, quantity=10.0,
+            entry_fill_price=100.5, exit_fill_price=109.5,
+            entry_fee=1.0, exit_fee=1.0,
+        )
+    ]
+    assert_ok(m.net_pnl_after_costs_dollars(trades), 88.0)
+
+
+def test_net_pnl_after_costs_dollars_undefined_without_fill_price_detail():
+    assert_undefined(
+        m.net_pnl_after_costs_dollars([make_trade(100, 110, quantity=10.0)]),
+        "no execution fill-price detail",
+    )
+
+
+def test_analytics_service_populates_execution_cost_metrics_when_fills_present():
+    trades = [
+        make_trade(
+            100, 110, quantity=20.0,
+            entry_fill_price=100.5, exit_fill_price=109.0,
+            entry_fee=1.0, exit_fee=1.0,
+        )
+    ]
+    curve = make_curve([100_000.0, 100_200.0, 99_800.0])
+    analytics = AnalyticsService()._analyze(
+        trades=trades, equity_curve=curve, spec=None, experiment_id=None
+    )
+    assert analytics.has_execution_cost_detail is True
+    assert analytics.total_fees_dollars.value == pytest.approx(2.0)
+    assert analytics.total_slippage_cost_dollars.status is MetricStatus.OK
+    assert analytics.net_pnl_after_costs_dollars.status is MetricStatus.OK
+    # The dollar P&L computed from the reference price stays populated too.
+    assert analytics.net_pnl_dollars.status is MetricStatus.OK
+
+
+def test_analytics_service_execution_cost_metrics_undefined_without_fills():
+    trades = [make_trade(100, 110, quantity=20.0)]
+    curve = make_curve([100_000.0, 100_200.0])
+    analytics = AnalyticsService()._analyze(
+        trades=trades, equity_curve=curve, spec=None, experiment_id=None
+    )
+    assert analytics.has_execution_cost_detail is False
+    assert analytics.total_slippage_cost_dollars.status is MetricStatus.UNDEFINED
+    assert analytics.net_pnl_after_costs_dollars.status is MetricStatus.UNDEFINED
+    # Fees remain defined regardless (quantity detail alone is enough).
+    assert analytics.total_fees_dollars.status is MetricStatus.OK
 
 
 # ---------------------------------------------------------------------------

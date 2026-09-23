@@ -329,3 +329,91 @@ def test_to_account_state_reflects_equity_and_total_exposure():
     assert isinstance(account, AccountState)
     assert account.equity == pytest.approx(portfolio.equity)
     assert account.open_exposure == pytest.approx(portfolio.total_exposure)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 12 (`DECISIONS.md`, ADR-0045): optional `fee` on open/close --
+# an additional cash debit alongside the existing quantity*price movement.
+# ---------------------------------------------------------------------------
+
+
+def test_opening_a_position_defaults_to_zero_fee_unchanged_behavior():
+    portfolio = Portfolio(cash=100_000.0)
+    portfolio.open_position(
+        symbol="SPY", side=PositionSide.LONG, quantity=10.0, entry_price=100.0,
+        entry_timestamp=ENTRY_TS, entry_signal_id=uuid4(),
+    )
+    assert portfolio.cash == pytest.approx(99_000.0)  # identical to the no-fee test above
+
+
+def test_opening_a_long_position_with_a_fee_debits_cash_by_notional_plus_fee():
+    portfolio = Portfolio(cash=100_000.0)
+    portfolio.open_position(
+        symbol="SPY", side=PositionSide.LONG, quantity=10.0, entry_price=100.0,
+        entry_timestamp=ENTRY_TS, entry_signal_id=uuid4(), fee=5.0,
+    )
+    assert portfolio.cash == pytest.approx(100_000.0 - 1_000.0 - 5.0)
+
+
+def test_opening_a_short_position_with_a_fee_still_debits_the_fee():
+    portfolio = Portfolio(cash=100_000.0)
+    portfolio.open_position(
+        symbol="SPY", side=PositionSide.SHORT, quantity=-10.0, entry_price=100.0,
+        entry_timestamp=ENTRY_TS, entry_signal_id=uuid4(), fee=5.0,
+    )
+    # Credited 1,000 for the short sale, still debited the 5.0 fee.
+    assert portfolio.cash == pytest.approx(100_000.0 + 1_000.0 - 5.0)
+
+
+def test_closing_a_long_position_with_a_fee_debits_cash_by_the_fee():
+    portfolio = Portfolio(cash=100_000.0)
+    portfolio.open_position(
+        symbol="SPY", side=PositionSide.LONG, quantity=10.0, entry_price=100.0,
+        entry_timestamp=ENTRY_TS, entry_signal_id=uuid4(),
+    )
+    portfolio.close_position("SPY", exit_price=110.0, fee=3.0)
+    # 99,000 (post-open) + 1,100 (sale proceeds) - 3.0 (fee) = 100,097.0
+    assert portfolio.cash == pytest.approx(100_097.0)
+
+
+def test_closing_a_short_position_with_a_fee_debits_cash_by_the_fee():
+    portfolio = Portfolio(cash=100_000.0)
+    portfolio.open_position(
+        symbol="SPY", side=PositionSide.SHORT, quantity=-10.0, entry_price=100.0,
+        entry_timestamp=ENTRY_TS, entry_signal_id=uuid4(),
+    )
+    portfolio.close_position("SPY", exit_price=90.0, fee=3.0)
+    # 101,000 (post-open) - 900 (buy-to-cover cost) - 3.0 (fee) = 100,097.0
+    assert portfolio.cash == pytest.approx(100_097.0)
+
+
+def test_open_position_rejects_a_negative_fee():
+    portfolio = Portfolio(cash=100_000.0)
+    with pytest.raises(ValueError):
+        portfolio.open_position(
+            symbol="SPY", side=PositionSide.LONG, quantity=10.0, entry_price=100.0,
+            entry_timestamp=ENTRY_TS, entry_signal_id=uuid4(), fee=-1.0,
+        )
+
+
+def test_close_position_rejects_a_negative_fee():
+    portfolio = Portfolio(cash=100_000.0)
+    portfolio.open_position(
+        symbol="SPY", side=PositionSide.LONG, quantity=10.0, entry_price=100.0,
+        entry_timestamp=ENTRY_TS, entry_signal_id=uuid4(),
+    )
+    with pytest.raises(ValueError):
+        portfolio.close_position("SPY", exit_price=110.0, fee=-1.0)
+
+
+def test_fee_does_not_change_realized_pnl_fees_are_a_cash_effect_only():
+    # Position.realized_pnl stays fee-agnostic -- fees are surfaced for
+    # reporting only via Trade.net_pnl in src.backtesting, never folded
+    # into the Position-level realized P&L itself.
+    portfolio = Portfolio(cash=100_000.0)
+    portfolio.open_position(
+        symbol="SPY", side=PositionSide.LONG, quantity=10.0, entry_price=100.0,
+        entry_timestamp=ENTRY_TS, entry_signal_id=uuid4(),
+    )
+    closed = portfolio.close_position("SPY", exit_price=110.0, fee=50.0)
+    assert closed.realized_pnl == pytest.approx(100.0)  # unaffected by the fee

@@ -53,25 +53,49 @@ class SignalOutcome:
             never consulted in the first place (Sprint 11 spec, section
             9: an unavailable stop must not be papered over with an
             invented one just to get a `RiskDecision` to point to).
+            **Can be a genuinely approved decision even when `accepted`
+            is `False`** (Sprint 12, `DECISIONS.md` ADR-0045) -- see
+            `execution_unavailable_reason` below.
         stop_unavailable_reason: set only when this entry signal's
             `StopPolicy.stop_price()` call returned
             `StopResult.available=False` -- the human-readable reason
             from that result. Always `None` for a `FLAT`/close signal
             (a close never computes a stop) and for any entry signal
             that did reach the risk engine.
+        execution_unavailable_reason: (Sprint 12, `DECISIONS.md`
+            ADR-0045) set only when Risk *approved* this signal but
+            `src.backtesting.execution_model.ExecutionModel.simulate()`
+            could not actually fill the resulting order --
+            `NO_EXECUTION_BAR` (no reference bar exists, e.g. a signal
+            at the final candle under `ExecutionTiming.NEXT_BAR_OPEN`)
+            or `INSUFFICIENT_CASH_FOR_FEE` (the fee would drive cash
+            negative). This is the one case where `risk_decision` can
+            be a real, `approved=True` decision while `accepted` is
+            still `False` -- Risk correctly approved the trade, but
+            Execution genuinely could not carry it out; the two are
+            different questions with different answers (Sprint 12
+            spec, section 2). Always `None` when a signal never reached
+            an execution attempt at all (rejected by Risk, or
+            `stop_unavailable_reason` is set).
 
     Raises:
-        ValueError: both `risk_decision` and `stop_unavailable_reason`
-            are set (a signal either reached the risk engine or it
-            didn't -- never both), or `accepted=True` while
-            `risk_decision` is missing or itself unapproved (an
-            accepted outcome must be backed by a real approval).
+        ValueError: more than one of `risk_decision` (when
+            `stop_unavailable_reason` is also set),
+            `stop_unavailable_reason`, and `execution_unavailable_reason`
+            describe how this signal failed to reach a trade -- a
+            signal has exactly one of "never reached Risk" / "Risk
+            rejected it" / "Risk approved it but Execution couldn't
+            fill it" / "filled"; or `accepted=True` while `risk_decision`
+            is missing, itself unapproved, or
+            `execution_unavailable_reason` is set (an accepted outcome
+            must be backed by a real approval that actually filled).
     """
 
     signal: Signal
     accepted: bool
     risk_decision: RiskDecision | None
     stop_unavailable_reason: str | None = None
+    execution_unavailable_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.risk_decision is not None and self.stop_unavailable_reason is not None:
@@ -80,10 +104,29 @@ class SignalOutcome:
                 "stop_unavailable_reason -- a signal either reached the risk "
                 "engine or it didn't"
             )
+        if self.stop_unavailable_reason is not None and self.execution_unavailable_reason is not None:
+            raise ValueError(
+                "a SignalOutcome cannot carry both a stop_unavailable_reason "
+                "and an execution_unavailable_reason -- a signal that never "
+                "reached Risk also never reached Execution"
+            )
+        if self.execution_unavailable_reason is not None and (
+            self.risk_decision is None or not self.risk_decision.approved
+        ):
+            raise ValueError(
+                "execution_unavailable_reason requires an approved risk_decision "
+                "-- Execution can only fail to fill something Risk actually "
+                "approved (DECISIONS.md, ADR-0045)"
+            )
         if self.accepted and (self.risk_decision is None or not self.risk_decision.approved):
             raise ValueError(
                 "accepted=True requires a risk_decision with approved=True -- "
                 "an outcome can never claim acceptance without a real approval"
+            )
+        if self.accepted and self.execution_unavailable_reason is not None:
+            raise ValueError(
+                "accepted=True cannot coexist with execution_unavailable_reason "
+                "-- an outcome that never actually filled cannot claim acceptance"
             )
 
     @property
@@ -92,15 +135,20 @@ class SignalOutcome:
         result in a trade -- `None` when `accepted` is `True`.
 
         `STOP_UNAVAILABLE` when the stop policy itself couldn't produce
-        a boundary; otherwise `risk_decision.rejection_reason.value`
-        (an `src.risk.models.RejectionReason` member) -- never a bare
-        "no trade" string that would discard which specific constraint
-        was responsible (Sprint 11 spec, section 21).
+        a boundary; `execution_unavailable_reason` (`NO_EXECUTION_BAR`/
+        `INSUFFICIENT_CASH_FOR_FEE`) when Risk approved the trade but
+        Execution could not fill it (Sprint 12, `DECISIONS.md`
+        ADR-0045); otherwise `risk_decision.rejection_reason.value` (an
+        `src.risk.models.RejectionReason` member) -- never a bare "no
+        trade" string that would discard which specific constraint was
+        responsible (Sprint 11 spec, section 21).
         """
         if self.accepted:
             return None
         if self.stop_unavailable_reason is not None:
             return STOP_UNAVAILABLE
+        if self.execution_unavailable_reason is not None:
+            return self.execution_unavailable_reason
         if self.risk_decision is not None and self.risk_decision.rejection_reason is not None:
             return self.risk_decision.rejection_reason.value
         return None

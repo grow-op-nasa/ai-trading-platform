@@ -193,6 +193,7 @@ class Portfolio:
         entry_timestamp: pd.Timestamp,
         entry_signal_id: UUID,
         stop_price: float | None = None,
+        fee: float = 0.0,
     ) -> Position:
         """Open a new position and debit/credit `cash` accordingly.
 
@@ -201,6 +202,19 @@ class Portfolio:
         `-quantity * entry_price` uniformly for both: a `LONG` (positive
         quantity) debits cash (buying), a `SHORT` (negative quantity)
         credits it (selling first), with no separate branch needed.
+
+        Args:
+            fee: a dollar transaction cost to additionally debit from
+                `cash`, regardless of side (Sprint 12, `DECISIONS.md`
+                ADR-0045) -- e.g.
+                `src.backtesting.execution_model.ExecutionModel`'s
+                computed `Fill.fee`. Defaults to `0.0`, so every caller
+                predating Sprint 12 is completely unaffected. Applied
+                once, as a pure cash debit -- never folded into
+                `entry_price` (that would corrupt `Position.entry_price`,
+                which `unrealized_pnl`/`exposure`/stop-distance
+                calculations all rely on being the real per-unit
+                transacted price).
 
         Raises:
             ValueError: `symbol` already has an open position --
@@ -211,6 +225,7 @@ class Portfolio:
                 been rejected upstream with
                 `RejectionReason.POSITION_SCALING_NOT_SUPPORTED`
                 (`src.risk.portfolio_risk.PortfolioRiskEngine`).
+                `fee` is negative.
         """
         if symbol in self._positions:
             raise ValueError(
@@ -218,6 +233,8 @@ class Portfolio:
                 f"not support scaling into an existing position this sprint "
                 f"(DECISIONS.md, ADR-0039)"
             )
+        if fee < 0:
+            raise ValueError(f"fee cannot be negative, got {fee}")
         position = Position(
             symbol=symbol,
             side=side,
@@ -227,11 +244,11 @@ class Portfolio:
             entry_signal_id=entry_signal_id,
             stop_price=stop_price,
         )
-        self.cash += -quantity * entry_price
+        self.cash += -quantity * entry_price - fee
         self._positions[symbol] = position
         return position
 
-    def close_position(self, symbol: str, exit_price: float) -> Position:
+    def close_position(self, symbol: str, exit_price: float, fee: float = 0.0) -> Position:
         """Fully close `symbol`'s open position at `exit_price`: credit/
         debit `cash`, move the position (now `CLOSED`, with
         `realized_pnl` set) into `closed_positions`, and remove it from
@@ -243,14 +260,28 @@ class Portfolio:
         credits cash (selling), closing a `SHORT` (negative quantity)
         debits it (buying to cover), again with no separate branch.
 
+        Args:
+            fee: a dollar transaction cost to additionally debit from
+                `cash` (Sprint 12, `DECISIONS.md` ADR-0045). Defaults to
+                `0.0` -- every pre-Sprint-12 caller unaffected. Does not
+                affect `Position.realized_pnl` (computed from
+                `entry_price`/`exit_price` alone, gross of fees, exactly
+                as before) -- fees are a `Portfolio`-level cash effect,
+                not a per-position P&L adjustment; `src.backtesting.
+                models.Trade.net_pnl` is where fee-inclusive economics
+                are surfaced for reporting.
+
         Raises:
-            ValueError: `symbol` has no open position.
+            ValueError: `symbol` has no open position, or `fee` is
+                negative.
         """
         existing = self._positions.get(symbol)
         if existing is None:
             raise ValueError(f"no open position in {symbol!r} to close")
+        if fee < 0:
+            raise ValueError(f"fee cannot be negative, got {fee}")
         closed = existing.close(exit_price)
-        self.cash += existing.quantity * exit_price
+        self.cash += existing.quantity * exit_price - fee
         del self._positions[symbol]
         self._closed_positions.append(closed)
         return closed

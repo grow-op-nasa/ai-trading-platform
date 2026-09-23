@@ -133,6 +133,10 @@ class AnalyticsService:
             average_loser_dollars=m.average_loser_dollars(trades),
             largest_winner_dollars=m.largest_winner_dollars(trades),
             largest_loser_dollars=m.largest_loser_dollars(trades),
+            has_execution_cost_detail=m.has_execution_cost_detail(trades),
+            total_fees_dollars=m.total_fees_dollars(trades),
+            total_slippage_cost_dollars=m.total_slippage_cost_dollars(trades),
+            net_pnl_after_costs_dollars=m.net_pnl_after_costs_dollars(trades),
         )
 
 

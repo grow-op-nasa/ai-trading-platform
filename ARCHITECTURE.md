@@ -569,9 +569,13 @@ interface itself.
 **Purpose:** the framework, not a strategy. Runs any `Strategy` against
 candles: run strategy -> collect trades -> calculate metrics ->
 generate report. Part of the Sprint 2 research engine (`DECISIONS.md`,
-ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015), and
+ADR-0009), updated for the Signal Framework in Sprint 3 (ADR-0015),
 extended in Sprint 11 (`DECISIONS.md`, ADR-0044) with a second,
-portfolio-aware execution mode sitting alongside the original one.
+portfolio-aware execution mode sitting alongside the original one, and
+further extended in Sprint 12 (`DECISIONS.md`, ADR-0045) so that
+portfolio-aware mode's fills are no longer instant and frictionless --
+an explicit `ExecutionModel` makes fill timing, slippage, and fees
+configurable and deterministic.
 
 - **Inputs:** a `Strategy`, an OHLCV candles DataFrame, and (Sprint 8,
   optional) the `CandleDataset` `candles` came from -- or, for the
@@ -641,20 +645,43 @@ portfolio-aware execution mode sitting alongside the original one.
     (`tests/test_architecture.py` enforces this by source-text scan).
     Contains no `isinstance`/name-based branch for any particular
     strategy, `AISignalStrategy` included.
-  - `risk_audit.py` (Sprint 11) -- `SignalOutcome` (per-signal
-    accept/reject record; `rejection_reason` reports
+  - `risk_audit.py` (Sprint 11; extended Sprint 12) -- `SignalOutcome`
+    (per-signal accept/reject record; `rejection_reason` reports
     `"STOP_UNAVAILABLE"` when a stop couldn't be computed, without ever
-    reaching the risk engine) and `RiskAuditSummary`/
-    `summarize_outcomes()` (totals and rejection counts by reason) --
-    "signal generated," "trade approved," and "trade rejected" are
-    always distinguishable from the result alone.
+    reaching the risk engine, or `execution_unavailable_reason`'s value
+    when Risk approved a trade but Execution couldn't fill it) and
+    `RiskAuditSummary`/`summarize_outcomes()` (totals and rejection
+    counts by reason) -- "signal generated," "trade approved," and
+    "trade rejected" are always distinguishable from the result alone.
+  - `execution_model.py` (Sprint 12, `DECISIONS.md` ADR-0045) --
+    `ExecutionTiming(str, Enum)` (`SIGNAL_BAR_CLOSE` default,
+    `NEXT_BAR_OPEN`), `SlippageModel`/`FeeModel` protocols with
+    deterministic `PercentageSlippageModel`/`PercentageFeeModel`
+    implementations, `ExecutionConfig` (bundles all three, `.describe()`
+    for provenance), and `ExecutionModel.simulate(order, candles) ->
+    ExecutionOutcome` -- a pure function reusing `src.execution.models`'
+    existing `Fill`/`Order`/`OrderSide` shapes. `NEXT_BAR_OPEN`'s
+    reference price only ever reads the next candle's own `open` --
+    there is no code path that reads a future bar's high/low/close.
+    `NO_EXECUTION_BAR` (no next bar, or the order's timestamp isn't in
+    the candle index) is an explicit outcome, never a same-bar-close
+    fallback. `INSUFFICIENT_CASH_FOR_FEE` is reported by
+    `PortfolioBacktestEngine`'s own `_unaffordable_reason()` check,
+    comparing `portfolio.cash + fill.cash_delta` against zero after a
+    real fill is produced.
   - `models.py` -- `Trade` (references its opening/closing signals by
     `entry_signal_id`/`exit_signal_id: UUID`, not by embedding the
     `Signal` objects -- see ADR-0015/ADR-0016; gained an optional
     `quantity: float | None` field in Sprint 11, `None` for every
     pre-Sprint-11/`LEGACY_UNIT` trade, real gross P&L -- `qty *
-    (exit - entry)` long, `qty * (entry - exit)` short -- when set),
-    `BacktestResult` (Sprint 11 fields described above).
+    (exit - entry)` long, `qty * (entry - exit)` short -- when set;
+    gained `entry_fill_price`/`exit_fill_price`/`entry_fee`/`exit_fee`
+    plus `total_fees`/`slippage_cost`/`net_pnl` properties in Sprint 12
+    -- `entry_price`/`exit_price`/`gross_pnl` stay the frictionless
+    reference-price economics unchanged, the new fields/properties
+    surface the actual, cost-aware economics separately, never mutating
+    the reference ones), `BacktestResult` (Sprint 11 fields described
+    above).
   - `metrics.py` -- `calculate_metrics()`, `sharpe_ratio()`,
     `max_drawdown()`, `infer_periods_per_year()` (Pre-Sprint 7,
     `DECISIONS.md` ADR-0038), each independently testable.
@@ -684,9 +711,11 @@ portfolio-aware execution mode sitting alongside the original one.
   -> registry end to end. `Signal` itself still has no quantity or stop
   field -- strategies never control sizing (ADR-0044 decision 3);
   `PortfolioBacktestEngine` derives both externally, per signal.
-- **Does not:** model realistic execution (partial fills, slippage,
-  transaction costs) -- that's `src/execution`'s job later, deliberately
-  out of scope here, in both modes. Does not decide position sizing in
+- **Does not:** model an order book, partial fills, or limit/stop
+  orders -- `PORTFOLIO_RISK` mode's `ExecutionModel` (Sprint 12) covers
+  fill timing, slippage, and fees only, at the candle level; `LEGACY_UNIT`
+  mode (`run()`) still has no cost modeling of any kind, unchanged since
+  ADR-0011. Does not decide position sizing in
   `LEGACY_UNIT` mode beyond a single unit, regardless of a signal's
   `confidence`. In `PORTFOLIO_RISK` mode, does not implement any sizing
   formula itself -- composes `src/risk`'s `PortfolioRiskEngine`
@@ -845,7 +874,13 @@ without changing `AccountState` at all.
     `+quantity * exit_price` uniformly for `LONG` and `SHORT` (signed
     quantity does the work, no branch needed) and raise on
     scaling into an already-held symbol -- `Portfolio` does not support
-    that this sprint, matching `PaperBroker`. `equity`/`total_exposure`
+    that this sprint, matching `PaperBroker`. Both gained an optional
+    `fee: float = 0.0` parameter in Sprint 12 (`DECISIONS.md` ADR-0045,
+    validated non-negative), debited/credited as a cash movement
+    additional to the existing `quantity * price` one -- `Position.
+    realized_pnl` stays fee-agnostic; fees are a `Portfolio`-level cash
+    effect only, surfaced for reporting via `src.backtesting.models.
+    Trade.net_pnl`. `equity`/`total_exposure`
     reuse the same "value at `valuation_price`, falling back to
     `entry_price` when no `current_price` is known" formula
     `PaperBroker.account_state` already uses -- no new mark-to-market
@@ -1065,8 +1100,13 @@ Sprint 4 (`DECISIONS.md`, ADR-0022).
     method with many existing call sites.
   - `models.py` -- `OrderSide` (`BUY`/`SELL`), `Order` (validated
     `quantity > 0`, carries `signal_id`/`timestamp` for traceability),
-    `Fill` (`order`, `fill_price`, `cash_delta`), `Position` (signed
-    `quantity`, `entry_price`, `entry_signal_id`).
+    `Fill` (`order`, `fill_price`, `cash_delta`, plus `reference_price`/
+    `fill_timestamp`/`slippage_amount`/`fee` added in Sprint 12,
+    `DECISIONS.md` ADR-0045, all `None`/`0.0` by default so every
+    `PaperBroker` call site is unaffected -- this same `Fill` shape is
+    also what `src.backtesting.execution_model.ExecutionModel` produces,
+    never a second fill model), `Position` (signed `quantity`,
+    `entry_price`, `entry_signal_id`).
 - **Does not:** mark positions to market -- an open position's
   contribution to `equity` is frozen at its entry price until closed;
   there is no ongoing price feed to mark against (like `PositionSizer`,
@@ -1468,6 +1508,13 @@ half.
     `src.backtesting.metrics.infer_periods_per_year()`, ADR-0038, for
     timeframe-aware annualization, returning the exact
     `periods_per_year` used alongside the value); `exposure_time()`.
+    Sprint 12 (`DECISIONS.md` ADR-0045) added
+    `has_execution_cost_detail(trades)` (true only when every trade
+    carries both `entry_fill_price`/`exit_fill_price`) plus
+    `total_fees_dollars`/`total_slippage_cost_dollars`/
+    `net_pnl_after_costs_dollars`, computed directly from `Trade`'s own
+    `total_fees`/`slippage_cost`/`net_pnl` properties -- never a
+    separately re-derived cost formula.
   - `service.py` -- `AnalyticsService.analyze_backtest()`/
     `analyze_experiment()` (the latter loads trades/equity/spec from
     the registry, degrading to all-`UNDEFINED` metrics for a

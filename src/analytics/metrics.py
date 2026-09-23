@@ -357,6 +357,62 @@ def largest_loser_dollars(trades: list[Trade]) -> Metric:
     return Metric.of(min(losers))
 
 
+def has_execution_cost_detail(trades: list[Trade]) -> bool:
+    """Whether every trade in `trades` carries real fill-price/fee
+    detail (Sprint 12, `DECISIONS.md` ADR-0045) -- true only for a
+    non-empty, fully-sized trade list where every trade also has both
+    `entry_fill_price` and `exit_fill_price` populated (an
+    `ExecutionModel` actually simulated both legs). `False` for a
+    `LEGACY_UNIT` run, an empty list, or any trade still open at the
+    end of data (synthesized with no real exit fill, `exit_fill_price`
+    is `None` -- `portfolio_engine.py`'s end-of-data convention).
+    """
+    return bool(trades) and all(
+        t.quantity is not None and t.entry_fill_price is not None and t.exit_fill_price is not None
+        for t in trades
+    )
+
+
+def total_fees_dollars(trades: list[Trade]) -> Metric:
+    """Sum of every trade's `total_fees` -- total dollar transaction
+    cost charged across the run (Sprint 12 spec, section 17).
+    `UNDEFINED` when `trades` lacks quantity detail at all (a
+    `RiskMode.LEGACY_UNIT` run, or no trades) -- unlike
+    `has_execution_cost_detail`, this doesn't require every trade to
+    have a tracked *exit* fill, since `entry_fee`/`exit_fee` default to
+    `0.0` (always summable) even for a still-open, synthesized trade.
+    """
+    if not has_quantity_detail(trades):
+        return Metric.undefined("no quantity detail -- trades were not sized (LEGACY_UNIT mode)")
+    return Metric.of(sum(t.total_fees for t in trades))
+
+
+def total_slippage_cost_dollars(trades: list[Trade]) -> Metric:
+    """Sum of every trade's `slippage_cost` -- total dollar P&L impact
+    attributable to slippage across the run (Sprint 12 spec, section
+    16: "how much performance was lost to execution friction").
+    `UNDEFINED` when any trade lacks fill-price detail
+    (`has_execution_cost_detail` is `False`) -- unlike fees, a
+    per-trade `slippage_cost` is only defined once both legs have a
+    real fill price, so this metric cannot silently skip the untracked
+    ones.
+    """
+    if not has_execution_cost_detail(trades):
+        return Metric.undefined("no execution fill-price detail available for every trade")
+    return Metric.of(sum(t.slippage_cost for t in trades))
+
+
+def net_pnl_after_costs_dollars(trades: list[Trade]) -> Metric:
+    """Sum of every trade's `net_pnl` -- total dollar P&L after both
+    fees and slippage cost (Sprint 12 spec, section 15). `UNDEFINED`
+    under the same condition as `total_slippage_cost_dollars`, since
+    `Trade.net_pnl` itself needs `slippage_cost` to be defined.
+    """
+    if not has_execution_cost_detail(trades):
+        return Metric.undefined("no execution fill-price detail available for every trade")
+    return Metric.of(sum(t.net_pnl for t in trades))
+
+
 def exposure_time(trades: list[Trade], equity_curve: pd.Series) -> Metric:
     """Fraction of the run's elapsed time spent with an open position.
 

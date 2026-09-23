@@ -673,6 +673,77 @@ def test_portfolio_backtest_engine_has_no_ai_specific_branch():
         )
 
 
+# ---------------------------------------------------------------------------
+# Sprint 12 (DECISIONS.md, ADR-0045): execution-realism boundaries --
+# Backtester -> execution abstraction -> Fill, Execution never generates
+# Signals or sizes risk, Execution never imports broker-specific adapters,
+# generic simulated execution stays broker-independent.
+# ---------------------------------------------------------------------------
+
+
+def test_execution_model_does_not_import_broker_adapters_or_src_broker():
+    text = (SRC_ROOT / "backtesting" / "execution_model.py").read_text()
+    forbidden = re.compile(
+        r"^\s*(?:from|import)\s+(?:src\.broker\b|alpaca|ibkr|ig_markets|tiger)",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    assert forbidden.search(text) is None, (
+        "src/backtesting/execution_model.py must remain broker-independent -- "
+        "the generic simulated ExecutionModel represents research friction, "
+        "never a specific broker's real fee/slippage schedule (DECISIONS.md, "
+        "ADR-0045, Sprint 12 spec sections 13, 23, 48)."
+    )
+
+
+def test_execution_model_never_imports_risk_engine_or_generates_signals():
+    # Execution decides when/whether/at what price an already-approved
+    # order fills -- it must never import PortfolioRiskEngine (sizing is
+    # Risk's job) or src.signals (generating a Signal is Strategy's job).
+    text = (SRC_ROOT / "backtesting" / "execution_model.py").read_text()
+    forbidden_imports = re.compile(
+        r"^\s*(?:from|import)\s+src\.(risk\.portfolio_risk|signals)\b", re.MULTILINE
+    )
+    assert forbidden_imports.search(text) is None, (
+        "src/backtesting/execution_model.py must not import "
+        "src.risk.portfolio_risk (sizing) or src.signals (signal "
+        "generation) -- Execution consumes an already-approved Order, it "
+        "never decides whether to trade or how much (DECISIONS.md, "
+        "ADR-0045, Sprint 12 spec section 2)."
+    )
+    assert "class Signal" not in text
+    assert "PortfolioRiskEngine(" not in text
+
+
+def test_execution_model_has_no_hidden_random_state_or_system_time():
+    # Purity requirement (Sprint 12 spec section 52): same inputs, same
+    # output -- no dependence on global random state or wall-clock time.
+    text = (SRC_ROOT / "backtesting" / "execution_model.py").read_text()
+    forbidden = re.compile(r"\b(random\.|np\.random|datetime\.now\(|pd\.Timestamp\.now\()")
+    assert forbidden.search(text) is None, (
+        "src/backtesting/execution_model.py must be pure -- no random "
+        "module usage and no wall-clock reads (DECISIONS.md, ADR-0045, "
+        "Sprint 12 spec sections 12, 52)."
+    )
+
+
+def test_portfolio_backtest_engine_routes_fills_through_the_execution_model():
+    # Positive half of the Sprint 12 boundary: PortfolioBacktestEngine
+    # must actually call the real ExecutionModel rather than computing
+    # its own fill price/timing/cost inline.
+    text = (SRC_ROOT / "backtesting" / "portfolio_engine.py").read_text()
+    assert "ExecutionModel(" in text
+    assert ".simulate(" in text
+
+
+def test_backtesting_execution_model_reuses_the_existing_fill_and_order_shapes():
+    # Sprint 12 spec section 4: use the existing Fill/Order models --
+    # never a second, incompatible fill domain model.
+    text = (SRC_ROOT / "backtesting" / "execution_model.py").read_text()
+    assert "from src.execution.models import" in text
+    assert "class Fill" not in text
+    assert "class Order" not in text
+
+
 def test_account_state_equity_is_computed_from_frozen_entry_price_only():
     from src.risk.models import SizingDecision
 

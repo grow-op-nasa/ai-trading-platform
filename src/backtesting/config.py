@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from src.backtesting.execution_model import ExecutionConfig
 from src.backtesting.stop_policy import StopPolicy
 from src.risk.models import PortfolioRiskLimits, RiskLimits
 
@@ -92,6 +93,13 @@ class BacktestConfig:
             same meaning as `Backtester.__init__`'s own parameter.
             Defaults to `None` (infer from the equity curve's own
             timestamp spacing, `DECISIONS.md` ADR-0038).
+        execution_config: fill timing, slippage, and fee assumptions
+            (Sprint 12, `DECISIONS.md` ADR-0045,
+            `src.backtesting.execution_model.ExecutionConfig`). Defaults
+            to `ExecutionConfig()` -- signal-bar-close timing, zero
+            slippage, zero fees -- which reproduces Sprint 11's fills
+            exactly (Sprint 12 spec, section 56: no existing result is
+            silently reinterpreted just because this field now exists).
 
     Raises:
         ValueError: `initial_cash` isn't positive, or `risk_mode` is
@@ -104,6 +112,7 @@ class BacktestConfig:
     portfolio_risk_limits: PortfolioRiskLimits = field(default_factory=PortfolioRiskLimits)
     stop_policy: StopPolicy | None = None
     periods_per_year: int | None = None
+    execution_config: ExecutionConfig = field(default_factory=ExecutionConfig)
 
     def __post_init__(self) -> None:
         if self.initial_cash <= 0:
@@ -137,4 +146,5 @@ class BacktestConfig:
             },
             "stop_policy": self.stop_policy.config if self.stop_policy is not None else None,
             "periods_per_year": self.periods_per_year,
+            "execution": self.execution_config.describe(),
         }

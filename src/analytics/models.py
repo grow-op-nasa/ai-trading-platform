@@ -145,6 +145,19 @@ class BacktestAnalytics:
     largest_winner_dollars: Metric
     largest_loser_dollars: Metric
 
+    # Execution-cost metrics (Sprint 12, `DECISIONS.md` ADR-0045) --
+    # how much of the dollar P&L above was consumed by simulated
+    # execution friction. `has_execution_cost_detail` is `True` only
+    # when every trade has a real fill price for both legs (an
+    # `ExecutionModel` actually ran); `total_fees_dollars` alone can
+    # still be defined even when that's `False`, since fees default to
+    # `0.0` per trade regardless (see `has_execution_cost_detail`'s own
+    # docstring in `src.analytics.metrics`).
+    has_execution_cost_detail: bool
+    total_fees_dollars: Metric
+    total_slippage_cost_dollars: Metric
+    net_pnl_after_costs_dollars: Metric
+
 
 @dataclass(frozen=True)
 class ComparisonWarning:

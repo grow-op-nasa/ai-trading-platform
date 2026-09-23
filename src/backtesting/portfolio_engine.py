@@ -24,12 +24,18 @@ section 32) -- never a live or paper-trading one. `run()` constructs
 its own `Portfolio(cash=config.initial_cash)` and nothing else ever
 touches it.
 
-**Signal-bar-close execution, no execution realism** (Sprint 11 spec,
-sections 13-14): fills happen at the signal's own bar close, the same
-convention `Backtester.run()`'s legacy path already uses (`DECISIONS.md`,
-ADR-0011) -- no slippage, no fees, no partial fills, no order book.
-Execution realism is explicitly out of scope this sprint; this module
-only closes the *risk-sizing* gap.
+**Execution-aware fills (Sprint 12, `DECISIONS.md` ADR-0045).** Every
+approved order is simulated through an
+`src.backtesting.execution_model.ExecutionModel` -- signal-bar-close
+timing with zero slippage/fees by default (byte-for-byte identical to
+Sprint 11's own fills), or a realistic next-bar-open/slippage/fee
+configuration when a caller opts in via `BacktestConfig.
+execution_config`. Risk sizing is entirely unaffected either way: the
+quantity `PortfolioRiskEngine` approves is fixed *before* Execution
+ever runs, and Execution may only fill that exact quantity in full or
+not at all (`NO_EXECUTION_BAR`/`INSUFFICIENT_CASH_FOR_FEE`) -- never
+scale it up or down. Partial fills, limit/stop orders, and order-book
+simulation remain out of scope (Sprint 12 spec, sections 24-26).
 
 **One open position per symbol, no scaling, full close only** -- the
 same limitation `Portfolio`/`PortfolioRiskEngine` already enforce
@@ -50,9 +56,15 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from src.backtesting.config import BacktestConfig, RiskMode
+from src.backtesting.execution_model import (
+    INSUFFICIENT_CASH_FOR_FEE,
+    ExecutionModel,
+    ExecutionOutcome,
+)
 from src.backtesting.metrics import calculate_metrics
 from src.backtesting.models import BacktestResult, Trade
 from src.backtesting.risk_audit import SignalOutcome
+from src.execution.models import Order, OrderSide
 from src.portfolio.models import Portfolio
 from src.portfolio.position import PositionSide
 from src.risk.portfolio_risk import PortfolioRiskEngine
@@ -93,6 +105,12 @@ class PortfolioBacktestEngine:
         # BacktestConfig.__post_init__ already guarantees this is not None
         # for PORTFOLIO_RISK -- no fallback constructed here.
         self._stop_policy = config.stop_policy
+        # Sprint 12 (DECISIONS.md, ADR-0045): every order this engine
+        # approves is simulated through this model before it ever
+        # touches `portfolio`. `config.execution_config` defaults to
+        # signal-bar-close/zero-cost, so a caller who never heard of
+        # Sprint 12 gets byte-for-byte Sprint 11 behavior.
+        self._execution_model = ExecutionModel(config.execution_config)
 
     def run(
         self,
@@ -273,10 +291,34 @@ class PortfolioBacktestEngine:
 
         if signal.direction is SignalDirection.FLAT:
             decision = self._risk_engine.decide_close(signal, portfolio)
-            outcome = SignalOutcome(signal=signal, accepted=decision.approved, risk_decision=decision)
             if not decision.approved:
+                outcome = SignalOutcome(signal=signal, accepted=False, risk_decision=decision)
                 return outcome, None
-            portfolio.close_position(symbol, exit_price=price)
+
+            existing_position = portfolio.positions[symbol]
+            order_side = OrderSide.SELL if existing_position.quantity > 0 else OrderSide.BUY
+            order = Order(
+                symbol=symbol,
+                side=order_side,
+                quantity=abs(existing_position.quantity),
+                signal_id=signal.id,
+                timestamp=signal.timestamp,
+            )
+            execution_outcome = self._execution_model.simulate(order, symbol_candles)
+            unaffordable_reason = self._unaffordable_reason(portfolio, execution_outcome)
+            reason = execution_outcome.reason or unaffordable_reason
+            if reason is not None:
+                outcome = SignalOutcome(
+                    signal=signal,
+                    accepted=False,
+                    risk_decision=decision,
+                    execution_unavailable_reason=reason,
+                )
+                return outcome, None
+
+            fill = execution_outcome.fill
+            portfolio.close_position(symbol, exit_price=fill.fill_price, fee=fill.fee)
+            outcome = SignalOutcome(signal=signal, accepted=True, risk_decision=decision)
             open_trade = open_trades.pop(symbol, None)
             trade = None
             if open_trade is not None:
@@ -285,10 +327,14 @@ class PortfolioBacktestEngine:
                     exit_time=signal.timestamp,
                     direction=open_trade["direction"],
                     entry_price=open_trade["entry_price"],
-                    exit_price=price,
+                    exit_price=fill.reference_price,
                     entry_signal_id=open_trade["entry_signal_id"],
                     exit_signal_id=signal.id,
                     quantity=open_trade["quantity"],
+                    entry_fill_price=open_trade["entry_fill_price"],
+                    exit_fill_price=fill.fill_price,
+                    entry_fee=open_trade["entry_fee"],
+                    exit_fee=fill.fee,
                 )
             return outcome, trade
 
@@ -307,30 +353,76 @@ class PortfolioBacktestEngine:
         decision = self._risk_engine.decide(
             signal, portfolio, entry_price=price, stop_price=stop_result.stop_price
         )
-        outcome = SignalOutcome(signal=signal, accepted=decision.approved, risk_decision=decision)
         if not decision.approved:
+            outcome = SignalOutcome(signal=signal, accepted=False, risk_decision=decision)
             return outcome, None
 
         intent = decision.to_trade_intent()
         side = PositionSide.LONG if signal.direction is SignalDirection.LONG else PositionSide.SHORT
+        order_side = OrderSide.BUY if side is PositionSide.LONG else OrderSide.SELL
+        order = Order(
+            symbol=symbol,
+            side=order_side,
+            quantity=intent.quantity,
+            signal_id=signal.id,
+            timestamp=signal.timestamp,
+        )
+        execution_outcome = self._execution_model.simulate(order, symbol_candles)
+        unaffordable_reason = self._unaffordable_reason(portfolio, execution_outcome)
+        reason = execution_outcome.reason or unaffordable_reason
+        if reason is not None:
+            outcome = SignalOutcome(
+                signal=signal,
+                accepted=False,
+                risk_decision=decision,
+                execution_unavailable_reason=reason,
+            )
+            return outcome, None
+
+        fill = execution_outcome.fill
         signed_quantity = intent.quantity if side is PositionSide.LONG else -intent.quantity
         portfolio.open_position(
             symbol=symbol,
             side=side,
             quantity=signed_quantity,
-            entry_price=price,
+            entry_price=fill.fill_price,
             entry_timestamp=signal.timestamp,
             entry_signal_id=signal.id,
             stop_price=stop_result.stop_price,
+            fee=fill.fee,
         )
+        outcome = SignalOutcome(signal=signal, accepted=True, risk_decision=decision)
         open_trades[symbol] = {
             "entry_time": signal.timestamp,
-            "entry_price": price,
+            "entry_price": fill.reference_price,
+            "entry_fill_price": fill.fill_price,
+            "entry_fee": fill.fee,
             "direction": 1 if side is PositionSide.LONG else -1,
             "entry_signal_id": signal.id,
             "quantity": intent.quantity,
         }
         return outcome, None
+
+    def _unaffordable_reason(
+        self, portfolio: Portfolio, execution_outcome: ExecutionOutcome
+    ) -> str | None:
+        """`INSUFFICIENT_CASH_FOR_FEE` when a genuinely filled order's
+        real cash effect (price plus fee, Sprint 12 spec, section 21)
+        would drive `portfolio.cash` negative -- `None` otherwise
+        (including when `execution_outcome` itself didn't fill at all;
+        that case is already `NO_EXECUTION_BAR`, handled by the caller).
+        Checked here rather than inside `Portfolio.open_position()`/
+        `close_position()` so an unaffordable fill becomes an ordinary,
+        auditable rejected `SignalOutcome` instead of a raised
+        exception -- Execution reports what it could not do the same
+        structured way Risk and the stop policy already do, rather than
+        crashing the run (Sprint 12 spec, section 21: "make this
+        explicit rather than silently letting cash go negative")."""
+        if not execution_outcome.filled:
+            return None
+        if portfolio.cash + execution_outcome.fill.cash_delta < 0:
+            return INSUFFICIENT_CASH_FOR_FEE
+        return None
 
     def _mark_to_market(
         self,
@@ -378,6 +470,15 @@ class PortfolioBacktestEngine:
                     entry_signal_id=open_trade["entry_signal_id"],
                     exit_signal_id=None,
                     quantity=open_trade["quantity"],
+                    entry_fill_price=open_trade["entry_fill_price"],
+                    # No real exit fill ever occurred -- this is a
+                    # reporting-only synthesis at the final candle's raw
+                    # close (unchanged from Sprint 11), not a simulated
+                    # execution, so there is no exit fill price or fee
+                    # to report (Sprint 12, DECISIONS.md ADR-0045).
+                    exit_fill_price=None,
+                    entry_fee=open_trade["entry_fee"],
+                    exit_fee=0.0,
                 )
             )
         return trades

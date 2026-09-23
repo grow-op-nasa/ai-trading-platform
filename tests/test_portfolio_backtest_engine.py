@@ -18,6 +18,14 @@ import pytest
 
 from src.backtesting.config import BacktestConfig, RiskMode
 from src.backtesting.engine import Backtester
+from src.backtesting.execution_model import (
+    INSUFFICIENT_CASH_FOR_FEE,
+    NO_EXECUTION_BAR,
+    ExecutionConfig,
+    ExecutionTiming,
+    PercentageFeeModel,
+    PercentageSlippageModel,
+)
 from src.backtesting.risk_audit import summarize_outcomes
 from src.backtesting.stop_policy import ATRStopPolicy
 from src.risk.models import PortfolioRiskLimits, RejectionReason, RiskLimits
@@ -76,6 +84,27 @@ def wide_config(**overrides) -> BacktestConfig:
         stop_policy=ATRStopPolicy(period=3, multiple=1.0),
         risk_limits=RiskLimits(allocation_per_trade_pct=1.0, max_portfolio_exposure_pct=1.0),
         portfolio_risk_limits=PortfolioRiskLimits(risk_pct_per_trade=0.5),
+    )
+    defaults.update(overrides)
+    return BacktestConfig(**defaults)
+
+
+def cost_aware_config(**overrides) -> BacktestConfig:
+    # Sprint 12: a `wide_config()`-style helper for tests that pair
+    # VOLATILE_CLOSES with NEXT_BAR_OPEN timing. VOLATILE_CLOSES'
+    # bar-to-bar swings *grow* over the series (by design, to keep
+    # ATR(3) comfortably warm throughout) -- `wide_config()`'s
+    # essentially-unconstrained allocation (`allocation_per_trade_pct=
+    # 1.0`, `risk_pct_per_trade=0.5`) sizes a quantity that is genuinely
+    # unaffordable once NEXT_BAR_OPEN moves the actual fill price by a
+    # double-digit swing from the signal bar's own close. This keeps
+    # ample cash headroom so what's under test is the execution-cost
+    # mechanics, not an incidental capital-affordability rejection.
+    defaults = dict(
+        initial_cash=100_000.0,
+        stop_policy=ATRStopPolicy(period=3, multiple=1.0),
+        risk_limits=RiskLimits(allocation_per_trade_pct=0.3, max_portfolio_exposure_pct=1.0),
+        portfolio_risk_limits=PortfolioRiskLimits(risk_pct_per_trade=0.05),
     )
     defaults.update(overrides)
     return BacktestConfig(**defaults)
@@ -714,3 +743,325 @@ def test_timeframe_agnostic_hourly_candles_run_the_same_architecture():
     assert len(result.trades) == 1
     assert result.trades[0].quantity is not None
     assert isinstance(result.metrics, dict)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 12 (DECISIONS.md, ADR-0045): execution realism -- timing, slippage,
+# fees, and their propagation through Portfolio/Trade/Analytics.
+# ---------------------------------------------------------------------------
+
+
+def test_default_execution_config_is_backward_compatible_zero_cost_baseline():
+    candles_a = make_candles(VOLATILE_CLOSES)
+    candles_b = make_candles(VOLATILE_CLOSES)
+    entry_a = sig(candles_a.index[10], SignalDirection.LONG, "AAPL")
+    entry_b = sig(candles_b.index[10], SignalDirection.LONG, "AAPL")
+
+    default_result = Backtester().run_portfolio(
+        {"AAPL": ScriptedStrategy([entry_a])}, {"AAPL": candles_a}, wide_config()
+    )
+    explicit_zero_cost_config = wide_config(execution_config=ExecutionConfig())
+    explicit_result = Backtester().run_portfolio(
+        {"AAPL": ScriptedStrategy([entry_b])}, {"AAPL": candles_b}, explicit_zero_cost_config
+    )
+
+    assert default_result.trades[0].entry_price == pytest.approx(explicit_result.trades[0].entry_price)
+    assert default_result.trades[0].quantity == pytest.approx(explicit_result.trades[0].quantity)
+    assert default_result.trades[0].entry_fill_price == pytest.approx(
+        explicit_result.trades[0].entry_fill_price
+    )
+    # Zero-cost: fill price equals the frictionless reference price exactly.
+    assert default_result.trades[0].entry_fill_price == pytest.approx(default_result.trades[0].entry_price)
+
+
+def test_execution_cost_aware_config_distinguishes_reference_from_fill_price():
+    candles = make_candles(VOLATILE_CLOSES)
+    entry = sig(candles.index[10], SignalDirection.LONG, "AAPL")
+    flat = sig(candles.index[15], SignalDirection.FLAT, "AAPL")
+    strategy = ScriptedStrategy([entry, flat])
+    execution_config = ExecutionConfig(
+        timing=ExecutionTiming.NEXT_BAR_OPEN,
+        slippage_model=PercentageSlippageModel(10.0),
+        fee_model=PercentageFeeModel(fee_bps=5.0, fixed_fee=1.0),
+    )
+    config = cost_aware_config(execution_config=execution_config)
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, config)
+
+    trade = result.trades[0]
+    assert trade.entry_fill_price is not None
+    assert trade.exit_fill_price is not None
+    # Buy slippage makes the entry fill worse (higher) than the reference.
+    assert trade.entry_fill_price > trade.entry_price
+    # Sell slippage makes the exit fill worse (lower) than the reference.
+    assert trade.exit_fill_price < trade.exit_price
+    assert trade.entry_fee > 0
+    assert trade.exit_fee > 0
+
+
+def test_execution_cost_aware_run_preserves_the_quantity_invariant():
+    candles = make_candles(VOLATILE_CLOSES)
+    entry = sig(candles.index[10], SignalDirection.LONG, "AAPL")
+    strategy = ScriptedStrategy([entry])
+    execution_config = ExecutionConfig(
+        timing=ExecutionTiming.NEXT_BAR_OPEN,
+        slippage_model=PercentageSlippageModel(15.0),
+        fee_model=PercentageFeeModel(fee_bps=5.0),
+    )
+    config = cost_aware_config(execution_config=execution_config)
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, config)
+
+    outcome = next(o for o in result.signal_outcomes if o.accepted)
+    trade = result.trades[0]
+    assert trade.quantity == pytest.approx(outcome.risk_decision.final_approved_quantity)
+
+
+def test_slippage_and_fees_never_change_the_approved_quantity_vs_zero_cost():
+    candles_a = make_candles(VOLATILE_CLOSES)
+    candles_b = make_candles(VOLATILE_CLOSES)
+    entry_a = sig(candles_a.index[10], SignalDirection.LONG, "AAPL")
+    entry_b = sig(candles_b.index[10], SignalDirection.LONG, "AAPL")
+
+    baseline_config = cost_aware_config()
+    baseline = Backtester().run_portfolio(
+        {"AAPL": ScriptedStrategy([entry_a])}, {"AAPL": candles_a}, baseline_config
+    )
+    cost_config = cost_aware_config(
+        execution_config=ExecutionConfig(
+            timing=ExecutionTiming.NEXT_BAR_OPEN,
+            slippage_model=PercentageSlippageModel(20.0),
+            fee_model=PercentageFeeModel(fee_bps=10.0),
+        )
+    )
+    cost_result = Backtester().run_portfolio(
+        {"AAPL": ScriptedStrategy([entry_b])}, {"AAPL": candles_b}, cost_config
+    )
+
+    assert baseline.trades[0].quantity == pytest.approx(cost_result.trades[0].quantity)
+
+
+def test_portfolio_cash_reflects_actual_fees_on_entry_and_exit():
+    candles = make_candles(VOLATILE_CLOSES)
+    entry = sig(candles.index[10], SignalDirection.LONG, "AAPL")
+    flat = sig(candles.index[15], SignalDirection.FLAT, "AAPL")
+    strategy = ScriptedStrategy([entry, flat])
+    execution_config = ExecutionConfig(fee_model=PercentageFeeModel(fee_bps=10.0))
+    config = cost_aware_config(initial_cash=100_000.0, execution_config=execution_config)
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, config)
+
+    trade = result.trades[0]
+    assert trade.entry_fee > 0
+    assert trade.exit_fee > 0
+    expected_cash = (
+        100_000.0
+        - trade.quantity * trade.entry_fill_price
+        - trade.entry_fee
+        + trade.quantity * trade.exit_fill_price
+        - trade.exit_fee
+    )
+    assert result.final_portfolio.cash == pytest.approx(expected_cash)
+
+
+def test_realized_pnl_gross_vs_net_are_distinguishable_and_never_double_counted():
+    candles = make_candles(VOLATILE_CLOSES)
+    entry = sig(candles.index[10], SignalDirection.LONG, "AAPL")
+    flat = sig(candles.index[15], SignalDirection.FLAT, "AAPL")
+    strategy = ScriptedStrategy([entry, flat])
+    execution_config = ExecutionConfig(
+        slippage_model=PercentageSlippageModel(10.0),
+        fee_model=PercentageFeeModel(fee_bps=5.0, fixed_fee=1.0),
+    )
+    config = cost_aware_config(execution_config=execution_config)
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, config)
+
+    trade = result.trades[0]
+    assert trade.gross_pnl is not None
+    assert trade.net_pnl is not None
+    # Positive costs only ever reduce net relative to gross.
+    assert trade.net_pnl < trade.gross_pnl
+    fill_pnl = trade.quantity * trade.direction * (trade.exit_fill_price - trade.entry_fill_price)
+    expected_net = fill_pnl - trade.total_fees
+    assert trade.net_pnl == pytest.approx(expected_net)
+    # entry_price/exit_price (the frictionless reference) are never mutated
+    # to incorporate costs.
+    assert trade.entry_price != trade.entry_fill_price
+    assert trade.exit_price != trade.exit_fill_price
+
+
+def test_total_fees_across_multiple_trades_equals_sum_of_individual_fees():
+    candles = make_candles(VOLATILE_CLOSES)
+    entry1 = sig(candles.index[3], SignalDirection.LONG, "AAPL")
+    flat1 = sig(candles.index[8], SignalDirection.FLAT, "AAPL")
+    entry2 = sig(candles.index[9], SignalDirection.LONG, "AAPL")
+    flat2 = sig(candles.index[14], SignalDirection.FLAT, "AAPL")
+    strategy = ScriptedStrategy([entry1, flat1, entry2, flat2])
+    execution_config = ExecutionConfig(fee_model=PercentageFeeModel(fee_bps=5.0))
+    config = wide_config(
+        risk_limits=RiskLimits(allocation_per_trade_pct=1.0, max_portfolio_exposure_pct=1.0),
+        portfolio_risk_limits=PortfolioRiskLimits(risk_pct_per_trade=0.02),
+        execution_config=execution_config,
+    )
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, config)
+
+    assert len(result.trades) == 2
+    from src.analytics.metrics import total_fees_dollars
+
+    total = sum(t.total_fees for t in result.trades)
+    metric = total_fees_dollars(result.trades)
+    assert metric.value == pytest.approx(total)
+    assert total > 0
+
+
+def test_execution_cost_aware_run_is_fully_reproducible():
+    def build():
+        candles = make_candles(VOLATILE_CLOSES)
+        entry = sig(candles.index[10], SignalDirection.LONG, "AAPL")
+        flat = sig(candles.index[15], SignalDirection.FLAT, "AAPL")
+        return ScriptedStrategy([entry, flat]), candles
+
+    execution_config = ExecutionConfig(
+        timing=ExecutionTiming.NEXT_BAR_OPEN,
+        slippage_model=PercentageSlippageModel(8.0),
+        fee_model=PercentageFeeModel(fee_bps=3.0),
+    )
+    config = wide_config(execution_config=execution_config)
+
+    strategy1, candles1 = build()
+    strategy2, candles2 = build()
+    result1 = Backtester().run_portfolio({"AAPL": strategy1}, {"AAPL": candles1}, config)
+    result2 = Backtester().run_portfolio({"AAPL": strategy2}, {"AAPL": candles2}, config)
+
+    def econ(trades):
+        return [
+            (t.entry_fill_price, t.exit_fill_price, t.entry_fee, t.exit_fee, t.net_pnl)
+            for t in trades
+        ]
+
+    assert econ(result1.trades) == econ(result2.trades)
+    pd.testing.assert_series_equal(result1.equity_curve, result2.equity_curve)
+
+
+def test_next_bar_open_signal_on_the_final_bar_reports_execution_unavailable():
+    candles = make_candles(VOLATILE_CLOSES)
+    entry = sig(candles.index[-1], SignalDirection.LONG, "AAPL")
+    strategy = ScriptedStrategy([entry])
+    execution_config = ExecutionConfig(timing=ExecutionTiming.NEXT_BAR_OPEN)
+    config = wide_config(execution_config=execution_config)
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, config)
+
+    assert result.trades == []
+    outcome = result.signal_outcomes[0]
+    assert outcome.accepted is False
+    assert outcome.risk_decision is not None
+    assert outcome.risk_decision.approved is True
+    assert outcome.execution_unavailable_reason == NO_EXECUTION_BAR
+    assert outcome.rejection_reason == NO_EXECUTION_BAR
+
+
+def test_execution_rejected_when_a_fee_makes_the_fill_unaffordable():
+    candles = make_candles(VOLATILE_CLOSES)
+    entry = sig(candles.index[10], SignalDirection.LONG, "AAPL")
+    strategy = ScriptedStrategy([entry])
+    execution_config = ExecutionConfig(fee_model=PercentageFeeModel(fee_bps=0.0, fixed_fee=1_000_000.0))
+    config = wide_config(initial_cash=100_000.0, execution_config=execution_config)
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, config)
+
+    assert result.trades == []
+    outcome = result.signal_outcomes[0]
+    assert outcome.accepted is False
+    assert outcome.execution_unavailable_reason == INSUFFICIENT_CASH_FOR_FEE
+    assert outcome.rejection_reason == INSUFFICIENT_CASH_FOR_FEE
+    # Cash must never have gone negative -- the trade was rejected, not
+    # silently applied.
+    assert result.final_portfolio.cash == pytest.approx(100_000.0)
+
+
+def test_next_bar_open_across_a_weekend_uses_the_next_trading_session():
+    dates = pd.bdate_range("2024-01-04", periods=6)  # Thu, Fri, Mon, Tue, Wed, Thu
+    closes = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+    candles = pd.DataFrame(
+        {
+            "open": closes,
+            "high": [c + 0.5 for c in closes],
+            "low": [c - 0.5 for c in closes],
+            "close": closes,
+            "volume": [1000.0] * len(closes),
+        },
+        index=dates,
+    )
+    friday_ts = candles.index[1]
+    monday_ts = candles.index[2]
+    assert friday_ts.day_name() == "Friday"
+    assert monday_ts.day_name() == "Monday"
+    entry = sig(friday_ts, SignalDirection.LONG, "AAPL")
+    strategy = ScriptedStrategy([entry])
+    config = BacktestConfig(
+        initial_cash=100_000.0,
+        stop_policy=ATRStopPolicy(period=1, multiple=1.0),
+        risk_limits=RiskLimits(allocation_per_trade_pct=0.3, max_portfolio_exposure_pct=1.0),
+        portfolio_risk_limits=PortfolioRiskLimits(risk_pct_per_trade=0.05),
+        execution_config=ExecutionConfig(timing=ExecutionTiming.NEXT_BAR_OPEN),
+    )
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, config)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    # The next bar used is Monday's -- never a naive "next calendar day"
+    # (which would be Saturday, not present in this dataset at all).
+    assert trade.entry_fill_price == pytest.approx(float(candles.loc[monday_ts, "open"]))
+
+
+def test_gross_baseline_exceeds_net_with_positive_execution_costs_on_a_profitable_trade():
+    closes = [100.0] * 5 + [130.0] * 10
+    candles = make_candles(closes)
+    entry = sig(candles.index[2], SignalDirection.LONG, "AAPL")
+    flat = sig(candles.index[-2], SignalDirection.FLAT, "AAPL")
+    strategy = ScriptedStrategy([entry, flat])
+    cost_config = cost_aware_config(
+        execution_config=ExecutionConfig(
+            slippage_model=PercentageSlippageModel(20.0),
+            fee_model=PercentageFeeModel(fee_bps=10.0, fixed_fee=2.0),
+        )
+    )
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, cost_config)
+
+    trade = result.trades[0]
+    assert trade.gross_pnl > 0
+    assert trade.total_fees > 0
+    assert trade.slippage_cost > 0
+    assert trade.net_pnl < trade.gross_pnl
+    assert trade.net_pnl == pytest.approx(trade.gross_pnl - trade.slippage_cost - trade.total_fees)
+
+
+def test_synthesized_closing_trade_has_no_exit_fill_since_no_fill_occurred():
+    candles = make_candles(VOLATILE_CLOSES)
+    entry = sig(candles.index[10], SignalDirection.LONG, "AAPL")
+    strategy = ScriptedStrategy([entry])  # no closing FLAT signal
+    execution_config = ExecutionConfig(fee_model=PercentageFeeModel(fee_bps=5.0))
+    config = wide_config(execution_config=execution_config)
+
+    result = Backtester().run_portfolio({"AAPL": strategy}, {"AAPL": candles}, config)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.exit_signal_id is None
+    assert trade.entry_fill_price is not None
+    assert trade.entry_fee > 0
+    assert trade.exit_fill_price is None
+    assert trade.exit_fee == 0.0
+    # No exit fill was ever produced (the position is still genuinely
+    # open) -- slippage_cost can't be computed from only one leg.
+    assert trade.slippage_cost is None
+    # gross_pnl is still defined (quantity + the reference entry/exit
+    # prices are both known) -- net_pnl degrades to treating the
+    # untracked slippage_cost as 0.0, never to None.
+    assert trade.gross_pnl is not None
+    assert trade.net_pnl == pytest.approx(trade.gross_pnl - trade.entry_fee)

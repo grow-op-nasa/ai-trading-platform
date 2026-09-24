@@ -11,6 +11,109 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 14 -- 2026-09-24, AI Strategy Development Agent
+
+An agent that can write, test, and iterate on new candidate trading
+strategies -- but never promote one into production, mutate the
+`StrategyRegistry`, or trade. See `DECISIONS.md`, ADR-0047 for the full
+design.
+
+### Added
+
+- `src/ai/agents/strategy_dev/` (new package) -- `models.py`
+  (`CandidateStrategy`, `CandidateStrategySpec`, `CandidateEvaluation`,
+  `CandidateStrategyStatus`, `DevAgentRun`, `DevResearchReport`),
+  `workspace.py` (`CandidateWorkspace`, `CandidateRegistry`, the
+  lifecycle state machine and its two independent test-set-lock/
+  immutability enforcement points, `InvalidTransitionError`,
+  `CandidateImmutableError`, `sha256_text`), `safety.py` (the static AST
+  safety validator -- import allowlist, dynamic-execution denial,
+  sandbox-escape-gadget denial, self-registration denial, class-shape
+  checks, `validate_candidate_source()`), `runner.py` + `_harness.py`
+  (the isolated subprocess execution boundary -- sanitized environment,
+  hard timeout, `RunnerResult`, `PrecomputedSignalStrategy`),
+  `policy.py` (`StrategyDevelopmentAgentPolicy` -- code-enforced
+  budgets, every dangerous capability hard-denied), `tools.py` (the
+  fourteen-tool candidate surface: create/inspect/revise/validate/test/
+  freeze/compare/report tools, no filesystem/shell tool, no tool
+  wrapping `CandidateRegistry.promote()`), `dev_agent.py`
+  (`StrategyDevelopmentAgent` -- the bounded create -> validate -> test
+  -> freeze -> final-test -> report loop).
+- `src/cli/strategy_dev.py` -- `python -m src.cli strategy-dev --goal
+  "..."` entry point.
+- `src/cli/strategy_promote.py` -- `python -m src.cli strategy-promote
+  --candidate-id ...`, the human-only promotion CLI. Prints full
+  candidate evidence, requires interactive `y/N` confirmation (or
+  `--yes`), refuses unless status is `REVIEW_REQUIRED` with a recorded
+  final-test evaluation. Never imported by, or reachable from, agent
+  code; only marks the candidate `PROMOTED` in the candidate registry
+  -- does not touch `StrategyRegistry`, deploy anything, or trade.
+- `src/cli/__main__.py` -- `strategy-dev`/`strategy-promote` wired into
+  `ARGV_COMMANDS` via lazy per-command import closures (so importing
+  either command doesn't force the other's, or `research-agent`'s,
+  dependency chain to load).
+- Tests: `tests/test_strategy_dev_tools.py` (37, tool-layer contract
+  enforcement), `tests/test_strategy_dev_agent_loop.py` (12, full
+  fake-provider agent-loop scenarios including budget exhaustion and
+  post-freeze immutability), `tests/test_strategy_dev_workspace.py`
+  (29, lifecycle state machine + storage-layer test-set lock, zero
+  heavy dependencies), `tests/test_strategy_dev_safety.py` (47,
+  representative bypass attempts across every static-validator
+  category), `tests/test_strategy_dev_runner.py` (19, harness contract
+  in-process plus real-subprocess proof of environment sanitization,
+  timeout enforcement, and safe failure reporting), plus 21 new
+  `tests/test_architecture.py` boundary tests (no broker/execution/
+  portfolio/risk/dashboard/cli import from the agent package, promotion
+  CLI unreachable from agent code, no tool wraps `.promote()`,
+  `StrategyRegistry` has zero dependency on the agent, Backtester has
+  no candidate-specific branch, safety allowlist never includes a
+  forbidden platform package, subprocess/eval/exec/importlib usage
+  confined to exactly the sanctioned modules).
+
+### Fixed
+
+- `src/ai/agents/strategy_dev/__init__.py` eagerly imported every
+  submodule, so importing anything from the package -- including from
+  the promotion CLI, which never touches `ResearchTrialService`/
+  `ModelRegistry` -- forced the full `ModelRegistry -> joblib` chain to
+  load regardless. Replaced with PEP 562 lazy `__getattr__`/`__dir__`
+  resolving each public name to its owning module only on first access.
+- `src/cli/__main__.py` still eagerly imported `strategy_dev.py` at
+  module load time regardless of which command was invoked, even after
+  the `__init__.py` fix above. Replaced with per-command lazy-import
+  wrapper closures in `ARGV_COMMANDS` (`doctor`/`research-agent`
+  unaffected).
+
+### Not changed
+
+- `src/backtesting/engine.py`/`src/backtesting/portfolio_engine.py` --
+  untouched; no `if strategy is CandidateStrategy` branch anywhere
+  (`PrecomputedSignalStrategy` is an ordinary `Strategy` from the
+  engine's point of view).
+- `src/strategies/registry.py` (`StrategyRegistry`) -- untouched, and
+  has no dependency on `src.ai.agents.strategy_dev` in either
+  direction.
+- `src/research/trial_service.py` (`ResearchTrialService`) -- reused
+  unmodified by the candidate backtest tools, exactly as Sprint 13
+  built it.
+
+### Verified
+
+- Sandbox (network-free, `joblib`/`scikit-learn`/`streamlit`
+  uninstalled): **1008 passed, 2 failed, 17 skipped.** The 2 failures
+  are the same environment-only failures every sprint since Sprint 7
+  has carried forward unchanged, in files this sprint never touched.
+  Of the 17 skips, 15 are pre-existing sklearn/joblib/streamlit-gated
+  modules carried forward from prior sprints; 2 are this sprint's own
+  joblib-gated additions (`test_strategy_dev_tools.py`,
+  `test_strategy_dev_agent_loop.py`), expected to run and pass for real
+  once `joblib`/`scikit-learn` are installed.
+- Real `pytest` on the dev machine: pending, handed off to the
+  operator, per the established Sprint 10-13 convention.
+- Real-provider smoke test (`python -m src.cli strategy-dev --goal
+  "..."` against the live Anthropic API): pending, handed off to the
+  operator.
+
 ## Sprint 13 -- 2026-09-24, AI Research Agent
 
 The platform's first genuine agentic loop: a tool-using LLM that

@@ -1,6 +1,29 @@
 # Project State
 
-_Last updated: 2026-09-24 -- **Sprint 13 (AI Research Agent) is
+_Last updated: 2026-09-24 -- **Sprint 14 (AI Strategy Development
+Agent) is implemented and sandbox-confirmed: 1008 passed, 2 known
+environment-only failures, 17 skipped** (network-free; the two
+`joblib`-gated new test files skipped, same established convention as
+every sklearn/joblib/streamlit-gated module already in this suite).
+Real `pytest` on the dev machine and a real-provider smoke test
+(`python -m src.cli strategy-dev --goal "..."`) are pending, handed off
+to the operator per the established Sprint 10-13 convention -- see
+"Next Task" below. `src.ai.agents.strategy_dev.dev_agent.
+StrategyDevelopmentAgent` can create, statically validate, backtest,
+revise, and freeze a candidate strategy, and run its one-shot final
+out-of-sample test -- but it structurally cannot promote a candidate,
+touch the production `StrategyRegistry`, or trade: a candidate lives in
+its own quarantined namespace (`CandidateStrategy`/`CandidateRegistry`,
+never `Strategy`/`StrategyRegistry`), its source only ever executes
+inside an isolated, timeout-bounded subprocess after passing a static
+AST safety validator (no filesystem/network/subprocess/dynamic-exec
+imports, no sandbox-escape gadgets, no self-registration), and
+promotion is a separate, human-only CLI
+(`python -m src.cli strategy-promote`) with no incoming import edge
+from agent code at all. See `DECISIONS.md`, ADR-0047 for the complete
+design.
+
+_Previously: Sprint 13 (AI Research Agent) is
 implemented and confirmed via real `pytest` on the dev machine: 1017
 passed, 0 failed** (4.82s). The sandbox's own run (897 passed, 2 known
 environment-only failures, 13 skipped) was strictly improved on, as
@@ -14,8 +37,7 @@ re-confirmed (see `DECISIONS.md`, ADR-0046). Both commits (`eea2ccf`,
 the implementation, and `83e60b9`, the test fix) are pushed to
 `origin/main`. The manual real-provider smoke test has also been run
 against the live Anthropic API and confirmed genuine, budget-respecting
-tool-selection behavior -- see "Next Task" below for the full account.
-Sprint 13 is fully closed out. The platform's first
+tool-selection behavior. Sprint 13 is fully closed out. The platform's first
 genuine agentic loop now exists: `src.ai.agents.agent.ResearchAgent`
 takes a research goal, reasons over existing platform evidence
 (experiments, analytics, strategies, trained models) via a small,
@@ -925,7 +947,51 @@ For why things were built the way they were, see `DECISIONS.md`.
 
 ## Current Module
 
-**Sprint 13 (AI Research Agent) is implemented and sandbox-confirmed:
+**Sprint 14 (AI Strategy Development Agent) is implemented and
+sandbox-confirmed: 1008 passed, 2 known environment-only failures, 17
+skipped** (network-free; only the two test files that transitively
+import `ModelRegistry` -- `test_strategy_dev_tools.py`,
+`test_strategy_dev_agent_loop.py` -- are `joblib`-gated;
+`workspace.py`/`models.py`/`safety.py`/`runner.py`/`_harness.py` have
+zero heavy dependencies and run for real here). The safety principle
+this sprint had to hold even against adversarial candidate code: an AI
+may CREATE/TEST/ITERATE/REPORT on a strategy candidate; it may never
+PROMOTE it, MODIFY the production registry, or trade. That's enforced
+at several independent layers, not one: (1) candidates live in their
+own `CandidateStrategy`/`CandidateRegistry` (`src.ai.agents.
+strategy_dev.workspace`), never `Strategy`/`StrategyRegistry` --
+`src/strategies/registry.py` has zero dependency on this package,
+confirmed by an architecture test; (2) candidate source is statically
+validated (`safety.validate_candidate_source()`) against an exact-match
+import allowlist before it is ever executed, rejecting any
+filesystem/network/subprocess/dynamic-exec import, sandbox-escape
+gadget access, or self-registration attempt, with every violation
+reported together; (3) validated code executes only inside an isolated,
+timeout-bounded subprocess (`runner.run_candidate()` +
+`_harness.py`) with a sanitized, secret-free environment -- proven via
+a real subprocess in `tests/test_strategy_dev_runner.py` to never
+expose a parent-process secret, to actually kill a pathological
+candidate near its timeout, and to safely report a runtime network
+attempt as a structured error rather than crashing; (4) the test-set
+lock (a candidate's held-out final backtest may run exactly once) is
+enforced independently at both the tool layer
+(`RunCandidateBacktestTool`) and the storage layer
+(`CandidateRegistry.record_evaluation`), so a bug in either alone can't
+violate it; (5) `StrategyDevelopmentAgentPolicy` hard-denies every
+dangerous capability and enforces `max_candidates`/
+`max_candidate_revisions`/`max_validation_backtests`/
+`max_final_test_evaluations`/`max_steps` budgets in code; and (6)
+promotion is a completely separate, human-only CLI
+(`src/cli/strategy_promote.py`) with no tool anywhere in the agent's
+14-tool surface calling `CandidateRegistry.promote()`, and no import
+edge from agent code to the promotion CLI at all -- confirmed
+structurally by architecture tests, not merely policy-denied.
+`PrecomputedSignalStrategy` keeps `PortfolioBacktestEngine` completely
+ignorant that candidates exist -- no `if strategy is CandidateStrategy`
+branch anywhere in `src/backtesting/`. See `DECISIONS.md`, ADR-0047 for
+the complete design and reasoning.
+
+_Previously: Sprint 13 (AI Research Agent) is implemented and sandbox-confirmed:
 897 passed, 2 known environment-only failures, 13 skipped** (network-
 free; `FakeLLMProvider` only; 7 of the 13 skips are this sprint's own
 `joblib`-gated test files, following the exact convention every
@@ -1337,7 +1403,30 @@ yfinance API; pre-market/after-hours session support is reserved
 
 ## Next Task
 
-**Sprint 13 (AI Research Agent) is fully closed out.** Confirmed via
+**Sprint 14 (AI Strategy Development Agent) is implementation-complete
+and sandbox-confirmed (1008 passed, 2 known environment-only failures,
+17 skipped); two steps remain, both requiring the real dev machine:**
+
+1. A real `pytest` run confirming the two `joblib`-gated new test files
+   (`tests/test_strategy_dev_tools.py`,
+   `tests/test_strategy_dev_agent_loop.py`) pass for real, exactly as
+   every prior sprint's own joblib/sklearn-gated tests have. No
+   regressions are expected -- the sandbox already ran 1008 tests
+   (including 165 new ones) with zero failures attributable to this
+   sprint's changes.
+2. A manual real-provider smoke test against the live Anthropic API
+   (`python -m src.cli strategy-dev --goal "..."`), mirroring Sprint
+   13's own smoke test -- confirming the model genuinely creates,
+   iterates on, and freezes a candidate strategy end-to-end (not just
+   against `FakeLLMProvider`), and that a `strategy-promote` dry run
+   against the resulting candidate shows the expected evidence and
+   refuses without explicit confirmation.
+
+Sprint 15+ planning (a Market Monitoring Agent, or a controlled trading
+agent building on a promoted candidate) is open, with no blocking work
+or open implementation question.
+
+_Previously: Sprint 13 (AI Research Agent) is fully closed out.** Confirmed via
 real `pytest` on the dev machine (1017 passed, 0 failed, 4.82s, both
 commits `eea2ccf`/`83e60b9` pushed to `origin/main`) *and* via a real
 manual smoke test against the live Anthropic API (run ID

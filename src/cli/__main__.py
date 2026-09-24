@@ -21,12 +21,40 @@ COMMANDS: dict[str, Callable[[], int]] = {
     "doctor": run_doctor,
 }
 
+
+def _run_strategy_dev_agent(argv: list[str]) -> int:
+    # Imported lazily, not at module load time: `src.cli.strategy_dev`
+    # pulls in the full agent/tool stack (`ResearchTrialService` ->
+    # `ModelRegistry` -> `joblib`), which `strategy-promote` and
+    # `doctor` have no business depending on just because they live in
+    # the same `ARGV_COMMANDS` dict.
+    from src.cli.strategy_dev import run_strategy_dev_agent
+
+    return run_strategy_dev_agent(argv)
+
+
+def _run_strategy_promote(argv: list[str]) -> int:
+    # Imported lazily for the same reason, and also so that this
+    # deliberately agent-decoupled, human-only command (Sprint 14,
+    # ADR-0047, sections 92-93) never shares an import path with
+    # anything in `src.ai.agents.strategy_dev.tools`/`dev_agent`.
+    from src.cli.strategy_promote import run_strategy_promote
+
+    return run_strategy_promote(argv)
+
+
 # Commands that take the remaining argv themselves, rather than being
 # zero-argument callables -- kept as a separate mapping so `doctor`'s
 # existing zero-argument contract (and every test against it) is
 # unaffected by this addition.
+#
+# `strategy-promote` (Sprint 14, ADR-0047) is deliberately listed here
+# and nowhere in `src.ai.agents.strategy_dev` -- it is a human-only
+# command, never an agent tool.
 ARGV_COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "research-agent": run_research_agent,
+    "strategy-dev": _run_strategy_dev_agent,
+    "strategy-promote": _run_strategy_promote,
 }
 
 

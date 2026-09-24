@@ -4278,3 +4278,247 @@ than presenting a fabricated conclusion on partial evidence. This
 confirms decision 8 above (`BUDGET_EXHAUSTED` as a distinct, honest
 terminal status) end-to-end against the real provider, not just the
 fake one. Sprint 13 is fully closed out.
+
+
+## ADR-0047: Sprint 14 -- AI Strategy Development Agent
+
+**Status:** Accepted, implementation and sandbox verification complete
+(**1008 passed, 2 failed (pre-existing, environment-only), 17
+skipped**, all skips joblib/sklearn/streamlit-gated and expected to run
+for real on the dev machine). Real-machine `pytest` confirmation and a
+real-provider smoke test are the two remaining steps, handed off to the
+operator per the established Sprint 10-13 convention (sandbox
+verification is necessary but never sufficient, since this sandbox has
+neither `joblib`/`scikit-learn` nor a live Anthropic API key).
+
+**Context:**
+
+Sprint 13's `ResearchAgent` (ADR-0046) can investigate but cannot
+create: its tool surface is read-only plus one historical backtest
+tool, and its policy structurally forbids strategy generation. Sprint
+14 asks for the next capability up the same trust ladder --  an agent
+that can write, test, and iterate on new candidate trading strategies
+of its own design -- while drawing a boundary that must hold even
+against a fully compromised or adversarial LLM, not just a
+well-behaved one: an AI may **CREATE**, **TEST**, **ITERATE**, and
+**REPORT** on a candidate strategy; an AI may never **PROMOTE** it into
+anything the platform would actually trade, **MODIFY** the production
+`StrategyRegistry`, or execute a live order. Sprint 13's policy-object
+pattern (`allow_live_trading` hard-denied) proved the concept for
+"deny an action the model never had a tool for"; Sprint 14 has to prove
+the harder case -- an agent whose entire *job* is to generate and run
+arbitrary Python, where "arbitrary Python" is exactly the thing that
+could otherwise defeat any code-level safety check by construction.
+
+**Decision:**
+
+1. **A parallel, quarantined strategy namespace -- `CandidateStrategy`,
+   never `Strategy` (`src/ai/agents/strategy_dev/models.py`).**
+   Candidate code is never registered in `src.strategies.registry`
+   (the production `StrategyRegistry` used by `Backtester`/`PaperBroker`
+   for anything the platform actually runs unattended) and never
+   becomes an instance the agent can hand directly to
+   `PortfolioBacktestEngine`. Its evidence -- source hash, spec hash,
+   lifecycle status, every stage's `CandidateEvaluation` -- lives in its
+   own `CandidateStrategy` dataclass and its own `CandidateRegistry`
+   (`workspace.py`), a completely separate store from
+   `ExperimentRegistry`. Nothing in `src/strategies/registry.py` gained
+   a single new line for this sprint -- an architecture test
+   (`test_strategy_registry_has_no_dependency_on_the_agent_package`)
+   proves the production registry has zero awareness this package
+   exists.
+
+2. **An explicit, one-directional lifecycle state machine
+   (`CandidateStrategyStatus`), with immutability enforced the moment a
+   candidate is frozen.** `DRAFT -> VALIDATED -> DEV_BACKTESTED ->
+   REVISED (loops back to VALIDATED) -> FROZEN -> OUT_OF_SAMPLE_TESTED
+   -> REVIEW_REQUIRED -> PROMOTED | REJECTED | ABANDONED` (exact edges
+   enumerated once, in `workspace.py`, and proven exhaustively in
+   `tests/test_strategy_dev_workspace.py`: every legal transition
+   succeeds, every illegal target from every state is rejected). Once a
+   candidate reaches `FROZEN`, its source file and every field on its
+   spec become immutable (`CandidateWorkspace.write_source()` refuses to
+   overwrite an existing candidate's source at all, ever, regardless of
+   status) -- freezing exists specifically to give the final,
+   out-of-sample test something the agent cannot have quietly reshaped
+   after seeing how well it did.
+
+3. **The test-set lock is enforced twice, independently, at two
+   different layers -- defense in depth, not a single choke point.**
+   `RunCandidateBacktestTool.execute()` (the tool layer) refuses a
+   `stage="final_test"` call unless the candidate's status is exactly
+   `FROZEN`, and separately refuses if a final-test evaluation already
+   exists. `CandidateRegistry.record_evaluation(stage="final_test", ...)`
+   (the storage layer) raises `CandidateImmutableError` under the same
+   conditions, entirely on its own, with no dependency on the tool
+   having checked anything first. `tests/test_strategy_dev_workspace.py`
+   proves the storage layer holds even if a hypothetical future tool
+   bug (or a bypass of `RunCandidateBacktestTool` entirely) tried to
+   call the registry directly. A held-out test set an agent can query
+   more than once by construction is not a held-out test set; this
+   sprint treats "ran the final test twice, saw the second result, kept
+   iterating" as exactly as serious a violation as "wrote to the
+   production registry," and closes both the same way -- in code, at
+   more than one layer.
+
+4. **A static AST safety validator (`safety.py`) runs before any
+   candidate code ever executes, and only an explicit allowlist of
+   platform modules may be imported.** `validate_candidate_source()`
+   parses (never executes) candidate source and rejects: any import
+   outside `ALLOWED_PLATFORM_MODULES` (an explicit, exact-match set --
+   `src.strategies.sdk`/`src.strategies.base`/`src.signals.models`/
+   `src.indicators.engine` and a short list of stdlib data types, never
+   a prefix match, so `import src.strategies.registry` fails even
+   though the SDK modules are allowed); any relative import; any
+   dynamic-execution construct (`eval`, `exec`, `compile`, `__import__`,
+   `getattr`/`setattr`/`delattr`, `globals`/`locals`/`vars`, `open`,
+   `input`); any sandbox-escape gadget attribute access
+   (`__subclasses__`, `__bases__`, `__mro__`, `__globals__`,
+   `__builtins__`, `__code__`, `__closure__`, `__reduce__`,
+   `__reduce_ex__`, `__dict__`); any attempt to reference or call
+   `register_strategy`/the production registry by name, imported or
+   not; oversized source; and malformed class shape (not exactly one
+   class, missing the required base, multiple inheritance, missing a
+   required method). Violations are collected and reported together,
+   not just the first one found, so a candidate with four simultaneous
+   problems gets told about all four. `tests/test_strategy_dev_safety.py`
+   (47 tests) exercises every one of these categories with a
+   representative bypass attempt, not just the obvious case.
+
+5. **A controlled subprocess runner (`runner.py` + `_harness.py`) is the
+   only place already-validated candidate code actually executes, and
+   it is explicit about being defense-in-depth, not a hardened
+   sandbox.** `run_candidate()` launches `_harness.py` in a fresh
+   subprocess with a sanitized environment (`PATH` + `PYTHONPATH` only
+   -- the parent's environment is replaced, never inherited-and-filtered,
+   so `ANTHROPIC_API_KEY` and everything else the parent process holds
+   is structurally absent from the child), a hard `timeout` (default
+   30s, `subprocess.TimeoutExpired` is caught and reported as
+   `RunnerResult(timed_out=True)`, never left to hang the caller), and
+   candles crossing the process boundary as plain JSON records, never
+   pickle. `_harness.py` catches every exception from candidate code and
+   reports `f"{type(exc).__name__}: {exc}"`, never propagating a raw
+   traceback or crashing. This is combined with, not a substitute for,
+   decision 4's static checks -- the module's own docstring is explicit
+   that the subprocess still shares the host's filesystem and network
+   stack, so real containment comes from candidate code never
+   containing a network/filesystem/subprocess-capable import in the
+   first place. `tests/test_strategy_dev_runner.py` proves both halves
+   independently: the harness's own parsing/error-reporting contract
+   in-process, and, through a real subprocess, that the sanitized
+   environment genuinely never exposes a parent secret, that a
+   pathological (sleeping) candidate is actually killed near the
+   requested timeout rather than hanging, and that a candidate
+   attempting a network call to a non-routable address fails closed and
+   is reported as a structured error rather than crashing the harness.
+
+6. **`PrecomputedSignalStrategy` keeps the Backtester ignorant of
+   candidates entirely (Sprint 14 spec: "do not add `if strategy is
+   CandidateStrategy` inside core Backtester logic").** A candidate's
+   `prepare()`/`generate_signals()` run once, safely, inside the
+   isolated subprocess; by the time a backtest actually happens,
+   `PrecomputedSignalStrategy` wraps the already-produced, plain
+   `list[Signal]` as an ordinary `Strategy` (satisfying the same
+   `Protocol` any hand-written strategy does) and hands it to
+   `PortfolioBacktestEngine.run_portfolio()` completely unmodified.
+   `tests/test_architecture.py::test_backtester_has_no_candidate_specific_branch`
+   greps `engine.py`/`portfolio_engine.py` for any of `CandidateStrategy`,
+   `PrecomputedSignalStrategy`, `strategy_dev`, or `src.ai.agents` and
+   asserts none appear -- the core backtesting engine that every prior
+   sprint built and tested is provably untouched by this one.
+
+7. **`StrategyDevelopmentAgentPolicy` hard-denies every dangerous
+   capability, the same pattern Sprint 13 established.** No tool in
+   this sprint's fourteen-tool surface can submit a live order, mutate
+   a production portfolio, write to `StrategyRegistry`, or call
+   `CandidateRegistry.promote()` -- promotion is not merely
+   policy-denied, it is a method the agent's own tool surface has no
+   path to reach at all (`tests/test_strategy_dev_tools.py::
+   test_no_tool_wraps_candidate_registry_promote` checks the literal
+   absence of `.promote(` in `tools.py`). Budgets (`max_candidates`,
+   `max_candidate_revisions`, `max_validation_backtests`,
+   `max_final_test_evaluations`, `max_steps`) are enforced by
+   `StrategyDevelopmentAgent._loop()` itself, exactly as Sprint 13's
+   `max_steps`/`max_backtests` were -- never left to the model's own
+   restraint.
+
+8. **Promotion is a separate, human-only CLI
+   (`src/cli/strategy_promote.py`), structurally unreachable from agent
+   code.** `strategy-promote` prints full evidence (status, hashes,
+   every stage's evaluation, agent run provenance, optional full
+   source) and requires an interactive `y/N` confirmation (or explicit
+   `--yes`) before calling `CandidateRegistry.promote()` -- and refuses
+   outright unless the candidate's status is `REVIEW_REQUIRED` with a
+   recorded final-test evaluation. Promoting only marks the candidate
+   `PROMOTED` in the candidate registry; it does not touch
+   `StrategyRegistry`, deploy anything, or place a trade -- turning a
+   promoted candidate into something the platform actually runs remains
+   a deliberate, separate, human action outside this sprint's scope,
+   exactly as this sprint's safety principle requires.
+   `tests/test_architecture.py::
+   test_strategy_promote_is_never_imported_by_the_agent_package` proves
+   `strategy_promote.py` has no incoming edge from `src.ai.agents.
+   strategy_dev` anywhere in the source tree.
+
+9. **Lazy attribute resolution (PEP 562) keeps the human-only
+   promotion path free of the agent's heavy ML dependency chain.**
+   `src/ai/agents/strategy_dev/__init__.py`'s eager imports were
+   replaced with a `__getattr__`/`__dir__` pair resolving each public
+   name to its owning module only on first access; `src/cli/__main__.py`
+   similarly defers `strategy_dev.py`/`strategy_promote.py`'s own
+   imports into per-command closures. Before this fix, importing
+   anything from `strategy_dev` -- including from the promotion CLI,
+   which never touches `ResearchTrialService` or `ModelRegistry` --
+   forced the full `ModelRegistry -> joblib` chain to load regardless.
+   After: `strategy-promote` runs and works with neither `joblib` nor
+   `scikit-learn` installed, which this sandbox's own testing (`atp
+   strategy-promote` exercised end-to-end here, `joblib`-free) directly
+   demonstrates -- the human approval path has no reason to depend on
+   whichever ML library the candidate's own tooling happens to use.
+
+**Non-goals (explicitly deferred, per the Sprint 14 spec):** automated
+promotion or deployment of any kind, live or paper trading by a
+candidate, portfolio or risk-config mutation by the agent, a second
+"critic" agent, genetic/evolutionary strategy search, any relaxation of
+the static safety allowlist to admit filesystem, network, or subprocess
+imports, and a dashboard page for candidates. Each remains a real,
+separately-scoped future decision, not something this sprint
+half-implements under a different name.
+
+**Sandbox verification:**
+
+Same network-free, `joblib`/`scikit-learn`/`streamlit`-uninstalled
+sandbox every sprint since Sprint 9 has used. This sprint's five new
+test files -- `tests/test_strategy_dev_tools.py` (37 tests),
+`tests/test_strategy_dev_agent_loop.py` (12 tests),
+`tests/test_strategy_dev_workspace.py` (29 tests),
+`tests/test_strategy_dev_safety.py` (47 tests), and
+`tests/test_strategy_dev_runner.py` (19 tests) -- plus 21 new
+`tests/test_architecture.py` additions, total **165 new tests**. Only
+the two files that transitively import `ModelRegistry` (`tools.py` ->
+`ResearchTrialService` -> `src.ai.registry`) are joblib-gated
+(`test_strategy_dev_tools.py`, `test_strategy_dev_agent_loop.py`) --
+`workspace.py`, `models.py`, `safety.py`, and `runner.py`/`_harness.py`
+have zero heavy dependencies and run for real in this sandbox with no
+guard needed. With those two gated, the full suite reported:
+
+**1008 passed, 2 failed, 17 skipped.**
+
+The 2 failures are the same environment-only failures every sprint
+since Sprint 7 has carried forward unchanged --
+`test_cli_doctor.test_python_version_passes_against_running_interpreter`
+and `test_config.test_logger_is_importable_and_callable`, both entirely
+unrelated to this sprint's changes (neither `test_cli_doctor.py` nor
+`test_config.py` was touched). Of the 17 skips, 15 are the pre-existing
+sklearn/joblib/streamlit-gated modules carried forward from prior
+sprints, and 2 are this sprint's own joblib-gated additions
+(`test_strategy_dev_tools.py`, `test_strategy_dev_agent_loop.py`),
+expected to run and pass for real once `joblib`/`scikit-learn` are
+installed (the dev machine's `.venv` already has them, per Sprint
+10-13's own real-pytest confirmations).
+
+**Real-machine verification:** pending -- handed off to the operator,
+per the established Sprint 10-13 convention (this sandbox has neither
+`joblib`/`scikit-learn` for the two gated test files nor a live
+Anthropic API key for a real-provider smoke test of
+`python -m src.cli strategy-dev --goal "..."`).

@@ -920,3 +920,322 @@ def test_agent_policy_default_denies_every_trading_and_mutation_capability():
     assert policy.allow_portfolio_mutation is False
     assert policy.allow_strategy_generation is False
     assert policy.allow_model_training is False
+
+
+# ---------------------------------------------------------------------------
+# Sprint 14 (DECISIONS.md, ADR-0047): AI Strategy Development Agent
+# boundaries. The core claim this whole section protects: AI can CREATE,
+# TEST, and ITERATE on a candidate; it cannot PROMOTE it, TRADE it, or
+# MODIFY the production strategy registry -- and none of that depends on
+# prompt language, only on what code exists and what imports what.
+# ---------------------------------------------------------------------------
+
+_STRATEGY_DEV_DIR = SRC_ROOT / "ai" / "agents" / "strategy_dev"
+
+
+def _strategy_dev_source_files() -> list[pathlib.Path]:
+    return sorted(_STRATEGY_DEV_DIR.glob("*.py"))
+
+
+def test_strategy_dev_package_does_not_import_broker_or_execution_engine():
+    forbidden = re.compile(r"^\s*(?:from|import)\s+src\.(broker|execution\.engine)\b", re.MULTILINE)
+    offenders = {
+        p.name: forbidden.search(p.read_text()).group(1)
+        for p in _strategy_dev_source_files()
+        if forbidden.search(p.read_text())
+    }
+    assert offenders == {}, (
+        f"src/ai/agents/strategy_dev must never import a broker adapter or "
+        f"src.execution.engine (PaperBroker) -- the Strategy Development "
+        f"Agent has no live/paper execution capability at all (DECISIONS.md, "
+        f"ADR-0047). Offending files: {offenders}"
+    )
+
+
+def test_strategy_dev_package_does_not_import_portfolio_or_risk_mutation():
+    # The agent's own code may legitimately reuse the *read* path through
+    # ResearchTrialService -> PortfolioBacktestEngine (which itself
+    # composes Risk/Portfolio/Execution) -- but strategy_dev's own
+    # modules must never import src.portfolio/src.risk directly to
+    # mutate state themselves.
+    forbidden = re.compile(r"^\s*(?:from|import)\s+src\.(portfolio|risk)\b", re.MULTILINE)
+    offenders = {
+        p.name: forbidden.search(p.read_text()).group(1)
+        for p in _strategy_dev_source_files()
+        if forbidden.search(p.read_text())
+    }
+    assert offenders == {}, (
+        f"src/ai/agents/strategy_dev must not import src.portfolio/src.risk "
+        f"directly -- backtest evidence flows only through "
+        f"ResearchTrialService's existing pipeline (DECISIONS.md, ADR-0047). "
+        f"Offending files: {offenders}"
+    )
+
+
+def test_strategy_dev_package_does_not_import_dashboard_or_cli():
+    # The promotion CLI (src.cli.strategy_promote) is intentionally the
+    # other direction: it may import strategy_dev, strategy_dev must
+    # never import it or anything else under src.cli/src.dashboard.
+    forbidden = re.compile(r"^\s*(?:from|import)\s+src\.(dashboard|cli)\b", re.MULTILINE)
+    offenders = {
+        p.name: forbidden.search(p.read_text()).group(1)
+        for p in _strategy_dev_source_files()
+        if forbidden.search(p.read_text())
+    }
+    assert offenders == {}, (
+        f"src/ai/agents/strategy_dev must never import src.dashboard or "
+        f"src.cli -- offending files: {offenders}"
+    )
+
+
+def test_strategy_promote_is_never_imported_by_the_agent_package():
+    # The positive-direction check complementing the one above: confirm
+    # the human-only promotion command specifically is never reachable
+    # from any strategy_dev module (Sprint 14 spec, sections 57, 92-93).
+    forbidden = re.compile(r"^\s*(?:from|import)\s+src\.cli\.strategy_promote\b", re.MULTILINE)
+    offenders = [p.name for p in _strategy_dev_source_files() if forbidden.search(p.read_text())]
+    assert offenders == [], (
+        f"src.cli.strategy_promote must never be imported by "
+        f"src/ai/agents/strategy_dev -- promotion is human-only and has no "
+        f"agent-reachable code path (DECISIONS.md, ADR-0047). Offending "
+        f"files: {offenders}"
+    )
+
+
+def test_no_tool_wraps_candidate_registry_promote():
+    # tools.py may import CandidateRegistry (it does, to create/inspect/
+    # validate/test/freeze/report candidates) but must never call
+    # .promote() itself -- that would give the agent a reachable path to
+    # production promotion, defeating the entire safety boundary.
+    text = (_STRATEGY_DEV_DIR / "tools.py").read_text()
+    assert ".promote(" not in text, (
+        "src/ai/agents/strategy_dev/tools.py must never call "
+        "CandidateRegistry.promote() -- promotion is reachable only via "
+        "src.cli.strategy_promote (DECISIONS.md, ADR-0047)."
+    )
+
+
+def test_strategy_registry_has_no_dependency_on_the_agent_package():
+    # The reverse-direction check: production StrategyRegistry must stay
+    # completely unaware that an AI agent or a candidate layer exists.
+    forbidden = re.compile(r"^\s*(?:from|import)\s+src\.ai\.agents\b", re.MULTILINE)
+    text = (SRC_ROOT / "strategies" / "registry.py").read_text()
+    assert forbidden.search(text) is None, (
+        "src/strategies/registry.py (the production StrategyRegistry) must "
+        "not depend on src.ai.agents in any direction -- candidates are "
+        "promoted into it by a human process, it never reaches back into "
+        "agent code (DECISIONS.md, ADR-0047)."
+    )
+
+
+def test_backtester_has_no_candidate_specific_branch():
+    # Mirrors test_backtester_has_no_ai_specific_branch()'s own reasoning
+    # (ADR-0043) for the Sprint 14 candidate layer: PrecomputedSignalStrategy
+    # is an ordinary Strategy from the engine's point of view -- the
+    # Backtester/PortfolioBacktestEngine must never special-case it or
+    # CandidateStrategy by name (Sprint 14 spec, section 111).
+    forbidden_mentions = ("CandidateStrategy", "PrecomputedSignalStrategy", "strategy_dev", "src.ai.agents")
+    for filename in ("engine.py", "portfolio_engine.py"):
+        text = (SRC_ROOT / "backtesting" / filename).read_text()
+        for mention in forbidden_mentions:
+            assert mention not in text, (
+                f"src/backtesting/{filename} must remain fully generic -- it "
+                f"must never mention {mention!r} (DECISIONS.md, ADR-0047, "
+                f"Sprint 14 spec section 111). The candidate runner's "
+                f"PrecomputedSignalStrategy is presented to the Backtester as "
+                f"an ordinary Strategy, with zero special-casing."
+            )
+
+
+def test_research_trial_service_used_by_candidates_is_the_same_unmodified_service():
+    # Positive half: run_candidate_backtest must reuse
+    # ResearchTrialService.run_trial_with_strategy -- never a second,
+    # candidate-specific backtest pipeline (Sprint 14 spec, sections 31,
+    # 115).
+    text = (_STRATEGY_DEV_DIR / "tools.py").read_text()
+    assert "from src.research.trial_service import ResearchTrialService" in text
+    assert ".run_trial_with_strategy(" in text
+
+
+def test_safety_allowlist_never_includes_a_forbidden_platform_package():
+    # Static check on the actual allowlist data, not just its docstring
+    # claim: no entry under src.broker/src.execution/src.portfolio/
+    # src.risk/src.dashboard/src.cli/src.ai/src.research ever appears in
+    # ALLOWED_PLATFORM_MODULES, whatever gets added to it in the future
+    # (Sprint 14 spec, sections 10, 14-18).
+    from src.ai.agents.strategy_dev.safety import ALLOWED_PLATFORM_MODULES
+
+    forbidden_prefixes = (
+        "src.broker",
+        "src.execution",
+        "src.portfolio",
+        "src.risk",
+        "src.dashboard",
+        "src.cli",
+        "src.ai",
+        "src.research",
+        "src.data",
+    )
+    offenders = [
+        module
+        for module in ALLOWED_PLATFORM_MODULES
+        if any(module == prefix or module.startswith(prefix + ".") for prefix in forbidden_prefixes)
+    ]
+    assert offenders == [], (
+        f"ALLOWED_PLATFORM_MODULES must never include a module under "
+        f"broker/execution/portfolio/risk/dashboard/cli/ai/research/data -- "
+        f"a candidate strategy may only import the Strategy/Signal SDK and "
+        f"indicator engine (DECISIONS.md, ADR-0047). Offending entries: "
+        f"{offenders}"
+    )
+
+
+def test_safety_forbidden_names_include_register_strategy():
+    from src.ai.agents.strategy_dev.safety import FORBIDDEN_NAMES
+
+    assert "register_strategy" in FORBIDDEN_NAMES, (
+        "a candidate must never be able to self-register into the "
+        "production StrategyRegistry (Sprint 14 spec, sections 39, 91)."
+    )
+
+
+def test_subprocess_usage_is_confined_to_the_candidate_runner():
+    # Sprint 14 spec, sections 8, 29: the platform *may* internally use a
+    # controlled subprocess for candidate execution, but that must live
+    # in exactly one platform-owned module (runner.py) -- never in
+    # tools.py, dev_agent.py, or anywhere else an agent tool call could
+    # reach it directly.
+    subprocess_pattern = re.compile(r"^\s*(?:from|import)\s+subprocess\b|subprocess\.\w+\(", re.MULTILINE)
+    offenders = [
+        p.name
+        for p in _strategy_dev_source_files()
+        if p.name != "runner.py" and subprocess_pattern.search(p.read_text())
+    ]
+    assert offenders == [], (
+        f"subprocess must be used only by runner.py within "
+        f"src/ai/agents/strategy_dev -- offending files: {offenders}"
+    )
+
+
+def test_strategy_dev_package_never_eval_or_execs_anything_itself():
+    # The platform's own code must never eval/exec -- safety.py only
+    # *detects and rejects* eval/exec/compile in candidate source, it
+    # must never call them (Sprint 14 spec, section 11).
+    forbidden = re.compile(r"\beval\(|\bexec\(|\bcompile\(|__import__\(")
+    offenders = []
+    for p in _strategy_dev_source_files():
+        text = p.read_text()
+        # safety.py legitimately *names* these as forbidden strings inside
+        # its own denylist/docstrings -- only flag an actual call syntax
+        # appearing outside of a string/comment context is hard to do
+        # perfectly with regex, so this checks for the call pattern only,
+        # which safety.py's own denylist entries (bare identifiers in a
+        # frozenset) do not trigger.
+        if forbidden.search(text):
+            offenders.append(p.name)
+    assert offenders == [], (
+        f"src/ai/agents/strategy_dev must never itself call eval/exec/"
+        f"compile/__import__ -- it only detects and rejects them in "
+        f"candidate source (DECISIONS.md, ADR-0047). Offending files: "
+        f"{offenders}"
+    )
+
+
+def test_importlib_dynamic_loading_is_confined_to_the_harness_and_lazy_init():
+    # importlib is used exactly twice, both sanctioned: _harness.py loads
+    # the (already statically-validated) candidate module, and
+    # __init__.py's PEP 562 __getattr__ lazily imports this package's own
+    # submodules. No other module may dynamically import anything.
+    forbidden = re.compile(r"^\s*(?:from|import)\s+importlib\b", re.MULTILINE)
+    offenders = [
+        p.name
+        for p in _strategy_dev_source_files()
+        if p.name not in ("_harness.py", "__init__.py") and forbidden.search(p.read_text())
+    ]
+    assert offenders == [], (
+        f"importlib must be confined to _harness.py (candidate loading) and "
+        f"__init__.py (lazy package attributes) -- offending files: "
+        f"{offenders}"
+    )
+
+
+def test_default_dev_tool_registry_exposes_exactly_the_fourteen_sprint14_tools():
+    pytest.importorskip("joblib")  # transitively required by src.ai.registry.ModelRegistry
+    from src.ai.agents.strategy_dev.tools import default_dev_tool_registry
+
+    registry = default_dev_tool_registry(
+        experiment_registry=ExperimentRegistry(db_path=":memory:"),
+    )
+    names = {t.name for t in registry.all_tools()}
+    assert names == {
+        "list_strategies",
+        "list_experiments",
+        "get_experiment",
+        "analyze_experiment",
+        "compare_experiments",
+        "list_indicators",
+        "create_candidate_strategy",
+        "inspect_candidate",
+        "validate_candidate",
+        "test_candidate",
+        "run_candidate_backtest",
+        "compare_candidate_to_baseline",
+        "freeze_candidate",
+        "get_candidate_report",
+    }
+
+
+def test_default_dev_tool_registry_has_no_filesystem_or_shell_tool():
+    pytest.importorskip("joblib")
+    from src.ai.agents.strategy_dev.tools import default_dev_tool_registry
+
+    registry = default_dev_tool_registry(experiment_registry=ExperimentRegistry(db_path=":memory:"))
+    names = {t.name for t in registry.all_tools()}
+    forbidden_substrings = ("write_file", "read_file", "delete_file", "list_directory", "shell", "bash", "exec")
+    for name in names:
+        for substring in forbidden_substrings:
+            assert substring not in name, (
+                f"tool {name!r} looks like a generic filesystem/shell "
+                f"capability -- Sprint 14 spec sections 7-8 forbid both."
+            )
+
+
+def test_strategy_dev_agent_policy_default_denies_every_dangerous_capability():
+    from src.ai.agents.strategy_dev.policy import StrategyDevelopmentAgentPolicy
+
+    policy = StrategyDevelopmentAgentPolicy()
+    assert policy.allow_live_trading is False
+    assert policy.allow_paper_trading is False
+    assert policy.allow_portfolio_mutation is False
+    assert policy.allow_risk_mutation is False
+    assert policy.allow_execution_mutation is False
+    assert policy.allow_model_training is False
+    assert policy.allow_production_strategy_mutation is False
+    assert policy.allow_production_strategy_registration is False
+    assert policy.allow_git_mutation is False
+    assert policy.allow_auto_promotion is False
+
+
+def test_candidate_workspace_default_dir_falls_under_the_wholesale_data_gitignore():
+    from src.ai.agents.strategy_dev.workspace import DEFAULT_CANDIDATES_DIR
+    from src.ai.agents.strategy_dev.store import DEFAULT_DEV_RUNS_DIR
+
+    assert str(DEFAULT_CANDIDATES_DIR).startswith("data/")
+    assert str(DEFAULT_DEV_RUNS_DIR).startswith("data/")
+    gitignore_text = (SRC_ROOT.parent / ".gitignore").read_text()
+    assert re.search(r"^data/\*\s*$", gitignore_text, re.MULTILINE), (
+        "the repo's wholesale data/* .gitignore rule must still be present -- "
+        "it is what covers data/strategy_candidates/ and "
+        "data/strategy_dev_runs/ without a new .gitignore entry "
+        "(DECISIONS.md, ADR-0047)."
+    )
+
+
+def test_strategy_dev_never_imports_git_tooling():
+    forbidden = re.compile(r"^\s*(?:from|import)\s+git\b|subprocess.*\bgit\b", re.MULTILINE)
+    offenders = [p.name for p in _strategy_dev_source_files() if forbidden.search(p.read_text())]
+    assert offenders == [], (
+        f"src/ai/agents/strategy_dev must never touch Git -- the agent "
+        f"cannot commit/push/merge/checkout (DECISIONS.md, ADR-0047). "
+        f"Offending files: {offenders}"
+    )

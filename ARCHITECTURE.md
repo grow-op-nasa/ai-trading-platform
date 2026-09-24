@@ -1821,6 +1821,128 @@ prompting.
   dispatched from `src/cli/__main__.py`'s `ARGV_COMMANDS` table
   alongside the existing zero-argument `doctor` command.
 
+### `src/ai/agents/strategy_dev` -- AI Strategy Development Agent (Sprint 14, ADR-0047)
+
+**Purpose:** the next capability up the trust ladder from
+`src/ai/agents`' read-only `ResearchAgent` -- an agent that can write,
+test, and iterate on new candidate trading strategies of its own
+design. The boundary this package exists to enforce, in code rather
+than in the prompt: an AI may **CREATE**/**TEST**/**ITERATE**/**REPORT**
+on a candidate strategy; it may never **PROMOTE** one, **MODIFY** the
+production `src.strategies.registry.StrategyRegistry`, or place a
+trade. Every design decision below traces back to making that boundary
+hold even against a fully adversarial LLM generating arbitrary Python,
+not just a well-behaved one.
+
+- **Key files:**
+  - `models.py` -- `CandidateStrategy` (the candidate's full record:
+    spec, source hash, lifecycle status, every stage's
+    `CandidateEvaluation`, lineage back to a parent candidate if
+    revised), `CandidateStrategySpec` (research question, hypothesis,
+    entry/exit logic description, parameters, symbol/interval --
+    captured before code is written, so a candidate's stated intent
+    and its actual behavior can be compared), `CandidateEvaluation`
+    (per-stage backtest results: `dev`/`validation`/`final_test`),
+    `CandidateStrategyStatus` (the lifecycle enum), `DevAgentRun`/
+    `DevResearchReport` (the audit and reporting record, mirroring
+    `src.ai.agents.models.AgentRun`/`AgentResearchReport`).
+  - `workspace.py` -- `CandidateWorkspace` (one directory per candidate
+    under `data/candidates/`, already covered by the repo's wholesale
+    `data/*` gitignore rule; `write_source()` refuses to ever overwrite
+    an existing candidate's source file, at any status), `CandidateRegistry`
+    (the storage layer: persists `CandidateStrategy` records and
+    enforces the lifecycle state machine -- `DRAFT -> VALIDATED ->
+    DEV_BACKTESTED -> REVISED` (loops back to `VALIDATED`) `-> FROZEN
+    -> OUT_OF_SAMPLE_TESTED -> REVIEW_REQUIRED -> PROMOTED | REJECTED |
+    ABANDONED`, raising `InvalidTransitionError` on any other edge, and
+    `CandidateImmutableError` if `record_evaluation(stage="final_test",
+    ...)` is called more than once or before `FROZEN` -- independently
+    of whatever the tool layer already checked).
+  - `safety.py` -- `validate_candidate_source()`, a static AST-only
+    validator that runs before any candidate code ever executes.
+    Rejects: any import outside an explicit, exact-match
+    `ALLOWED_PLATFORM_MODULES` set (`src.strategies.sdk`/
+    `src.strategies.base`/`src.signals.models`/`src.indicators.engine`
+    plus a short stdlib allowlist -- a prefix match is not enough,
+    `import src.strategies.registry` is rejected even though the SDK
+    modules are allowed); any relative import; any dynamic-execution
+    construct (`eval`/`exec`/`compile`/`__import__`/`getattr`/
+    `setattr`/`delattr`/`globals`/`locals`/`vars`/`open`/`input`); any
+    sandbox-escape gadget attribute (`__subclasses__`/`__bases__`/
+    `__mro__`/`__globals__`/`__builtins__`/`__code__`/`__closure__`/
+    `__reduce__`/`__reduce_ex__`/`__dict__`); any reference to
+    `register_strategy`/the production registry by name; oversized
+    source; and malformed class shape (not exactly one class, missing
+    the required base, multiple inheritance, missing a required
+    method). All violations found are reported together.
+  - `runner.py` + `_harness.py` -- the only place already-validated
+    candidate code actually executes. `run_candidate()` launches
+    `_harness.py` in a fresh subprocess with a sanitized,
+    entirely-replaced (not filtered) environment (`PATH`+`PYTHONPATH`
+    only -- the parent's `ANTHROPIC_API_KEY` and everything else is
+    structurally absent), a hard `timeout` (default 30s,
+    `subprocess.TimeoutExpired` becomes `RunnerResult(timed_out=True)`,
+    never left to hang), and candles crossing the process boundary as
+    plain JSON, never pickle. `_harness.py` catches every exception
+    from candidate code and reports `f"{type(exc).__name__}: {exc}"`,
+    never a raw traceback or a crash. Explicit defense-in-depth, not a
+    hardened sandbox -- the subprocess still shares the host's
+    filesystem and network stack; real containment comes from
+    `safety.py`'s static import denial running first.
+    `PrecomputedSignalStrategy` wraps a candidate's already-produced
+    `list[Signal]` as an ordinary `Strategy`, so
+    `PortfolioBacktestEngine` never needs to know a candidate exists.
+  - `policy.py` -- `StrategyDevelopmentAgentPolicy`: code-enforced
+    `max_candidates`/`max_candidate_revisions`/
+    `max_validation_backtests`/`max_final_test_evaluations`/`max_steps`
+    budgets, with every dangerous capability (live trading, portfolio/
+    risk mutation, direct promotion, production registry writes) hard-
+    denied at construction, the same pattern `ResearchAgentPolicy`
+    established in Sprint 13.
+  - `tools.py` -- the fourteen-tool candidate surface (create, inspect,
+    revise, validate, run a dev/validation/final-test backtest,
+    freeze, compare to baseline, get report, list candidates, and a
+    handful of read helpers). No filesystem or shell tool exists. No
+    tool calls `CandidateRegistry.promote()` -- promotion has no path
+    reachable from this registry at all.
+  - `dev_agent.py` -- `StrategyDevelopmentAgent`, the bounded
+    create -> validate -> test -> revise -> freeze -> final-test ->
+    report loop. Reuses Sprint 13's `LLMProvider` protocol and
+    `FakeLLMProvider` unmodified -- no second provider abstraction.
+- **Depends on:** `src.strategies.sdk`/`src.strategies.base` (what
+  candidate code itself is allowed to import), `src.signals.models`,
+  `src.research.trial_service.ResearchTrialService` (reused unmodified
+  for running a candidate's backtests, exactly as Sprint 13 built it),
+  `src.ai.agents.provider`/`src.ai.agents.models` (the `LLMProvider`
+  abstraction, reused rather than duplicated). Never imports
+  `src.broker`, `src.execution.engine`, `src.strategies.registry`, or
+  `src.cli.strategy_promote` (`tests/test_architecture.py` enforces
+  every one of these boundaries structurally). `src.backtesting.engine`/
+  `src.backtesting.portfolio_engine` have zero dependency on, or
+  special-case branching for, this package in either direction.
+- **Human-only promotion, deliberately outside this package:**
+  `src/cli/strategy_promote.py` -- `python -m src.cli strategy-promote
+  --candidate-id ...`. Prints full evidence (status, hashes, every
+  stage's evaluation, agent-run provenance, optional full source),
+  requires interactive `y/N` confirmation (or `--yes`), and refuses
+  outright unless the candidate's status is `REVIEW_REQUIRED` with a
+  recorded final-test evaluation. Promoting only marks the candidate
+  `PROMOTED` in `CandidateRegistry` -- it does not touch
+  `StrategyRegistry`, deploy anything, or place a trade. This file has
+  no incoming import edge from `src.ai.agents.strategy_dev` anywhere in
+  the source tree, and is the only caller of `CandidateRegistry.promote()`
+  besides the registry's own tests.
+- **CLI:** `python -m src.cli strategy-dev --goal "..."` (optionally
+  budget overrides) in `src/cli/strategy_dev.py`. Both this and
+  `strategy-promote` are wired into `src/cli/__main__.py`'s
+  `ARGV_COMMANDS` via lazy per-command import closures, so importing
+  either command (or `research-agent`) never forces the others'
+  dependency chains to load -- `src.ai.agents.strategy_dev.__init__`
+  itself resolves its public names lazily (PEP 562 `__getattr__`) for
+  the same reason: the promotion CLI has no need for
+  `ResearchTrialService`/`ModelRegistry`/`joblib` and must not be made
+  to import them just by being in the same package.
+
 ## Testing philosophy
 
 Unit tests never touch the network. `tests/test_market_data.py` uses a

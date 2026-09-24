@@ -55,6 +55,7 @@ from src.data.base import Interval
 from src.data.service import MarketDataService
 from src.experiments.spec import ExperimentSpec
 from src.risk.models import PortfolioRiskLimits, RiskLimits
+from src.strategies.base import Strategy
 from src.strategies.registry import get_strategy_class
 
 DEFAULT_STOP_PERIOD = 14
@@ -162,6 +163,146 @@ class ResearchTrialService:
         strategy_cls = get_strategy_class(strategy_name)
         strategy = strategy_cls(symbol=symbol, **strategy_params)
 
+        outcome = self._run_with_strategy(
+            strategy=strategy,
+            symbol=symbol,
+            interval_enum=interval_enum,
+            start=start,
+            end=end,
+            initial_cash=initial_cash,
+            allocation_per_trade_pct=allocation_per_trade_pct,
+            max_portfolio_exposure_pct=max_portfolio_exposure_pct,
+            risk_pct_per_trade=risk_pct_per_trade,
+            max_symbol_exposure_pct=max_symbol_exposure_pct,
+            max_concurrent_positions=max_concurrent_positions,
+            stop_period=stop_period,
+            stop_multiple=stop_multiple,
+            execution_timing=execution_timing,
+            slippage_bps=slippage_bps,
+            fee_bps=fee_bps,
+            fixed_fee=fixed_fee,
+        )
+
+        model_id: str | None = None
+        feature_set_id: str | None = None
+        label_set_id: str | None = None
+        if strategy_name == "ai_signal":
+            model_id = strategy_params.get("model_id")
+            if model_id:
+                metadata = self._models.get_metadata(model_id)
+                if metadata is not None:
+                    feature_set_id = metadata.feature_set_id
+                    label_set_id = metadata.label_spec_id
+
+        return ResearchTrialOutcome(
+            trial_id=outcome.trial_id,
+            result=outcome.result,
+            spec=outcome.spec,
+            analytics=outcome.analytics,
+            model_id=model_id,
+            feature_set_id=feature_set_id,
+            label_set_id=label_set_id,
+        )
+
+    def run_trial_with_strategy(
+        self,
+        *,
+        strategy: Strategy,
+        symbol: str,
+        interval: str,
+        start: date,
+        end: date,
+        initial_cash: float = 100_000.0,
+        allocation_per_trade_pct: float = 0.10,
+        max_portfolio_exposure_pct: float = 0.50,
+        risk_pct_per_trade: float = 0.01,
+        max_symbol_exposure_pct: float | None = None,
+        max_concurrent_positions: int | None = None,
+        stop_period: int = DEFAULT_STOP_PERIOD,
+        stop_multiple: float = DEFAULT_STOP_MULTIPLE,
+        execution_timing: str = ExecutionTiming.SIGNAL_BAR_CLOSE.value,
+        slippage_bps: float = 0.0,
+        fee_bps: float = 0.0,
+        fixed_fee: float = 0.0,
+    ) -> ResearchTrialOutcome:
+        """Identical pipeline to `run_trial()`, but takes an
+        already-constructed `strategy` object directly instead of
+        looking one up by `strategy_name` via
+        `src.strategies.registry.get_strategy_class`.
+
+        This is what `src.ai.agents.strategy_dev` (Sprint 14) uses to
+        run a candidate strategy's already-generated, already-isolated
+        signals (wrapped in
+        `src.ai.agents.strategy_dev.runner.PrecomputedSignalStrategy`)
+        through the exact same
+        `MarketDataService -> PortfolioBacktestEngine -> Risk ->
+        Execution -> Analytics` pipeline as any registered strategy --
+        deliberately *not* a second backtest pipeline (Sprint 14 spec,
+        section 31). A candidate is never registered in
+        `StrategyRegistry` (Sprint 14 spec, section 91), so it can never
+        reach this service through `run_trial()`'s `strategy_name`
+        lookup -- this method is the one, explicit, intentional seam
+        for a strategy object that exists outside that registry.
+
+        Raises:
+            ValueError: `end` is in the future, or `start` is after
+                `end` (same historical-only enforcement as `run_trial()`).
+            NoDataError / DataValidationError: as `run_trial()`.
+        """
+        if end > date.today():
+            raise ValueError(
+                f"end ({end}) is in the future -- this service only runs "
+                f"against historical data"
+            )
+        if start > end:
+            raise ValueError(f"start ({start}) must not be after end ({end})")
+
+        return self._run_with_strategy(
+            strategy=strategy,
+            symbol=symbol,
+            interval_enum=Interval(interval),
+            start=start,
+            end=end,
+            initial_cash=initial_cash,
+            allocation_per_trade_pct=allocation_per_trade_pct,
+            max_portfolio_exposure_pct=max_portfolio_exposure_pct,
+            risk_pct_per_trade=risk_pct_per_trade,
+            max_symbol_exposure_pct=max_symbol_exposure_pct,
+            max_concurrent_positions=max_concurrent_positions,
+            stop_period=stop_period,
+            stop_multiple=stop_multiple,
+            execution_timing=execution_timing,
+            slippage_bps=slippage_bps,
+            fee_bps=fee_bps,
+            fixed_fee=fixed_fee,
+        )
+
+    def _run_with_strategy(
+        self,
+        *,
+        strategy: Strategy,
+        symbol: str,
+        interval_enum: Interval,
+        start: date,
+        end: date,
+        initial_cash: float,
+        allocation_per_trade_pct: float,
+        max_portfolio_exposure_pct: float,
+        risk_pct_per_trade: float,
+        max_symbol_exposure_pct: float | None,
+        max_concurrent_positions: int | None,
+        stop_period: int,
+        stop_multiple: float,
+        execution_timing: str,
+        slippage_bps: float,
+        fee_bps: float,
+        fixed_fee: float,
+    ) -> ResearchTrialOutcome:
+        """The shared pipeline both `run_trial()` and
+        `run_trial_with_strategy()` delegate to once a concrete
+        `strategy` object exists -- fetch data, build config, run the
+        real portfolio backtest engine, compute analytics. Never called
+        directly by anything outside this class."""
         dataset = self._data.get_dataset(symbol, start=start, end=end, interval=interval_enum)
         candles = dataset.candles
 
@@ -202,23 +343,9 @@ class ResearchTrialService:
         )
         analytics = AnalyticsService().analyze_backtest(result, spec=spec)
 
-        model_id: str | None = None
-        feature_set_id: str | None = None
-        label_set_id: str | None = None
-        if strategy_name == "ai_signal":
-            model_id = strategy_params.get("model_id")
-            if model_id:
-                metadata = self._models.get_metadata(model_id)
-                if metadata is not None:
-                    feature_set_id = metadata.feature_set_id
-                    label_set_id = metadata.label_spec_id
-
         return ResearchTrialOutcome(
             trial_id=uuid.uuid4().hex,
             result=result,
             spec=spec,
             analytics=analytics,
-            model_id=model_id,
-            feature_set_id=feature_set_id,
-            label_set_id=label_set_id,
         )

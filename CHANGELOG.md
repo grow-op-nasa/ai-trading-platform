@@ -207,6 +207,9 @@ design.
   gain of 21 tests over Sprint 14's own 1008-passed baseline (18 new
   strategy tests, 2 new architecture tests, 1 new `run_experiment`
   test).
+- Real `pytest` on the dev machine: **1200 passed, 0 failed** (90.22s)
+  -- both sandbox-only "known environment-only" failures did not
+  reproduce. Pushed to `origin/main` (`1b43a93..0c19c69`).
 
 ## Sprint 13 -- 2026-09-24, AI Research Agent
 

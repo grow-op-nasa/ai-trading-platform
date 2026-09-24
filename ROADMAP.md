@@ -1186,8 +1186,9 @@ ExperimentSpec` seam (18 new strategy tests, a new `run_experiment()`
 production-path test, and two new architecture boundary tests, one
 proving the agent package itself never references the promoted
 strategy). Sandbox: 1029 passed (up from 1008), same 2 pre-existing
-environment-only failures, 17 skipped -- pending real-`pytest`
-confirmation.
+environment-only failures, 17 skipped. **Confirmed via real `pytest` on
+the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
+`origin/main` (`1b43a93..0c19c69`).
 
 ## Sprint 15+ -- future work (planned)
 

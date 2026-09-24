@@ -1491,9 +1491,12 @@ production path by name alone, then confirms
 grep-the-source pattern extended to this strategy, plus a new check
 proving `src/ai/agents/strategy_dev/*.py` never references the
 promoted strategy by name -- direct evidence this was a human action
-entirely outside the agent). Sandbox: **1029 passed** (up from 1008),
-same 2 pre-existing environment-only failures, 17 skipped. Pending a
-real-`pytest` confirmation and commit on the dev machine.
+entirely outside the agent). Sandbox: 1029 passed (up from 1008), same
+2 pre-existing environment-only failures, 17 skipped. **Confirmed via
+real `pytest` on the dev machine: 1200 passed, 0 failed** (90.22s) --
+both sandbox-only "known environment-only" failures did not reproduce,
+exactly as every prior sprint predicted. Pushed to `origin/main`
+(`1b43a93..0c19c69`).
 
 Sprint 15+ planning (a Market Monitoring Agent, or a controlled trading
 agent building on a promoted candidate) is open, with no blocking work

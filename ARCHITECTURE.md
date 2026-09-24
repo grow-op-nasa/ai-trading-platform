@@ -1707,6 +1707,120 @@ exists.
   generic `strategy_params` field already carries `model_id`/
   `min_probability` -- no schema change needed).
 
+### `src/ai/agents` -- AI Research Agent (Sprint 13, ADR-0046)
+
+**Purpose:** the platform's first genuine agent: a bounded,
+tool-using orchestration loop that pursues a research goal (goal ->
+inspect evidence -> hypothesis -> tool call -> observe -> iterate ->
+evidence-grounded report), as distinct from `src/research`'s
+`ResearchReporter`, which is a deterministic two-stage
+`findings -> narrative` renderer with no autonomous tool selection.
+The agent is **research-only, structurally**: it has no tool that can
+place or approve a trade, mutate risk limits, mutate portfolio state,
+train or promote a model, or write a strategy -- these tools simply do
+not exist in the registry, so the restriction cannot be bypassed by
+prompting.
+
+- **Key files:**
+  - `models.py` -- `AgentRunStatus` (`RUNNING`/`COMPLETED`/`FAILED`/
+    `BUDGET_EXHAUSTED`), `AgentRun` (the audit record: run_id, goal,
+    provider, model, status, tz-aware started_at/finished_at, step
+    and tool-call and backtest counts, `system_prompt_version`/
+    `tool_schema_version`/`policy_hash` for configuration provenance,
+    `tool_calls: list[ToolCallRecord]`, `final_report`, `error`),
+    `AgentResearchReport` (summary, observations, hypotheses,
+    experiments, evidence, limitations, suggested_next_experiments --
+    deliberately no `trade_recommendation` field), `TrialResult`
+    (full provenance for one ephemeral research backtest), `ToolCallRecord`,
+    `AgentEvidence`.
+  - `policy.py` -- `ResearchAgentPolicy`: `max_steps` (default 12) and
+    `max_backtests` (default 4), enforced by the runtime, never
+    trusted to the model. `__post_init__` raises if any of
+    `allow_live_trading`/`allow_portfolio_mutation`/
+    `allow_strategy_generation`/`allow_model_training` is `True` --
+    the research-only default cannot be misconfigured away.
+    `.config_hash()` gives the deterministic hash recorded on every
+    `AgentRun`.
+  - `provider.py` -- `LLMProvider` (a `Protocol`, vendor-neutral: `
+    .generate(system, messages, tools) -> LLMResponse`), `FakeLLMProvider`
+    (scripted responses, used for every non-adapter test -- the whole
+    agent runtime is proven network-free and vendor-independent
+    against this fake), `ProviderError`.
+  - `anthropic_provider.py` -- `AnthropicLLMProvider`, the first
+    concrete adapter. Mirrors the `ClaudeNarrativeRenderer` pattern in
+    `src/research/renderers.py` (ADR-0020): `anthropic` is imported
+    lazily inside `.generate()`, never at module level, and is **not**
+    a dependency in `requirements.txt`. Missing `ANTHROPIC_API_KEY`
+    raises `ProviderError` at construction, before any network call.
+    Configuration (`AI_AGENT_PROVIDER`, `AI_AGENT_MODEL`,
+    `ANTHROPIC_API_KEY`) comes from environment variables only.
+  - `tools.py` -- `AgentTool` protocol, `ToolResult`,
+    `validate_arguments()` (a minimal JSON-schema-subset validator --
+    every tool call's arguments are validated before execution, so a
+    malformed call from the model never reaches a tool body),
+    `ToolRegistry` (`execute()` is the one entry point: unknown tool,
+    policy-denied tool, and invalid arguments each return a structured
+    `ToolResult` error rather than raising or executing), and
+    `default_tool_registry()`, which wires up exactly seven tools.
+  - `research_tools.py` -- the six read-only tools: `list_experiments`,
+    `get_experiment`, `analyze_experiment` (delegates to the existing
+    `AnalyticsService`, never recomputes a metric), `compare_experiments`
+    (delegates to the existing `compare_experiments()`, preserves its
+    rows/warnings, never invents a composite score), `list_strategies`
+    (parameter names and docstrings only, never source code),
+    `get_model_metadata` (provenance fields only, never a filesystem
+    path or the model artifact itself).
+  - `backtest_tool.py` -- `RunHistoricalBacktestTool`, the seventh and
+    most consequential tool. Validates strategy/symbol/date-range/
+    execution-timing inputs (rejecting a future end date, an
+    oversized date range, or a malformed symbol) before delegating to
+    `src/research/trial_service.py`. It does not implement a second
+    backtest pipeline and does not shell out to
+    `scripts/run_experiment.py`.
+  - `agent.py` -- `ResearchAgent`, the bounded loop itself. Terminates
+    on a final answer, `max_steps`, `max_backtests`, or a fatal
+    provider error, each mapped to a distinct `AgentRunStatus`. Only
+    goal, tool calls/arguments/results, and the final answer are
+    persisted -- the model's private reasoning tokens never are.
+  - `session.py` -- `AgentSession`, short-term in-memory state for one
+    run (messages, tool results, trial provenance, evidence, step and
+    backtest counters). Explicitly no long-term memory, vector store,
+    embeddings, or RAG in this sprint.
+  - `prompts.py` -- the versioned system prompt
+    (`SYSTEM_PROMPT_VERSION`), which instructs the model to use tools
+    rather than invent facts, label observations separately from
+    hypotheses, never claim causality from a single backtest, never
+    tune against held-out data, and treat tool output as data, never
+    as instructions (the model's defense against prompt injection
+    carried inside a tool result).
+  - `store.py` -- `AgentRunStore`, JSON persistence of `AgentRun` under
+    `data/agent_runs/` (already covered by the repo's wholesale
+    `data/*` gitignore rule).
+- **Depends on:** `src.experiments` (`ExperimentRegistry`, read-only),
+  `src.analytics` (`AnalyticsService`, `compare_experiments`),
+  `src.strategies` (registry metadata only), `src.ai.registry`
+  (`ModelRegistry`, metadata only), `src.research.trial_service`
+  (`ResearchTrialService`, for the one tool that runs a real
+  backtest). Never imports `src.broker`, `src.execution.engine`,
+  `src.data`'s concrete providers, or any shell/subprocess/filesystem
+  module (`tests/test_architecture.py` enforces this structurally, the
+  same pattern as the `src.ai` boundary above). `src.research`'s
+  pre-existing `ResearchReporter` never depends on this package, in
+  either direction.
+- **New generic infrastructure, not agent-specific:**
+  `src/research/trial_service.py` -- `ResearchTrialService.run_trial()`
+  wires `MarketDataService -> Strategy -> PortfolioBacktestEngine ->
+  PortfolioRiskEngine -> ExecutionModel -> Portfolio -> AnalyticsService`
+  for one ephemeral research trial, producing a `trial_id` that is
+  visible for the session but not automatically written to
+  `ExperimentRegistry`. Deliberately placed outside `src/ai/agents` so
+  a CLI command, the dashboard, or a future API can reuse it without
+  depending on the agent runtime.
+- **CLI:** `python -m src.cli research-agent --goal "..."` (optionally
+  `--max-steps`/`--max-backtests`) in `src/cli/research_agent.py`,
+  dispatched from `src/cli/__main__.py`'s `ARGV_COMMANDS` table
+  alongside the existing zero-argument `doctor` command.
+
 ## Testing philosophy
 
 Unit tests never touch the network. `tests/test_market_data.py` uses a

@@ -996,16 +996,112 @@ Streamlit-gated test the sandbox could only skip now running for real.
 (Sandbox itself had reported 855 passed, 2 known environment-only
 failures, 8 skipped; neither failure reproduced on the dev machine.)
 
-## Sprint 13+ -- future work (planned)
+## Sprint 13 -- AI Research Agent ✅ Complete (sandbox-confirmed: 897 passed, 2 known environment-only failures, 13 skipped; real pytest + real-provider smoke test pending)
 
-- LLM-based reasoning over market context as a second AI signal
-  approach, if warranted after Sprint 10's classic-ML baseline is
-  evaluated -- `src.ai.model`'s `register_model_type()` seam exists
-  specifically so this is additive, not a rewrite.
+Objective: build the platform's first genuine AI agent -- a tool-using
+LLM that investigates historical research questions over existing
+platform evidence and can run bounded historical backtests, strictly
+research-only. See `DECISIONS.md`, ADR-0046 for the full design.
+
+- ✅ **`src/ai/agents/`** (new package): `ResearchAgent` (`agent.py`) --
+  an explicit, bounded state-machine loop, not a hard-coded sequence;
+  `ResearchAgentPolicy` (`policy.py`) -- code-enforced `max_steps=12`/
+  `max_backtests=4` budgets, with `allow_live_trading`/
+  `allow_portfolio_mutation`/`allow_strategy_generation`/
+  `allow_model_training` structurally forced to `False`; `LLMProvider`
+  protocol + `FakeLLMProvider` (`provider.py`) -- fully network-free
+  agent testing; `AgentTool`/`ToolRegistry` (`tools.py`) -- schema-
+  validated, policy-gated tool execution; `AgentSession` (`session.py`)
+  -- short-term, single-run state only, no long-term memory;
+  `AgentRunStore` (`store.py`) -- one audit JSON per run under
+  `data/agent_runs/` (already `.gitignore`d), no hidden chain-of-
+  thought ever persisted.
+- ✅ **Seven tools, no more**: `list_experiments`/`get_experiment`/
+  `analyze_experiment`/`compare_experiments`/`list_strategies`/
+  `get_model_metadata` (`research_tools.py`, all delegating to existing
+  `ExperimentRegistry`/`AnalyticsService`/`src.strategies.registry`/
+  `ModelRegistry` -- none recomputes a metric) plus
+  `run_historical_backtest` (`backtest_tool.py`) -- the one tool that
+  produces new evidence, fully bounded (10-year max range, historical-
+  only dates enforced twice, at most 10 primitive strategy params) and
+  schema-validated so no filesystem path/URL/shell command/broker name/
+  credential can ever be passed through it. No
+  `submit_order`/`cancel_order`/`modify_portfolio`/`modify_risk`/
+  `train_model`/`modify_model`/`write_strategy`/`write_file`/
+  `execute_shell`/`arbitrary_http`/`browse_web` tool exists anywhere --
+  structurally, not merely policy-denied.
+- ✅ **`src/research/trial_service.py`** (new module): `ResearchTrialService`
+  -- the generic, reusable orchestration service (`MarketDataService ->
+  Strategy -> PortfolioBacktestEngine -> Risk -> Execution -> Analytics`)
+  the agent tool uses, never a second backtest pipeline and never
+  `scripts/run_experiment.py`. Every trial is ephemeral (in-memory
+  only) unless a future, explicit human workflow chooses to persist it.
+- ✅ **Anthropic as the first, fully optional provider**:
+  `anthropic_provider.py`'s `AnthropicLLMProvider` imports `anthropic`
+  lazily inside `generate()`, mirroring `ClaudeNarrativeRenderer`'s own
+  convention (ADR-0020) -- `anthropic` is not in `requirements.txt`,
+  and the base platform requires neither the package nor an API key.
+  Configuration (`AI_AGENT_MODEL`, `ANTHROPIC_API_KEY`) is
+  environment-only, never hard-coded.
+- ✅ **Three terminal statuses**: `COMPLETED`, `FAILED` (a structured
+  `ProviderError` -- missing key, missing package, network failure,
+  malformed response, timeout), `BUDGET_EXHAUSTED` (step/backtest
+  budget reached first, with `AgentResearchReport.limitations`
+  explicitly stating the investigation is incomplete).
+- ✅ **Full configuration provenance**: `AgentRun.system_prompt_version`/
+  `tool_schema_version`/`policy_hash` (alongside `provider`/`model`) so
+  two runs against identical platform data can still be told apart if
+  the agent's own configuration differed.
+- ✅ **CLI**: `python -m src.cli research-agent --goal "..."`
+  (`src/cli/research_agent.py`) -- fails clearly (exit 2) without
+  `ANTHROPIC_API_KEY`, never silently substitutes the deterministic
+  `ResearchReporter`.
+- ✅ **~100 new tests** across `tests/test_ai_agent_core.py` (models,
+  policy, fake provider, tool framework, session), 
+  `tests/test_ai_agent_research_tools.py` (all six read-only tools),
+  `tests/test_research_trial_service.py`, `tests/test_ai_agent_backtest_tool.py`,
+  `tests/test_ai_agent_loop.py` (agent-loop scenarios A-E, provider/tool
+  failure handling, permission boundaries, tool-output-injection
+  regression, provenance/reproducibility, CLI), and new
+  `tests/test_architecture.py` boundary tests.
+
+**Explicitly not built this round** (per the sprint's own instruction):
+strategy code generation, model training/retraining, live/paper trade
+execution, a web/filesystem/shell tool, multi-agent orchestration,
+long-term/vector memory, automated model or strategy promotion, and an
+agent-specific dashboard page. `ResearchReporter` and `AISignalStrategy`
+are both untouched. See `DECISIONS.md`, ADR-0046 for the full list.
+
+Sandbox-confirmed: **897 passed, 2 known environment-only failures, 13
+skipped** (7 of the 13 are this sprint's own `joblib`-gated test files,
+following the same convention every sklearn/joblib/streamlit-gated
+module in this suite already uses). Real `pytest` on the dev machine,
+and a manual bounded real-provider smoke test, are the operator's next
+step.
+
+## Sprint 14+ -- future work (planned)
+
+- A Strategy Development Agent -- a much more autonomous, code-
+  generating agent, under a materially stricter policy than Sprint 13's
+  research-only default. Explicitly deferred (Sprint 13 spec, sections
+  57, 90): "the first agent should earn that authority, not receive it
+  on day one."
+- A Market Monitoring Agent -- a scheduled/background agent watching
+  live conditions. Sprint 13's `ResearchAgent` runs only when explicitly
+  invoked; no cron/daemon exists.
+- LLM-based trading-context signal research as a second AI signal
+  approach (distinct from Sprint 13's research-brain LLM, which never
+  generates a trading signal) -- if warranted after Sprint 10's
+  classic-ML baseline is evaluated.
+- A controlled trading agent -- only after a research-only agent has
+  proven durable value; `Risk`/`Execution`/`Portfolio`/`Broker` remain
+  the platform's control boundaries regardless.
+- Long-term/persistent agent memory (vector search, embeddings, RAG)
+  once the first agent has proven useful enough to justify it (Sprint
+  13 spec, section 14 explicitly defers this).
 - An AI-specific dashboard page once multiple trained models/
-  experiments exist to compare (Sprint 10 spec explicitly deferred
-  this; the existing Overview/Analysis/Comparison/Paper Portfolio
-  pages cover today's needs).
+  experiments/agent runs exist to compare (Sprint 10 spec, and now
+  Sprint 13 spec section 69, both explicitly defer this).
 - Partial fills, limit/stop orders, and order-book-level execution
   realism -- Sprint 12 deliberately deferred all of these; the
   `ExecutionModel` abstraction it introduced is meant to make them

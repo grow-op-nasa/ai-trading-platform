@@ -765,3 +765,158 @@ def test_account_state_equity_is_computed_from_frozen_entry_price_only():
     # this calculation (src/execution/engine.py, account_state property).
     expected_equity = broker.cash + position.quantity * position.entry_price
     assert broker.account_state.equity == pytest.approx(expected_equity)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 13 (DECISIONS.md, ADR-0046): AI Research Agent boundaries.
+# ---------------------------------------------------------------------------
+
+_AGENTS_DIR = SRC_ROOT / "ai" / "agents"
+
+
+def _agent_source_files() -> list[pathlib.Path]:
+    return sorted(p for p in _AGENTS_DIR.glob("*.py") if p.name != "anthropic_provider.py")
+
+
+def test_agent_core_does_not_import_broker_adapters():
+    forbidden = re.compile(r"^\s*(?:from|import)\s+src\.broker\b", re.MULTILINE)
+    offenders = [p.name for p in _agent_source_files() if forbidden.search(p.read_text())]
+    assert offenders == [], (
+        f"src/ai/agents (agent core) must never import a broker adapter -- the "
+        f"research agent has no live/paper execution capability at all "
+        f"(DECISIONS.md, ADR-0046, Sprint 13 spec sections 31, 92). Offending "
+        f"files: {offenders}"
+    )
+
+
+def test_agent_core_does_not_import_execution_engine():
+    # PaperBroker itself (src.execution.engine) is trading infrastructure
+    # the agent must never touch -- src.execution.models (plain Order/
+    # Fill/OrderSide shapes, reused by ExecutionModel) is fine and is not
+    # checked for here.
+    forbidden = re.compile(r"^\s*(?:from|import)\s+src\.execution\.engine\b", re.MULTILINE)
+    offenders = [p.name for p in _agent_source_files() if forbidden.search(p.read_text())]
+    assert offenders == [], (
+        f"src/ai/agents must never import src.execution.engine (PaperBroker) "
+        f"-- offending files: {offenders}"
+    )
+
+
+def test_agent_core_does_not_import_yfinance_or_any_data_provider_directly():
+    forbidden = re.compile(
+        r"^\s*(?:from|import)\s+(?:yfinance|src\.data\.yfinance_provider)\b", re.MULTILINE
+    )
+    offenders = [p.name for p in _agent_source_files() if forbidden.search(p.read_text())]
+    assert offenders == [], (
+        f"src/ai/agents must reach market data only through "
+        f"src.data.MarketDataService (via src.research.trial_service), never a "
+        f"provider implementation directly (Sprint 13 spec, section 54). "
+        f"Offending files: {offenders}"
+    )
+
+
+def test_agent_core_has_no_shell_or_arbitrary_filesystem_access():
+    # Matches actual invocation syntax (a dotted call or a bare eval/exec
+    # call) rather than the bare word -- several of these modules'
+    # docstrings legitimately *mention* "shell command" or "subprocess"
+    # in prose explaining what must never happen, without ever calling
+    # one.
+    forbidden = re.compile(r"subprocess\.\w+\(|os\.system\(|os\.popen\(|\beval\(|\bexec\(")
+    offenders = [p.name for p in _agent_source_files() if forbidden.search(p.read_text())]
+    assert offenders == [], (
+        f"src/ai/agents must never shell out or eval/exec arbitrary code -- "
+        f"the LLM must never be allowed to call arbitrary Python (Sprint 13 "
+        f"spec, sections 15, 33, 103). Offending files: {offenders}"
+    )
+    import_forbidden = re.compile(r"^\s*(?:from|import)\s+subprocess\b", re.MULTILINE)
+    import_offenders = [
+        p.name for p in _agent_source_files() if import_forbidden.search(p.read_text())
+    ]
+    assert import_offenders == [], (
+        f"src/ai/agents must never import subprocess at all -- offending "
+        f"files: {import_offenders}"
+    )
+
+
+def test_agent_core_does_not_import_anthropic_at_module_level():
+    # The provider abstraction (provider.py) and the agent loop/tools
+    # must stay provider-agnostic -- only anthropic_provider.py may
+    # mention anthropic, and even there only via a lazy, in-function
+    # import (mirrors src.research.renderers.ClaudeNarrativeRenderer).
+    forbidden = re.compile(r"^\s*(?:from|import)\s+anthropic\b", re.MULTILINE)
+    offenders = [p.name for p in _agent_source_files() if forbidden.search(p.read_text())]
+    assert offenders == [], (
+        f"only src/ai/agents/anthropic_provider.py may reference the "
+        f"anthropic package, and only via a lazy import inside a function "
+        f"(Sprint 13 spec, section 5). Offending files: {offenders}"
+    )
+    anthropic_provider_text = (_AGENTS_DIR / "anthropic_provider.py").read_text()
+    assert re.search(r"^import anthropic\b", anthropic_provider_text, re.MULTILINE) is None, (
+        "anthropic_provider.py must import anthropic lazily, inside generate(), "
+        "not at module level -- the base platform must not require it "
+        "(Sprint 13 spec, section 7)."
+    )
+
+
+def test_anthropic_is_not_a_hard_dependency_in_requirements_txt():
+    requirements_text = (
+        SRC_ROOT.parent / "requirements.txt"
+    ).read_text()
+    assert "anthropic" not in requirements_text.lower(), (
+        "the base platform must work without the anthropic package installed "
+        "(Sprint 13 spec, section 7) -- do not add it to requirements.txt."
+    )
+
+
+def test_research_reporter_does_not_depend_on_the_agent_runtime():
+    # The Agent may consume ResearchReporter's output; ResearchReporter
+    # must never depend on the Agent (Sprint 13 spec, section 93/68).
+    forbidden = re.compile(r"^\s*(?:from|import)\s+src\.ai\.agents\b", re.MULTILINE)
+    for path in (SRC_ROOT / "research").glob("*.py"):
+        text = path.read_text()
+        assert forbidden.search(text) is None, (
+            f"{path.name} (src/research) must not depend on src.ai.agents -- "
+            f"the dependency direction is Agent -> research primitives, never "
+            f"the reverse (DECISIONS.md, ADR-0046)."
+        )
+
+
+def test_research_trial_service_uses_the_portfolio_backtest_engine():
+    # Sprint 13 spec, section 76: the historical backtest tool must use
+    # MarketDataService -> Strategy -> PortfolioBacktestEngine -> Risk ->
+    # Execution -> Analytics -- never a second backtest pipeline.
+    text = (SRC_ROOT / "research" / "trial_service.py").read_text()
+    assert "from src.data.service import MarketDataService" in text
+    assert "from src.backtesting.engine import Backtester" in text
+    assert ".run_portfolio(" in text
+    assert "from src.analytics.service import AnalyticsService" in text
+    assert "from src.backtesting.execution_model import" in text
+
+
+def test_default_tool_registry_exposes_exactly_the_seven_sprint13_tools():
+    pytest.importorskip("joblib")  # transitively required by src.ai.registry.ModelRegistry
+    from src.ai.agents.tools import default_tool_registry
+
+    registry = default_tool_registry(
+        experiment_registry=ExperimentRegistry(db_path=":memory:"),
+    )
+    names = {t.name for t in registry.all_tools()}
+    assert names == {
+        "list_experiments",
+        "get_experiment",
+        "analyze_experiment",
+        "compare_experiments",
+        "list_strategies",
+        "get_model_metadata",
+        "run_historical_backtest",
+    }
+
+
+def test_agent_policy_default_denies_every_trading_and_mutation_capability():
+    from src.ai.agents.policy import ResearchAgentPolicy
+
+    policy = ResearchAgentPolicy()
+    assert policy.allow_live_trading is False
+    assert policy.allow_portfolio_mutation is False
+    assert policy.allow_strategy_generation is False
+    assert policy.allow_model_training is False

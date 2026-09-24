@@ -12,7 +12,7 @@ src/
     execution/   - order routing and execution
     risk/        - position sizing, risk limits, exposure checks
     analytics/   - performance measurement, reporting
-    ai/          - ML/LLM-based components
+    ai/          - ML/LLM-based components (ai/agents/ = research-only AI agent)
     dashboard/   - Streamlit UI
     utils/       - shared helpers (logging, config, etc.)
 ```

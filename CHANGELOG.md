@@ -11,6 +11,86 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 13 -- 2026-09-24, AI Research Agent
+
+The platform's first genuine agentic loop: a tool-using LLM that
+investigates historical strategy/market research questions over the
+platform's existing evidence (experiments, analytics, strategies,
+trained models) and can run bounded historical backtests -- never a
+trading agent. See `DECISIONS.md`, ADR-0046 for the full design.
+
+### Added
+
+- `src/ai/agents/` (new package) -- the agent core: `models.py`
+  (`AgentRun`, `AgentRunStatus`, `AgentResearchReport`, `AgentEvidence`,
+  `TrialResult`, `ToolCallRecord`, all timezone-aware UTC), `policy.py`
+  (`ResearchAgentPolicy` -- code-enforced budgets/permissions,
+  `max_steps=12`/`max_backtests=4` defaults, the four dangerous flags
+  structurally forced to `False`), `provider.py` (`LLMProvider`
+  protocol, `LLMMessage`/`LLMToolCall`/`LLMResponse`, `ProviderError`,
+  `FakeLLMProvider` for network-free tests), `tools.py` (`AgentTool`
+  protocol, `ToolResult`, `ToolRegistry` with policy+schema validation,
+  a minimal hand-rolled JSON-schema-subset validator), `session.py`
+  (`AgentSession` -- short-term, in-run-only state, no long-term
+  memory), `store.py` (`AgentRunStore` -- one JSON file per run under
+  `data/agent_runs/`, no hidden chain-of-thought persisted), `agent.py`
+  (`ResearchAgent` -- the bounded, explicit-state-machine loop),
+  `prompts.py` (versioned `SYSTEM_PROMPT`), `anthropic_provider.py`
+  (`AnthropicLLMProvider` -- lazy `anthropic` import, never a hard
+  dependency), `research_tools.py` (the six read-only tools:
+  `list_experiments`, `get_experiment`, `analyze_experiment`,
+  `compare_experiments`, `list_strategies`, `get_model_metadata`),
+  `backtest_tool.py` (`run_historical_backtest` -- the one tool that
+  produces new evidence, bounded and fully validated).
+- `src/research/trial_service.py` (new module) -- `ResearchTrialService`
+  and `ResearchTrialOutcome`: the generic, reusable research
+  orchestration service (`MarketDataService -> Strategy ->
+  PortfolioBacktestEngine -> Risk -> Execution -> Analytics`) the agent
+  tool (and any future CLI/dashboard/notebook caller) uses -- never a
+  second backtest pipeline, never `scripts/run_experiment.py`.
+- `src/cli/research_agent.py` -- `python -m src.cli research-agent
+  --goal "..."` entry point; `src/cli/__main__.py` gained an
+  `ARGV_COMMANDS` mapping alongside the existing zero-argument
+  `COMMANDS` so `doctor`'s contract is unaffected. Fails clearly (exit
+  code 2) without `ANTHROPIC_API_KEY`.
+- Tests: `tests/test_ai_agent_core.py`, `tests/test_ai_agent_research_tools.py`,
+  `tests/test_research_trial_service.py`, `tests/test_ai_agent_backtest_tool.py`,
+  `tests/test_ai_agent_loop.py` (fake-provider agent-loop scenarios A-E,
+  permission-boundary tests, tool-output-injection regression,
+  provenance/reproducibility, CLI), plus new `tests/test_architecture.py`
+  boundary tests (no broker/execution-engine/yfinance imports, no
+  shell/eval/exec, no module-level `anthropic` import outside the one
+  lazy adapter, `anthropic` absent from `requirements.txt`,
+  `ResearchReporter` independence from the agent runtime).
+
+### Not changed
+
+- `src/research/reporter.py`/`renderers.py`/`compiler.py`/`models.py`
+  (`ResearchReporter`) -- untouched, and has no dependency on
+  `src.ai.agents` (an architecture test enforces this).
+- `src/strategies/ai_signal.py` (`AISignalStrategy`) -- untouched;
+  Sprint 10's classic ML remains the only signal-generation mechanism.
+  The agent's LLM is research intelligence, never a trading signal.
+- The Streamlit dashboard -- untouched; no AI Research Agent page this
+  sprint.
+- `requirements.txt` -- `anthropic` was deliberately not added (an
+  architecture test enforces this too); it is an optional, lazily-
+  imported dependency exactly like `ClaudeNarrativeRenderer`'s own use
+  of it (ADR-0020).
+
+### Verified
+
+- Sandbox (network-free, `FakeLLMProvider` only): **897 passed, 2
+  failed, 13 skipped.** The 2 failures are the same environment-only
+  failures every sprint since Sprint 7 has carried forward unchanged.
+  7 of the 13 skips are this sprint's own `joblib`-gated additions
+  (`src.ai.registry.ModelRegistry` imports `joblib` at module scope,
+  same established convention as every sklearn/joblib/streamlit-gated
+  module already in this suite); the rest are pre-existing.
+- Real `pytest` on the dev machine, and the manual real-provider smoke
+  test (`ANTHROPIC_API_KEY` set, one or two bounded research goals),
+  remain the operator's next step -- see `PROJECT_STATE.md`.
+
 ## Sprint 12 -- 2026-09-23, Execution Realism & Transaction Cost Modeling
 
 Replaces the backtester's remaining hidden assumption -- instant,

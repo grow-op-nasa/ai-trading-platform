@@ -1,6 +1,25 @@
 # Project State
 
-_Last updated: 2026-09-23 -- **Sprint 12 (Execution Realism &
+_Last updated: 2026-09-24 -- **Sprint 13 (AI Research Agent) is
+implemented and sandbox-confirmed (network-free, `FakeLLMProvider`
+only): 897 passed, 2 known environment-only failures, 13 skipped.**
+Real `pytest` on the dev machine, and a manual bounded real-provider
+smoke test (`ANTHROPIC_API_KEY` required), are the operator's next step
+-- see "Next Task" below for exact commands. The platform's first
+genuine agentic loop now exists: `src.ai.agents.agent.ResearchAgent`
+takes a research goal, reasons over existing platform evidence
+(experiments, analytics, strategies, trained models) via a small,
+policy-gated tool surface, can run bounded historical backtests through
+a new `src.research.trial_service.ResearchTrialService`, and produces a
+structured, evidence-grounded `AgentResearchReport` -- distinguishing
+observation from hypothesis, never a trading recommendation. It is
+strictly research-only: no tool exists for trading, portfolio/risk
+mutation, model/strategy mutation, filesystem/shell access, or web
+browsing anywhere in `src/ai/agents` (`DECISIONS.md`, ADR-0046).
+`src.research.ResearchReporter` and `src.strategies.ai_signal.
+AISignalStrategy` are both completely untouched.
+
+_Previously: Sprint 12 (Execution Realism &
 Transaction Cost Modeling) is implemented and confirmed via real
 `pytest` on the dev machine: 916 passed, 0 failed (3.92s, no skips --
 every scikit-learn/joblib/Streamlit-gated test the sandbox could only
@@ -896,7 +915,45 @@ For why things were built the way they were, see `DECISIONS.md`.
 
 ## Current Module
 
-**Sprint 12 (Execution Realism & Transaction Cost Modeling) is
+**Sprint 13 (AI Research Agent) is implemented and sandbox-confirmed:
+897 passed, 2 known environment-only failures, 13 skipped** (network-
+free; `FakeLLMProvider` only; 7 of the 13 skips are this sprint's own
+`joblib`-gated test files, following the exact convention every
+sklearn/joblib/streamlit-gated module in this suite already uses).
+`src.ai.agents.agent.ResearchAgent` implements an explicit, bounded
+state-machine loop -- `INITIAL -> SEND_TO_MODEL -> (MODEL_REQUESTS_TOOL
+-> VALIDATE_TOOL -> CHECK_POLICY -> EXECUTE_TOOL -> APPEND_RESULT ->
+SEND_TO_MODEL)* -> FINAL_RESPONSE` -- driven entirely by a
+provider-neutral `LLMProvider` protocol (`src.ai.agents.provider`), with
+`AnthropicLLMProvider` (`src.ai.agents.anthropic_provider`) as the first
+concrete, fully optional adapter (`anthropic` imported lazily, never
+added to `requirements.txt`, mirroring `ClaudeNarrativeRenderer`'s own
+convention from ADR-0020). `ResearchAgentPolicy` enforces `max_steps=12`/
+`max_backtests=4` budgets and structurally forbids live trading,
+portfolio/risk mutation, model training, and strategy generation in
+code, not merely in the system prompt -- and there is, in any case, no
+tool anywhere in this package implementing any of those capabilities,
+so the restriction holds even if a policy flag were somehow flipped.
+Seven tools exist: six read-only (`list_experiments`/`get_experiment`/
+`analyze_experiment`/`compare_experiments`/`list_strategies`/
+`get_model_metadata`, each delegating to an existing application
+service, never recomputing a metric) plus `run_historical_backtest` --
+the one tool that produces new evidence, via a new, generic
+`src.research.trial_service.ResearchTrialService` (`MarketDataService ->
+Strategy -> PortfolioBacktestEngine -> Risk -> Execution -> Analytics`,
+never a second backtest pipeline, never `scripts/run_experiment.py`).
+Every research trial is ephemeral; nothing is auto-persisted to
+`ExperimentRegistry`. Every `AgentRun` (`src.ai.agents.models`) carries
+full configuration provenance (`system_prompt_version`/
+`tool_schema_version`/`policy_hash`, alongside `provider`/`model`) and
+is persisted (one JSON file per run, no hidden chain-of-thought) via
+`AgentRunStore` under `data/agent_runs/` (already covered by
+`.gitignore`'s wholesale `data/*` rule). A new CLI entry point,
+`python -m src.cli research-agent --goal "..."`, fails clearly (exit
+code 2) without `ANTHROPIC_API_KEY` configured. See `DECISIONS.md`,
+ADR-0046 for the complete design and reasoning.
+
+_Previously: Sprint 12 (Execution Realism & Transaction Cost Modeling) is
 implemented and confirmed via real `pytest` on the dev machine: 916
 passed, 0 failed.** (Sandbox had reported 855 passed, 2 known
 environment-only failures, 8 skipped -- the dev machine ran every
@@ -1270,7 +1327,58 @@ yfinance API; pre-market/after-hours session support is reserved
 
 ## Next Task
 
-Sprint 12 (Execution Realism & Transaction Cost Modeling) is
+Sprint 13 (AI Research Agent) is **implemented and sandbox-confirmed:
+897 passed, 2 known environment-only failures, 13 skipped.** Two steps
+remain, both requiring the operator's own dev machine (neither is
+possible from this sandbox: no network, no `ANTHROPIC_API_KEY`):
+
+1. **Real `pytest` confirmation.** From the repo root, with the
+   project's `.venv` activated:
+
+   ```bash
+   source .venv/bin/activate
+   pytest -q
+   ```
+
+   Expect a strictly better result than the sandbox's 897/2/13 --
+   every scikit-learn/joblib/Streamlit-gated test (including this
+   sprint's own new agent test files) should run for real and pass,
+   and neither `test_python_version_passes_against_running_interpreter`
+   nor `test_logger_is_importable_and_callable` should reproduce,
+   exactly as every prior sprint's real run has confirmed. Do not
+   assume a specific final count in advance -- report the actual
+   number.
+
+2. **Manual real-provider smoke test** (separate from the automated
+   suite; Sprint 13 spec Phase 14 -- validates the agent system, not
+   strategy profitability):
+
+   ```bash
+   export ANTHROPIC_API_KEY=sk-ant-...   # never commit this
+   python -m src.cli research-agent \
+     --goal "Investigate whether the EMA strategy's drawdown is concentrated in volatile regimes"
+   ```
+
+   Confirm the agent: uses tools (visible in the "Tool activity"
+   section of the CLI output), never references a forbidden capability,
+   stops within its default budget (12 steps / 4 backtests), produces
+   evidence-grounded observations, and distinguishes observation from
+   hypothesis. A second good test goal: `"Compare the EMA and RSI
+   strategies on the same symbol, timeframe, date range, risk
+   configuration, and execution assumptions."` Do not treat this smoke
+   test as statistical evidence about any strategy's quality -- it
+   validates the agent, not the market.
+
+Once both are done, update this file, `CHANGELOG.md`, and
+`DECISIONS.md`'s ADR-0046 status with the real results (mirroring the
+pattern every prior sprint's post-real-pytest doc update has followed),
+commit, and push. Sprint 14+ planning (a Strategy Development Agent, a
+Market Monitoring Agent, or a controlled trading agent) is otherwise
+open, with no blocking work or open implementation question --
+`ROADMAP.md`'s "Sprint 14+" section lists the explicitly deferred
+candidates.
+
+_Previously: Sprint 12 (Execution Realism & Transaction Cost Modeling) is
 **complete and confirmed via real `pytest` on the dev machine: 916
 passed, 0 failed** (3.92s). This is a strictly better result than the
 sandbox's own 855 passed, 2 known failures, 8 skipped -- the dev
@@ -1279,9 +1387,7 @@ could only skip (including the new cost-aware AI-compatibility test in
 `tests/test_ai_end_to_end.py`), all passing, and neither sandbox-only
 failure (`test_python_version_passes_against_running_interpreter`,
 `test_logger_is_importable_and_callable`) reproduced, exactly as every
-prior sprint predicted. The only remaining step is committing and
-pushing this confirmation on the dev machine; Sprint 13 planning is
-otherwise open, with no blocking work or open implementation question.
+prior sprint predicted.
 
 Sprint 11 (Portfolio-Aware Backtesting & Unified Risk Simulation) is
 **complete and confirmed via real `pytest` on the dev machine: 850

@@ -1,18 +1,20 @@
 # Project State
 
 _Last updated: 2026-09-24 -- **Sprint 13 (AI Research Agent) is
-implemented, sandbox-confirmed (897 passed, 2 known environment-only
-failures, 13 skipped), and real-pytest-confirmed with one test bug
-found and fixed: the operator's first real run reported 1016 passed, 1
-failed, where the failure was a wrong hard-coded assertion in
+implemented and confirmed via real `pytest` on the dev machine: 1017
+passed, 0 failed** (4.82s). The sandbox's own run (897 passed, 2 known
+environment-only failures, 13 skipped) was strictly improved on, as
+expected -- every scikit-learn/joblib-gated test the sandbox could only
+skip ran for real and passed. Getting here took one round-trip: the
+operator's first real run caught a wrong hard-coded assertion in
 `tests/test_research_trial_service.py` (it expected a fixture
 placeholder string instead of the actual computed dataset fingerprint)
--- not a defect in the agent itself. Fixed; a second real-pytest run
-confirming 0 failed is the remaining step, alongside the manual
-real-provider smoke test (`ANTHROPIC_API_KEY` required) -- see "Next
-Task" below for exact commands. `git push origin main` has already
-landed this sprint's implementation at commit `eea2ccf`; the test fix
-above is a follow-up commit still to be made. The platform's first
+-- a bug in the test itself, not the agent -- which was fixed and
+re-confirmed (see `DECISIONS.md`, ADR-0046). Both commits (`eea2ccf`,
+the implementation, and `83e60b9`, the test fix) are pushed to
+`origin/main`. Only the manual real-provider smoke test
+(`ANTHROPIC_API_KEY` required, Sprint 13 spec Phase 14) remains -- see
+"Next Task" below for exact commands. The platform's first
 genuine agentic loop now exists: `src.ai.agents.agent.ResearchAgent`
 takes a research goal, reasons over existing platform evidence
 (experiments, analytics, strategies, trained models) via a small,
@@ -1334,54 +1336,30 @@ yfinance API; pre-market/after-hours session support is reserved
 
 ## Next Task
 
-Sprint 13 (AI Research Agent) implementation is committed and pushed
-(`eea2ccf`, `git push origin main` succeeded). The operator's first real
-`pytest` run reported **1016 passed, 1 failed** -- the failure was a bug
-in the test itself
-(`tests/test_research_trial_service.py::test_run_trial_produces_full_provenance`
-asserted a hard-coded fixture placeholder instead of the actual computed
-dataset fingerprint; see `DECISIONS.md`, ADR-0046, "Real-machine
-verification"), not in the agent implementation. The fix has been
-applied locally in this session but **not yet committed**. Two steps
-remain:
+Sprint 13 (AI Research Agent) is **complete and confirmed via real
+`pytest` on the dev machine: 1017 passed, 0 failed** (4.82s), with both
+commits (`eea2ccf`, `83e60b9`) pushed to `origin/main`. The only
+optional remaining step is the manual real-provider smoke test (Sprint
+13 spec Phase 14 -- validates the agent system, not strategy
+profitability; not part of the automated suite, and not possible from
+a sandbox with no network/API key):
 
-1. **Commit and push the test fix**, then **re-run real `pytest`** to
-   confirm **0 failed**:
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...   # never commit this
+python -m src.cli research-agent \
+  --goal "Investigate whether the EMA strategy's drawdown is concentrated in volatile regimes"
+```
 
-   ```bash
-   git add tests/test_research_trial_service.py
-   git commit -m "Sprint 13: fix wrong dataset_fingerprint assertion in test_research_trial_service"
-   git push origin main
-   source .venv/bin/activate
-   pytest -q
-   ```
+Confirm the agent: uses tools (visible in the "Tool activity" section
+of the CLI output), never references a forbidden capability, stops
+within its default budget (12 steps / 4 backtests), produces
+evidence-grounded observations, and distinguishes observation from
+hypothesis. A second good test goal: `"Compare the EMA and RSI
+strategies on the same symbol, timeframe, date range, risk
+configuration, and execution assumptions."` Do not treat this smoke
+test as statistical evidence about any strategy's quality -- it
+validates the agent, not the market.
 
-   Expect 1016 passed, 0 failed (or a slightly different total if
-   `scikit-learn`/`joblib`/`pytest` versions have moved since the last
-   confirmation) -- report the actual number.
-
-2. **Manual real-provider smoke test** (separate from the automated
-   suite; Sprint 13 spec Phase 14 -- validates the agent system, not
-   strategy profitability):
-
-   ```bash
-   export ANTHROPIC_API_KEY=sk-ant-...   # never commit this
-   python -m src.cli research-agent \
-     --goal "Investigate whether the EMA strategy's drawdown is concentrated in volatile regimes"
-   ```
-
-   Confirm the agent: uses tools (visible in the "Tool activity"
-   section of the CLI output), never references a forbidden capability,
-   stops within its default budget (12 steps / 4 backtests), produces
-   evidence-grounded observations, and distinguishes observation from
-   hypothesis. A second good test goal: `"Compare the EMA and RSI
-   strategies on the same symbol, timeframe, date range, risk
-   configuration, and execution assumptions."` Do not treat this smoke
-   test as statistical evidence about any strategy's quality -- it
-   validates the agent, not the market.
-
-Once both are done, update this file, `CHANGELOG.md`, and
-`DECISIONS.md`'s ADR-0046 status with the final confirmed results.
 Sprint 14+ planning (a Strategy Development Agent, a Market Monitoring
 Agent, or a controlled trading agent) is otherwise open, with no
 blocking work or open implementation question -- `ROADMAP.md`'s

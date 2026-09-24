@@ -108,11 +108,13 @@ trading agent. See `DECISIONS.md`, ADR-0046 for the full design.
   **1016 passed, 1 failed** -- the one failure was the test bug fixed
   above; every other sklearn/joblib-gated test the sandbox could only
   skip ran for real and passed, including the rest of this sprint's
-  own new agent test files. A second real-pytest run confirming
-  **0 failed** with the fix applied is the operator's next step.
+  own new agent test files.
+- Real `pytest` on the dev machine (second run, with the fix applied):
+  **1017 passed, 0 failed** (4.82s). Both commits (implementation and
+  test fix) are pushed to `origin/main`.
 - The manual real-provider smoke test (`ANTHROPIC_API_KEY` set, one or
-  two bounded research goals) remains the operator's next step -- see
-  `PROJECT_STATE.md`.
+  two bounded research goals) is the only remaining, optional step --
+  see `PROJECT_STATE.md`.
 
 ## Sprint 12 -- 2026-09-23, Execution Realism & Transaction Cost Modeling
 

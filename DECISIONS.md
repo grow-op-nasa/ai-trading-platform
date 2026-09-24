@@ -3998,9 +3998,11 @@ fully confirmed.
 ## ADR-0046: Sprint 13 -- AI Research Agent
 
 **Status:** Accepted. Sandbox-confirmed (network-free, mock-provider
-tests only) and real-machine `pytest`-confirmed with one test bug found
-and fixed (see "Real-machine verification" below); the manual
-real-provider smoke test remains to be run by the operator.
+tests only) and confirmed via real `pytest` on the dev machine: **1017
+passed, 0 failed**, after one round-trip fixing a test bug (see
+"Real-machine verification" below). Both commits are pushed to
+`origin/main`. Only the manual real-provider smoke test remains, as an
+optional operator step.
 
 **Context:**
 
@@ -4245,9 +4247,11 @@ capture()` never reads that field; it always computes
 installed, so the sandbox's own 897-passed run above never executed it
 -- exactly the situation the sandbox-vs-real-machine split exists to
 catch. Fixed by asserting against `dataframe_fingerprint(candles)`
-computed from the same fixture data. A second real-pytest run
-confirming **0 failed** with the fix applied is the operator's next
-step, alongside the manual real-provider smoke test (Sprint 13 spec,
-Phase 14) -- see `PROJECT_STATE.md`'s "Next Task" section for exact
-instructions. Do not treat the sandbox count above as final release
-verification (established convention, every sprint since Sprint 8).
+computed from the same fixture data. The operator's second real-pytest
+run, with the fix applied, confirmed **1017 passed, 0 failed** (4.82s).
+Both commits (`eea2ccf`, the implementation, and `83e60b9`, the test
+fix) are pushed to `origin/main`. Only the manual real-provider smoke
+test (Sprint 13 spec, Phase 14) remains, as an optional operator step
+-- see `PROJECT_STATE.md`'s "Next Task" section. Do not treat the
+sandbox count above as final release verification (established
+convention, every sprint since Sprint 8).

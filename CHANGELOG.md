@@ -97,6 +97,25 @@ design.
   unmodified by the candidate backtest tools, exactly as Sprint 13
   built it.
 
+### Fixed (real-provider smoke test round 1)
+
+- `src/ai/agents/strategy_dev/prompts.py`'s `SYSTEM_PROMPT` told the
+  model to write candidate source but never showed it what that source
+  should look like. Against a real (unscripted) research goal, the
+  model designed a well-thought-out candidate but then called
+  `create_candidate_strategy` without the required `source` field 10
+  times in a row -- identical `INVALID_ARGUMENTS` error each time,
+  never adapting -- until the run hit `BUDGET_EXHAUSTED` with zero
+  candidates created. Fixed by adding an explicit statement that
+  `source` is required and must be complete real Python (not a
+  description, not deferred), the exact list of importable platform
+  modules, and a concrete, working `BaseStrategy` template verified to
+  pass `safety.validate_candidate_source()`. Bumped
+  `SYSTEM_PROMPT_VERSION` to `v2`. No unit test could have caught this
+  -- `FakeLLMProvider`'s scripted tests always supply a valid `source`
+  -- exactly the class of bug a real-provider smoke test exists to
+  find. See `DECISIONS.md`, ADR-0047 for the full account.
+
 ### Fixed (real-pytest round-trip)
 
 - `src/ai/agents/strategy_dev/tools.py`'s `TestCandidateTool` triggered

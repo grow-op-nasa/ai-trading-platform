@@ -1416,13 +1416,32 @@ pytest's default `Test*` heuristic -- fixed with `__test__ = False`,
 re-confirmed (37/37 still passing). Pushed to `origin/main`
 (`873f20d..ee0b605`).
 
-One step remains: a manual real-provider smoke test against the live
-Anthropic API (`python -m src.cli strategy-dev --goal "..."`),
-mirroring Sprint 13's own smoke test -- confirming the model genuinely
-creates, iterates on, and freezes a candidate strategy end-to-end (not
-just against `FakeLLMProvider`), and that a `strategy-promote` dry run
-against the resulting candidate shows the expected evidence and
-refuses without explicit confirmation.
+**Real-provider smoke test, round 1, found a real bug and it's now
+fixed.** Run against the live Anthropic API, the model correctly
+inspected existing strategies/indicators/experiments and designed a
+thoughtful candidate (an ATR-volatility-gated EMA cross on QQQ) -- but
+`create_candidate_strategy`'s `source` field was missing from every one
+of 10 consecutive tool calls, hitting the identical
+`INVALID_ARGUMENTS` error each time without ever adapting, until
+`BUDGET_EXHAUSTED` with zero candidates created. Root cause: the system
+prompt told the model to write source but never showed it what that
+source should look like. Fixed by adding an explicit statement that
+`source` is required, the exact allowed import list, and a concrete,
+working `BaseStrategy` template (verified against
+`safety.validate_candidate_source()` directly) to `prompts.py`, bumped
+to `SYSTEM_PROMPT_VERSION = "strategy-dev-agent-system-prompt-v2"`. No
+unit test could have caught this (`FakeLLMProvider` always supplies a
+valid `source`) -- exactly the class of bug a real-provider smoke test
+exists to find. Full sandbox suite re-confirmed clean after the fix
+(1008 passed, 2 pre-existing unrelated failures, 17 skipped). See
+`DECISIONS.md`, ADR-0047 for the full account.
+
+One step remains: a second real-provider smoke test confirming the fix
+above actually lets the model produce a valid `source` and complete a
+candidate end-to-end (create -> validate -> test -> freeze -> final
+test), and that a `strategy-promote` dry run against the resulting
+candidate shows the expected evidence and refuses without explicit
+confirmation.
 
 Sprint 15+ planning (a Market Monitoring Agent, or a controlled trading
 agent building on a promoted candidate) is open, with no blocking work

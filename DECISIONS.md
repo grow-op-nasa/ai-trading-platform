@@ -4532,6 +4532,55 @@ by pytest's default `Test*` collection heuristic because it has an
 pytest respects to opt a class out of collection without touching its
 name or behavior; re-confirmed against `tests/test_strategy_dev_tools.py`
 (37/37 still passing). Pushed to `origin/main`
-(`873f20d..ee0b605`). A real-provider smoke test of
-`python -m src.cli strategy-dev --goal "..."` remains the operator's
-next step.
+(`873f20d..ee0b605`).
+
+**Real-provider smoke test, round 1 (bug found):**
+
+Run against the live Anthropic API (`python -m src.cli strategy-dev
+--goal "Create a simple momentum strategy on QQQ using a short EMA
+cross with a volatility filter, backtest it, and freeze it if it looks
+reasonable"`, run ID `5f70eb5d794e4b57a3e28e9299ed1d13`). The model
+correctly inspected existing strategies/indicators/experiments first
+(`list_strategies`, `list_indicators`, `list_experiments` x2), designed
+a thoughtful, well-specified candidate (an ATR-volatility-gated EMA
+cross with a clearly stated research question and hypothesis), then
+called `create_candidate_strategy` -- and never succeeded. It hit
+`INVALID_ARGUMENTS: missing required field 'source'` on its first
+attempt (also missing `entry_logic`), added `entry_logic` on the second
+attempt, but then repeated the *exact same* `INVALID_ARGUMENTS: missing
+required field 'source'` failure on 9 further attempts in a row,
+elaborating spec-field wording each time but never once including the
+`source` field, until `BUDGET_EXHAUSTED` at 16 steps -- zero candidates
+created.
+
+Root cause: `SYSTEM_PROMPT` (`prompts.py`, v1) told the model to write
+candidate source but gave it no concrete example of what that source
+should look like -- no import list, no class-shape template, nothing
+showing the exact `BaseStrategy` pattern `safety.py`'s static validator
+requires. Confronted with a real (not scripted) research question, the
+model spent its effort refining prose fields and never converged on
+writing an actual Python class, and-critically-never adapted across
+retries despite an unambiguous, identical tool error every time. This
+is a real product gap Sprint 13's own smoke test methodology exists to
+catch: `FakeLLMProvider`'s scripted responses in
+`tests/test_strategy_dev_agent_loop.py` always supply a well-formed
+`source` string, so no unit test could have surfaced this -- only a
+live model working from the system prompt alone could.
+
+**Fix:** `prompts.py` (bumped to `SYSTEM_PROMPT_VERSION =
+"strategy-dev-agent-system-prompt-v2"`) now states plainly that
+`source` is required and must be the complete real Python source (not
+a description, not deferred), explicitly lists the five
+`ALLOWED_PLATFORM_MODULES` the candidate may import, and includes a
+concrete, minimal, working `BaseStrategy` subclass template (an
+EMA-cross skeleton mirroring `src/strategies/sdk.py`'s own docstring
+example) for the model to pattern-match against. The template was
+verified to pass `safety.validate_candidate_source()` cleanly (no
+failed checks, one harmless missing-docstring warning) before being
+added to the prompt. No test asserts the exact system-prompt version
+string, so the bump required no test changes; the full sandbox suite
+re-ran clean (1008 passed, 2 pre-existing unrelated failures, 17
+skipped) after the change.
+
+**Real-provider smoke test, round 2:** pending -- the fix above is
+untested against the live API pending a second run from the operator.

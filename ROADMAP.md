@@ -1156,9 +1156,15 @@ have zero heavy dependencies and run for real in this sandbox). Real
 `pytest` on the dev machine confirmed **1179 passed, 0 failed**
 (91.41s) -- both joblib-gated files ran for real and passed; a
 cosmetic `PytestCollectionWarning` on `tools.py`'s `TestCandidateTool`
-was fixed with `__test__ = False` in the same round-trip. A manual
-bounded real-provider smoke test (`strategy-dev --goal "..."`) is the
-operator's next step.
+was fixed with `__test__ = False` in the same round-trip. A first
+real-provider smoke test found a genuine bug -- the system prompt never
+showed the model what candidate `source` should look like, so it
+designed a good candidate but never once included the required
+`source` field across 10 retries, exhausting its budget with zero
+candidates created. Fixed with an explicit template in the system
+prompt (`prompts.py` v2), verified against the static safety validator
+directly, sandbox suite re-confirmed clean. A second real-provider
+smoke test, proving the fix, is the operator's next step.
 
 ## Sprint 15+ -- future work (planned)
 

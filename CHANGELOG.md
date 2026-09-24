@@ -112,9 +112,17 @@ trading agent. See `DECISIONS.md`, ADR-0046 for the full design.
 - Real `pytest` on the dev machine (second run, with the fix applied):
   **1017 passed, 0 failed** (4.82s). Both commits (implementation and
   test fix) are pushed to `origin/main`.
-- The manual real-provider smoke test (`ANTHROPIC_API_KEY` set, one or
-  two bounded research goals) is the only remaining, optional step --
-  see `PROJECT_STATE.md`.
+- Manual real-provider smoke test against the live Anthropic API (run
+  ID `843dffa5747a4eba803f3928a287e5b0`, goal: "Investigate whether the
+  EMA strategy's drawdown is concentrated in volatile regimes"):
+  demonstrated genuine tool-selection behavior (the model tried
+  `list_strategies`, probed `list_experiments` with a couple of filter
+  guesses, then chose four different historical windows to backtest on
+  its own), hit the runtime-enforced `max_backtests=4` cap on its 5th
+  attempt (rejected with `BUDGET_EXHAUSTED`, never silently allowed),
+  and terminated with `BUDGET_EXHAUSTED` -- explicitly reporting the
+  investigation as incomplete rather than fabricating a conclusion.
+  Sprint 13 is fully closed out.
 
 ## Sprint 12 -- 2026-09-23, Execution Realism & Transaction Cost Modeling
 

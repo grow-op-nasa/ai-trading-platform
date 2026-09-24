@@ -12,9 +12,10 @@ placeholder string instead of the actual computed dataset fingerprint)
 -- a bug in the test itself, not the agent -- which was fixed and
 re-confirmed (see `DECISIONS.md`, ADR-0046). Both commits (`eea2ccf`,
 the implementation, and `83e60b9`, the test fix) are pushed to
-`origin/main`. Only the manual real-provider smoke test
-(`ANTHROPIC_API_KEY` required, Sprint 13 spec Phase 14) remains -- see
-"Next Task" below for exact commands. The platform's first
+`origin/main`. The manual real-provider smoke test has also been run
+against the live Anthropic API and confirmed genuine, budget-respecting
+tool-selection behavior -- see "Next Task" below for the full account.
+Sprint 13 is fully closed out. The platform's first
 genuine agentic loop now exists: `src.ai.agents.agent.ResearchAgent`
 takes a research goal, reasons over existing platform evidence
 (experiments, analytics, strategies, trained models) via a small,
@@ -1336,34 +1337,34 @@ yfinance API; pre-market/after-hours session support is reserved
 
 ## Next Task
 
-Sprint 13 (AI Research Agent) is **complete and confirmed via real
-`pytest` on the dev machine: 1017 passed, 0 failed** (4.82s), with both
-commits (`eea2ccf`, `83e60b9`) pushed to `origin/main`. The only
-optional remaining step is the manual real-provider smoke test (Sprint
-13 spec Phase 14 -- validates the agent system, not strategy
-profitability; not part of the automated suite, and not possible from
-a sandbox with no network/API key):
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...   # never commit this
-python -m src.cli research-agent \
-  --goal "Investigate whether the EMA strategy's drawdown is concentrated in volatile regimes"
-```
-
-Confirm the agent: uses tools (visible in the "Tool activity" section
-of the CLI output), never references a forbidden capability, stops
-within its default budget (12 steps / 4 backtests), produces
-evidence-grounded observations, and distinguishes observation from
-hypothesis. A second good test goal: `"Compare the EMA and RSI
-strategies on the same symbol, timeframe, date range, risk
-configuration, and execution assumptions."` Do not treat this smoke
-test as statistical evidence about any strategy's quality -- it
-validates the agent, not the market.
+**Sprint 13 (AI Research Agent) is fully closed out.** Confirmed via
+real `pytest` on the dev machine (1017 passed, 0 failed, 4.82s, both
+commits `eea2ccf`/`83e60b9` pushed to `origin/main`) *and* via a real
+manual smoke test against the live Anthropic API (run ID
+`843dffa5747a4eba803f3928a287e5b0`, goal: "Investigate whether the EMA
+strategy's drawdown is concentrated in volatile regimes"). The smoke
+test demonstrated genuine tool-selection behavior, not a scripted
+sequence: the model tried `list_strategies`, probed `list_experiments`
+with a couple of filter guesses before finding the right call shape,
+then ran four historical backtests it chose itself across different
+windows (the full 2018-2022 range, then 2019, the 2020 COVID crash, and
+2021) to compare drawdown behavior. It hit the runtime-enforced
+`max_backtests=4` cap on its 5th attempt, which was cleanly rejected
+with `BUDGET_EXHAUSTED`, and the run terminated with that exact status
+-- reporting "any observations above are based on incomplete research,
+not a completed investigation" rather than fabricating a confident
+conclusion on partial evidence. This is the designed behavior, not a
+bug: `BUDGET_EXHAUSTED` is one of the three terminal statuses
+(`COMPLETED`/`FAILED`/`BUDGET_EXHAUSTED`) the spec required, and this
+run proves the cap is enforced by the runtime regardless of what the
+model wants to do next. A run with a higher `--max-backtests`/
+`--max-steps` would very likely reach `COMPLETED` instead, but that's
+optional further exploration, not a required step.
 
 Sprint 14+ planning (a Strategy Development Agent, a Market Monitoring
-Agent, or a controlled trading agent) is otherwise open, with no
-blocking work or open implementation question -- `ROADMAP.md`'s
-"Sprint 14+" section lists the explicitly deferred candidates.
+Agent, or a controlled trading agent) is open, with no blocking work or
+open implementation question -- `ROADMAP.md`'s "Sprint 14+" section
+lists the explicitly deferred candidates.
 
 _Previously: Sprint 12 (Execution Realism & Transaction Cost Modeling) is
 **complete and confirmed via real `pytest` on the dev machine: 916

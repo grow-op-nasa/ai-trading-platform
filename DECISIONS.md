@@ -3997,12 +3997,13 @@ fully confirmed.
 
 ## ADR-0046: Sprint 13 -- AI Research Agent
 
-**Status:** Accepted. Sandbox-confirmed (network-free, mock-provider
-tests only) and confirmed via real `pytest` on the dev machine: **1017
-passed, 0 failed**, after one round-trip fixing a test bug (see
-"Real-machine verification" below). Both commits are pushed to
-`origin/main`. Only the manual real-provider smoke test remains, as an
-optional operator step.
+**Status:** Accepted and fully closed out. Sandbox-confirmed
+(network-free, mock-provider tests only), confirmed via real `pytest`
+on the dev machine (**1017 passed, 0 failed**, after one round-trip
+fixing a test bug -- see "Real-machine verification" below, both
+commits pushed to `origin/main`), and confirmed via a manual smoke test
+against the live Anthropic API demonstrating genuine, budget-respecting
+tool-selection behavior (see "Real-provider smoke test" below).
 
 **Context:**
 
@@ -4250,8 +4251,30 @@ catch. Fixed by asserting against `dataframe_fingerprint(candles)`
 computed from the same fixture data. The operator's second real-pytest
 run, with the fix applied, confirmed **1017 passed, 0 failed** (4.82s).
 Both commits (`eea2ccf`, the implementation, and `83e60b9`, the test
-fix) are pushed to `origin/main`. Only the manual real-provider smoke
-test (Sprint 13 spec, Phase 14) remains, as an optional operator step
--- see `PROJECT_STATE.md`'s "Next Task" section. Do not treat the
-sandbox count above as final release verification (established
-convention, every sprint since Sprint 8).
+fix) are pushed to `origin/main`. Do not treat the sandbox count above
+as final release verification (established convention, every sprint
+since Sprint 8).
+
+**Real-provider smoke test:**
+
+Run against the live Anthropic API (`python -m src.cli research-agent
+--goal "Investigate whether the EMA strategy's drawdown is concentrated
+in volatile regimes"`, run ID `843dffa5747a4eba803f3928a287e5b0`). The
+model demonstrated genuine tool-selection behavior rather than a
+scripted sequence: it called `list_strategies`, then probed
+`list_experiments` with a couple of different filter-argument guesses
+before finding the right call shape, then chose four distinct
+historical windows to backtest on its own initiative (the full
+2018-2022 range, then 2019, the 2020 COVID crash, and 2021) to compare
+drawdown behavior across regimes -- exactly the kind of investigative
+path this sprint's spec required proof of (at least two genuinely
+different valid paths, Sprint 13 spec section 83), now demonstrated
+live rather than only against `FakeLLMProvider`. On its 5th tool call
+attempt it was cleanly rejected with `BUDGET_EXHAUSTED`
+(`max_backtests=4` enforced by the runtime, not the model), and the run
+terminated in that exact status, reporting "any observations above are
+based on incomplete research, not a completed investigation" rather
+than presenting a fabricated conclusion on partial evidence. This
+confirms decision 8 above (`BUDGET_EXHAUSTED` as a distinct, honest
+terminal status) end-to-end against the real provider, not just the
+fake one. Sprint 13 is fully closed out.

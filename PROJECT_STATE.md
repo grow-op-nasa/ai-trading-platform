@@ -1,14 +1,18 @@
 # Project State
 
 _Last updated: 2026-09-24 -- **Sprint 14 (AI Strategy Development
-Agent) is implemented and sandbox-confirmed: 1008 passed, 2 known
-environment-only failures, 17 skipped** (network-free; the two
-`joblib`-gated new test files skipped, same established convention as
-every sklearn/joblib/streamlit-gated module already in this suite).
-Real `pytest` on the dev machine and a real-provider smoke test
-(`python -m src.cli strategy-dev --goal "..."`) are pending, handed off
-to the operator per the established Sprint 10-13 convention -- see
-"Next Task" below. `src.ai.agents.strategy_dev.dev_agent.
+Agent) is implemented and confirmed via real `pytest` on the dev
+machine: 1179 passed, 0 failed** (91.41s). Both of this sprint's own
+joblib-gated test files (`test_strategy_dev_tools.py`,
+`test_strategy_dev_agent_loop.py`) ran for real and passed on the first
+attempt -- a strict improvement on the sandbox's own 1008 passed, 2
+known environment-only failures, 17 skipped. One cosmetic
+`PytestCollectionWarning` surfaced (`tools.py`'s `TestCandidateTool` --
+an agent tool, not a pytest test -- was picked up by pytest's `Test*`
+collection heuristic); fixed with `__test__ = False`, re-confirmed
+(37/37 still passing). Pushed to `origin/main` (`873f20d..ee0b605`). A
+real-provider smoke test (`python -m src.cli strategy-dev --goal
+"..."`) is the operator's next step -- see "Next Task" below. `src.ai.agents.strategy_dev.dev_agent.
 StrategyDevelopmentAgent` can create, statically validate, backtest,
 revise, and freeze a candidate strategy, and run its one-shot final
 out-of-sample test -- but it structurally cannot promote a candidate,
@@ -948,12 +952,11 @@ For why things were built the way they were, see `DECISIONS.md`.
 ## Current Module
 
 **Sprint 14 (AI Strategy Development Agent) is implemented and
-sandbox-confirmed: 1008 passed, 2 known environment-only failures, 17
-skipped** (network-free; only the two test files that transitively
-import `ModelRegistry` -- `test_strategy_dev_tools.py`,
-`test_strategy_dev_agent_loop.py` -- are `joblib`-gated;
-`workspace.py`/`models.py`/`safety.py`/`runner.py`/`_harness.py` have
-zero heavy dependencies and run for real here). The safety principle
+confirmed via real `pytest` on the dev machine: 1179 passed, 0 failed**
+(91.41s). The sandbox's own run (1008 passed, 2 known environment-only
+failures, 17 skipped, network-free) was strictly improved on, as
+expected -- both of this sprint's own `joblib`-gated test files ran for
+real and passed. The safety principle
 this sprint had to hold even against adversarial candidate code: an AI
 may CREATE/TEST/ITERATE/REPORT on a strategy candidate; it may never
 PROMOTE it, MODIFY the production registry, or trade. That's enforced
@@ -1403,24 +1406,23 @@ yfinance API; pre-market/after-hours session support is reserved
 
 ## Next Task
 
-**Sprint 14 (AI Strategy Development Agent) is implementation-complete
-and sandbox-confirmed (1008 passed, 2 known environment-only failures,
-17 skipped); two steps remain, both requiring the real dev machine:**
+**Sprint 14 (AI Strategy Development Agent) is confirmed via real
+`pytest` on the dev machine: 1179 passed, 0 failed** (91.41s). Both of
+this sprint's own joblib-gated test files ran for real on the first
+attempt, no regressions. One thing surfaced and was fixed in the same
+round-trip: `tools.py`'s `TestCandidateTool` (an agent tool, not a
+pytest test) triggered a cosmetic `PytestCollectionWarning` under
+pytest's default `Test*` heuristic -- fixed with `__test__ = False`,
+re-confirmed (37/37 still passing). Pushed to `origin/main`
+(`873f20d..ee0b605`).
 
-1. A real `pytest` run confirming the two `joblib`-gated new test files
-   (`tests/test_strategy_dev_tools.py`,
-   `tests/test_strategy_dev_agent_loop.py`) pass for real, exactly as
-   every prior sprint's own joblib/sklearn-gated tests have. No
-   regressions are expected -- the sandbox already ran 1008 tests
-   (including 165 new ones) with zero failures attributable to this
-   sprint's changes.
-2. A manual real-provider smoke test against the live Anthropic API
-   (`python -m src.cli strategy-dev --goal "..."`), mirroring Sprint
-   13's own smoke test -- confirming the model genuinely creates,
-   iterates on, and freezes a candidate strategy end-to-end (not just
-   against `FakeLLMProvider`), and that a `strategy-promote` dry run
-   against the resulting candidate shows the expected evidence and
-   refuses without explicit confirmation.
+One step remains: a manual real-provider smoke test against the live
+Anthropic API (`python -m src.cli strategy-dev --goal "..."`),
+mirroring Sprint 13's own smoke test -- confirming the model genuinely
+creates, iterates on, and freezes a candidate strategy end-to-end (not
+just against `FakeLLMProvider`), and that a `strategy-promote` dry run
+against the resulting candidate shows the expected evidence and
+refuses without explicit confirmation.
 
 Sprint 15+ planning (a Market Monitoring Agent, or a controlled trading
 agent building on a promoted candidate) is open, with no blocking work

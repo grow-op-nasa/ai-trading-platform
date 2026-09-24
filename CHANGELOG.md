@@ -97,6 +97,16 @@ design.
   unmodified by the candidate backtest tools, exactly as Sprint 13
   built it.
 
+### Fixed (real-pytest round-trip)
+
+- `src/ai/agents/strategy_dev/tools.py`'s `TestCandidateTool` triggered
+  a `PytestCollectionWarning` on the dev machine (pytest's default
+  `Test*` collection heuristic picked it up because it has an
+  `__init__` -- it's an agent tool named after the `test_candidate`
+  lifecycle action, not a pytest test). Fixed by adding
+  `__test__ = False`, which pytest honors to skip collection without
+  renaming the class.
+
 ### Verified
 
 - Sandbox (network-free, `joblib`/`scikit-learn`/`streamlit`
@@ -108,8 +118,10 @@ design.
   joblib-gated additions (`test_strategy_dev_tools.py`,
   `test_strategy_dev_agent_loop.py`), expected to run and pass for real
   once `joblib`/`scikit-learn` are installed.
-- Real `pytest` on the dev machine: pending, handed off to the
-  operator, per the established Sprint 10-13 convention.
+- Real `pytest` on the dev machine: **1179 passed, 0 failed** (91.41s).
+  Both of this sprint's own joblib-gated test files ran for real and
+  passed on the first attempt. Pushed to `origin/main`
+  (`873f20d..ee0b605`).
 - Real-provider smoke test (`python -m src.cli strategy-dev --goal
   "..."` against the live Anthropic API): pending, handed off to the
   operator.

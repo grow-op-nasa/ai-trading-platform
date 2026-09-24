@@ -356,6 +356,12 @@ class TestCandidateTool:
     on its own (section 28: "the agent cannot write a test that
     redefines these rules"), just the gate before any real backtest."""
 
+    # This is an agent tool named after the "test_candidate" lifecycle
+    # action, not a pytest test case -- tell pytest's collector to leave
+    # it alone (it otherwise warns because the name starts with "Test"
+    # and the class has an __init__).
+    __test__ = False
+
     name = "test_candidate"
     description = (
         "Run a bounded contract test for a VALIDATED candidate against a small "

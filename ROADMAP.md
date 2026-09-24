@@ -1081,7 +1081,7 @@ way, see `DECISIONS.md` ADR-0046). A manual real-provider smoke test
 against the live Anthropic API confirmed genuine, budget-respecting
 tool-selection behavior. Sprint 13 is fully closed out.
 
-## Sprint 14 -- AI Strategy Development Agent ✅ Complete (sandbox-confirmed: 1008 passed, 2 known environment-only failures, 17 skipped; real pytest + real-provider smoke test pending)
+## Sprint 14 -- AI Strategy Development Agent ✅ Complete (real pytest-confirmed: 1179 passed, 0 failed; real-provider smoke test pending)
 
 Objective: the next capability up the trust ladder from Sprint 13's
 read-only `ResearchAgent` -- an agent that can write, test, and iterate
@@ -1153,8 +1153,12 @@ Sandbox-confirmed: **1008 passed, 2 known environment-only failures, 17
 skipped** (only the two test files transitively importing
 `ModelRegistry` are `joblib`-gated; the rest of this sprint's new tests
 have zero heavy dependencies and run for real in this sandbox). Real
-`pytest` on the dev machine, and a manual bounded real-provider smoke
-test (`strategy-dev --goal "..."`), are the operator's next step.
+`pytest` on the dev machine confirmed **1179 passed, 0 failed**
+(91.41s) -- both joblib-gated files ran for real and passed; a
+cosmetic `PytestCollectionWarning` on `tools.py`'s `TestCandidateTool`
+was fixed with `__test__ = False` in the same round-trip. A manual
+bounded real-provider smoke test (`strategy-dev --goal "..."`) is the
+operator's next step.
 
 ## Sprint 15+ -- future work (planned)
 

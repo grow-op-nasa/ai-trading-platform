@@ -4517,8 +4517,21 @@ expected to run and pass for real once `joblib`/`scikit-learn` are
 installed (the dev machine's `.venv` already has them, per Sprint
 10-13's own real-pytest confirmations).
 
-**Real-machine verification:** pending -- handed off to the operator,
-per the established Sprint 10-13 convention (this sandbox has neither
-`joblib`/`scikit-learn` for the two gated test files nor a live
-Anthropic API key for a real-provider smoke test of
-`python -m src.cli strategy-dev --goal "..."`).
+**Real-machine verification:**
+
+Real `pytest` on the dev machine confirmed **1179 passed, 0 failed**
+(91.41s) -- every joblib/scikit-learn-gated test the sandbox could only
+skip ran for real, including both of this sprint's own gated files
+(`test_strategy_dev_tools.py`, `test_strategy_dev_agent_loop.py`), all
+passing on the first attempt. The run surfaced one cosmetic
+`PytestCollectionWarning` (not a failure): `tools.py`'s
+`TestCandidateTool` -- an agent tool class named after the
+`test_candidate` lifecycle action, unrelated to pytest -- was picked up
+by pytest's default `Test*` collection heuristic because it has an
+`__init__`. Fixed by adding `__test__ = False` to the class, which
+pytest respects to opt a class out of collection without touching its
+name or behavior; re-confirmed against `tests/test_strategy_dev_tools.py`
+(37/37 still passing). Pushed to `origin/main`
+(`873f20d..ee0b605`). A real-provider smoke test of
+`python -m src.cli strategy-dev --goal "..."` remains the operator's
+next step.

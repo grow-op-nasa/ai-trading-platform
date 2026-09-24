@@ -3998,9 +3998,9 @@ fully confirmed.
 ## ADR-0046: Sprint 13 -- AI Research Agent
 
 **Status:** Accepted. Sandbox-confirmed (network-free, mock-provider
-tests only); real-machine `pytest` and the manual real-provider smoke
-test remain to be run by the operator (see "Sandbox verification"
-below).
+tests only) and real-machine `pytest`-confirmed with one test bug found
+and fixed (see "Real-machine verification" below); the manual
+real-provider smoke test remains to be run by the operator.
 
 **Context:**
 
@@ -4228,8 +4228,26 @@ Every one of the Sprint 13 skips is expected to run and pass for real
 once `joblib`/`scikit-learn` are installed (the dev machine's `.venv`
 already has them, per Sprint 10-12's own real-pytest confirmations).
 
-**Real `pytest` on the dev machine, and the manual real-provider smoke
-test (Sprint 13 spec, Phase 14), are the operator's next step** -- see
-`PROJECT_STATE.md`'s "Next Task" section for exact instructions. Do not
-treat the sandbox count above as final release verification
-(established convention, every sprint since Sprint 8).
+**Real-machine verification:**
+
+The operator's first real `pytest` run reported **1016 passed, 1
+failed** -- every sklearn/joblib-gated test the sandbox could only skip
+ran for real, including the rest of this sprint's own new agent test
+files, all passing. The one failure was a bug in the test itself, not
+the implementation: `tests/test_research_trial_service.py::
+test_run_trial_produces_full_provenance` asserted `outcome.spec.
+dataset_fingerprint == "fake-content-hash"`, a literal the test's own
+fixture had set on `CandleDataset.content_hash` -- but `ExperimentSpec.
+capture()` never reads that field; it always computes
+`dataset_fingerprint` itself by hashing the actual candle values
+(`src.utils.hashing.dataframe_fingerprint`, see decision 2 above and
+`src/experiments/spec.py`). This test class only runs where `joblib` is
+installed, so the sandbox's own 897-passed run above never executed it
+-- exactly the situation the sandbox-vs-real-machine split exists to
+catch. Fixed by asserting against `dataframe_fingerprint(candles)`
+computed from the same fixture data. A second real-pytest run
+confirming **0 failed** with the fix applied is the operator's next
+step, alongside the manual real-provider smoke test (Sprint 13 spec,
+Phase 14) -- see `PROJECT_STATE.md`'s "Next Task" section for exact
+instructions. Do not treat the sandbox count above as final release
+verification (established convention, every sprint since Sprint 8).

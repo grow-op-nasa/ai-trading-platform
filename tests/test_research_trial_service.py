@@ -20,6 +20,7 @@ from src.data.base import Interval
 from src.data.models import CandleDataset, SessionPolicy, ValidationReport
 from src.research.trial_service import ResearchTrialService
 from src.strategies.ema_cross import EMACrossStrategy  # noqa: F401 -- registers "ema_cross"
+from src.utils.hashing import dataframe_fingerprint
 
 
 def _candles(n: int = 60) -> pd.DataFrame:
@@ -58,7 +59,8 @@ class FakeMarketDataService:
 
 
 def test_run_trial_produces_full_provenance(tmp_path):
-    service = ResearchTrialService(market_data_service=FakeMarketDataService())
+    candles = _candles()
+    service = ResearchTrialService(market_data_service=FakeMarketDataService(candles))
     outcome = service.run_trial(
         strategy_name="ema_cross",
         strategy_params={"fast": 3, "slow": 8},
@@ -70,7 +72,11 @@ def test_run_trial_produces_full_provenance(tmp_path):
     assert outcome.trial_id
     assert outcome.spec.symbol == "SPY"
     assert outcome.spec.strategy_name == "ema_cross"
-    assert outcome.spec.dataset_fingerprint == "fake-content-hash"
+    # ExperimentSpec.capture() always hashes the actual candles used
+    # (src.utils.hashing.dataframe_fingerprint) -- it never trusts a
+    # CandleDataset's own `content_hash` field, so the fixture's
+    # "fake-content-hash" placeholder is never what ends up here.
+    assert outcome.spec.dataset_fingerprint == dataframe_fingerprint(candles)
     assert outcome.analytics.symbol == "SPY"
     assert outcome.result.risk_mode.value == "PORTFOLIO_RISK"
     assert outcome.model_id is None

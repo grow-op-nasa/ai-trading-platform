@@ -78,6 +78,23 @@ trading agent. See `DECISIONS.md`, ADR-0046 for the full design.
   imported dependency exactly like `ClaudeNarrativeRenderer`'s own use
   of it (ADR-0020).
 
+### Fixed
+
+- `tests/test_research_trial_service.py::test_run_trial_produces_full_provenance`
+  asserted `outcome.spec.dataset_fingerprint == "fake-content-hash"` --
+  a literal the test's own `FakeMarketDataService` fixture had set on
+  `CandleDataset.content_hash`. `ExperimentSpec.capture()` never reads
+  that field: it always computes `dataset_fingerprint` itself, by
+  hashing the actual candle values (`src.utils.hashing.
+  dataframe_fingerprint`, see `src/experiments/spec.py`), so the
+  literal was never what the field would actually hold. This class of
+  test only runs where `joblib` is installed (`pytest.importorskip`
+  gates it), so the sandbox's 897-passed sandbox run above never
+  executed it -- the real dev-machine `pytest` run caught it, exactly
+  the situation the sandbox-vs-real-machine split exists to catch.
+  Fixed by asserting against `dataframe_fingerprint(candles)` computed
+  from the same fixture data, instead of a hard-coded placeholder.
+
 ### Verified
 
 - Sandbox (network-free, `FakeLLMProvider` only): **897 passed, 2
@@ -87,9 +104,15 @@ trading agent. See `DECISIONS.md`, ADR-0046 for the full design.
   (`src.ai.registry.ModelRegistry` imports `joblib` at module scope,
   same established convention as every sklearn/joblib/streamlit-gated
   module already in this suite); the rest are pre-existing.
-- Real `pytest` on the dev machine, and the manual real-provider smoke
-  test (`ANTHROPIC_API_KEY` set, one or two bounded research goals),
-  remain the operator's next step -- see `PROJECT_STATE.md`.
+- Real `pytest` on the dev machine (first run, before the fix above):
+  **1016 passed, 1 failed** -- the one failure was the test bug fixed
+  above; every other sklearn/joblib-gated test the sandbox could only
+  skip ran for real and passed, including the rest of this sprint's
+  own new agent test files. A second real-pytest run confirming
+  **0 failed** with the fix applied is the operator's next step.
+- The manual real-provider smoke test (`ANTHROPIC_API_KEY` set, one or
+  two bounded research goals) remains the operator's next step -- see
+  `PROJECT_STATE.md`.
 
 ## Sprint 12 -- 2026-09-23, Execution Realism & Transaction Cost Modeling
 

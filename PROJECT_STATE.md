@@ -1,11 +1,18 @@
 # Project State
 
 _Last updated: 2026-09-24 -- **Sprint 13 (AI Research Agent) is
-implemented and sandbox-confirmed (network-free, `FakeLLMProvider`
-only): 897 passed, 2 known environment-only failures, 13 skipped.**
-Real `pytest` on the dev machine, and a manual bounded real-provider
-smoke test (`ANTHROPIC_API_KEY` required), are the operator's next step
--- see "Next Task" below for exact commands. The platform's first
+implemented, sandbox-confirmed (897 passed, 2 known environment-only
+failures, 13 skipped), and real-pytest-confirmed with one test bug
+found and fixed: the operator's first real run reported 1016 passed, 1
+failed, where the failure was a wrong hard-coded assertion in
+`tests/test_research_trial_service.py` (it expected a fixture
+placeholder string instead of the actual computed dataset fingerprint)
+-- not a defect in the agent itself. Fixed; a second real-pytest run
+confirming 0 failed is the remaining step, alongside the manual
+real-provider smoke test (`ANTHROPIC_API_KEY` required) -- see "Next
+Task" below for exact commands. `git push origin main` has already
+landed this sprint's implementation at commit `eea2ccf`; the test fix
+above is a follow-up commit still to be made. The platform's first
 genuine agentic loop now exists: `src.ai.agents.agent.ResearchAgent`
 takes a research goal, reasons over existing platform evidence
 (experiments, analytics, strategies, trained models) via a small,
@@ -1327,27 +1334,31 @@ yfinance API; pre-market/after-hours session support is reserved
 
 ## Next Task
 
-Sprint 13 (AI Research Agent) is **implemented and sandbox-confirmed:
-897 passed, 2 known environment-only failures, 13 skipped.** Two steps
-remain, both requiring the operator's own dev machine (neither is
-possible from this sandbox: no network, no `ANTHROPIC_API_KEY`):
+Sprint 13 (AI Research Agent) implementation is committed and pushed
+(`eea2ccf`, `git push origin main` succeeded). The operator's first real
+`pytest` run reported **1016 passed, 1 failed** -- the failure was a bug
+in the test itself
+(`tests/test_research_trial_service.py::test_run_trial_produces_full_provenance`
+asserted a hard-coded fixture placeholder instead of the actual computed
+dataset fingerprint; see `DECISIONS.md`, ADR-0046, "Real-machine
+verification"), not in the agent implementation. The fix has been
+applied locally in this session but **not yet committed**. Two steps
+remain:
 
-1. **Real `pytest` confirmation.** From the repo root, with the
-   project's `.venv` activated:
+1. **Commit and push the test fix**, then **re-run real `pytest`** to
+   confirm **0 failed**:
 
    ```bash
+   git add tests/test_research_trial_service.py
+   git commit -m "Sprint 13: fix wrong dataset_fingerprint assertion in test_research_trial_service"
+   git push origin main
    source .venv/bin/activate
    pytest -q
    ```
 
-   Expect a strictly better result than the sandbox's 897/2/13 --
-   every scikit-learn/joblib/Streamlit-gated test (including this
-   sprint's own new agent test files) should run for real and pass,
-   and neither `test_python_version_passes_against_running_interpreter`
-   nor `test_logger_is_importable_and_callable` should reproduce,
-   exactly as every prior sprint's real run has confirmed. Do not
-   assume a specific final count in advance -- report the actual
-   number.
+   Expect 1016 passed, 0 failed (or a slightly different total if
+   `scikit-learn`/`joblib`/`pytest` versions have moved since the last
+   confirmation) -- report the actual number.
 
 2. **Manual real-provider smoke test** (separate from the automated
    suite; Sprint 13 spec Phase 14 -- validates the agent system, not
@@ -1370,13 +1381,11 @@ possible from this sandbox: no network, no `ANTHROPIC_API_KEY`):
    validates the agent, not the market.
 
 Once both are done, update this file, `CHANGELOG.md`, and
-`DECISIONS.md`'s ADR-0046 status with the real results (mirroring the
-pattern every prior sprint's post-real-pytest doc update has followed),
-commit, and push. Sprint 14+ planning (a Strategy Development Agent, a
-Market Monitoring Agent, or a controlled trading agent) is otherwise
-open, with no blocking work or open implementation question --
-`ROADMAP.md`'s "Sprint 14+" section lists the explicitly deferred
-candidates.
+`DECISIONS.md`'s ADR-0046 status with the final confirmed results.
+Sprint 14+ planning (a Strategy Development Agent, a Market Monitoring
+Agent, or a controlled trading agent) is otherwise open, with no
+blocking work or open implementation question -- `ROADMAP.md`'s
+"Sprint 14+" section lists the explicitly deferred candidates.
 
 _Previously: Sprint 12 (Execution Realism & Transaction Cost Modeling) is
 **complete and confirmed via real `pytest` on the dev machine: 916

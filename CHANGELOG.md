@@ -141,9 +141,22 @@ design.
   Both of this sprint's own joblib-gated test files ran for real and
   passed on the first attempt. Pushed to `origin/main`
   (`873f20d..ee0b605`).
-- Real-provider smoke test (`python -m src.cli strategy-dev --goal
-  "..."` against the live Anthropic API): pending, handed off to the
-  operator.
+- Real-provider smoke test, round 2 (`python -m src.cli strategy-dev
+  --goal "..."` against the live Anthropic API, after the prompt fix
+  above): the model self-corrected a single missing-field error
+  (`signal_semantics`) on its very next call and included a complete,
+  valid `source`, then completed the full lifecycle end-to-end --
+  create -> validate -> test -> dev backtest -> validation backtest ->
+  freeze -> exactly one final out-of-sample test -> report -- ending
+  `COMPLETED` with the candidate at `REVIEW_REQUIRED`. The report
+  honestly flagged small sample sizes, zero fees/slippage, and the
+  absence of a baseline comparison, without ever claiming the candidate
+  was promotion-ready. `python -m src.cli strategy-promote
+  --candidate-id ...` was then run against the resulting candidate:
+  printed full evidence, required an explicit interactive `y/N`
+  confirmation, and recorded `PROMOTED` with full lineage -- confirming
+  the promotion boundary holds end-to-end against a real model and a
+  real human decision.
 
 ## Sprint 13 -- 2026-09-24, AI Research Agent
 

@@ -1,18 +1,19 @@
 # Project State
 
 _Last updated: 2026-09-24 -- **Sprint 14 (AI Strategy Development
-Agent) is implemented and confirmed via real `pytest` on the dev
-machine: 1179 passed, 0 failed** (91.41s). Both of this sprint's own
-joblib-gated test files (`test_strategy_dev_tools.py`,
-`test_strategy_dev_agent_loop.py`) ran for real and passed on the first
-attempt -- a strict improvement on the sandbox's own 1008 passed, 2
-known environment-only failures, 17 skipped. One cosmetic
-`PytestCollectionWarning` surfaced (`tools.py`'s `TestCandidateTool` --
-an agent tool, not a pytest test -- was picked up by pytest's `Test*`
-collection heuristic); fixed with `__test__ = False`, re-confirmed
-(37/37 still passing). Pushed to `origin/main` (`873f20d..ee0b605`). A
-real-provider smoke test (`python -m src.cli strategy-dev --goal
-"..."`) is the operator's next step -- see "Next Task" below. `src.ai.agents.strategy_dev.dev_agent.
+Agent) is fully closed out.** Real `pytest` on the dev machine: 1179
+passed, 0 failed (91.41s), both joblib-gated test files running for
+real. Real-provider smoke testing found and fixed one genuine bug (the
+system prompt never showed the model what candidate `source` should
+look like, so it never once included that required field across ten
+retries against a live goal -- fixed with an explicit template in
+`prompts.py` v2), then, re-run, completed the full candidate lifecycle
+end-to-end against the live Anthropic API -- create -> validate -> test
+-> backtest -> freeze -> final out-of-sample test -> report -- and the
+resulting candidate was promoted by the operator through
+`strategy-promote`'s interactive human-approval gate, with full
+lineage recorded and `StrategyRegistry` left completely untouched. All
+three commits pushed to `origin/main`. `src.ai.agents.strategy_dev.dev_agent.
 StrategyDevelopmentAgent` can create, statically validate, backtest,
 revise, and freeze a candidate strategy, and run its one-shot final
 out-of-sample test -- but it structurally cannot promote a candidate,
@@ -1436,12 +1437,27 @@ exists to find. Full sandbox suite re-confirmed clean after the fix
 (1008 passed, 2 pre-existing unrelated failures, 17 skipped). See
 `DECISIONS.md`, ADR-0047 for the full account.
 
-One step remains: a second real-provider smoke test confirming the fix
-above actually lets the model produce a valid `source` and complete a
-candidate end-to-end (create -> validate -> test -> freeze -> final
-test), and that a `strategy-promote` dry run against the resulting
-candidate shows the expected evidence and refuses without explicit
-confirmation.
+**Round 2, confirmed: the fix works.** Re-run against the live
+Anthropic API (run ID `3e8ee5af9206434e9b1f1b81f7c283c8`), the model
+self-corrected a single missing-field error on its very next call
+(rather than looping, as before) and included a complete, valid
+`source`, then completed the full candidate lifecycle end-to-end:
+create -> validate -> test -> a development backtest (2018-2022, 27
+trades) -> a validation backtest (2023-2024H1, 7 trades) -> freeze ->
+exactly one final out-of-sample test (2024H2-2025H1, 5 trades) -> a
+full report, terminating `COMPLETED` with the candidate at
+`REVIEW_REQUIRED`. The report honestly flagged its own weaknesses
+(small sample sizes throughout, zero fees/slippage assumed, no
+baseline comparison run) and never claimed the candidate was
+promotion-ready. The operator then ran `strategy-promote
+--candidate-id ...` against it: full evidence printed first, an
+explicit interactive `y/N` confirmation required and given, `PROMOTED`
+recorded with full lineage, and an explicit statement that this only
+marks the candidate registry -- `StrategyRegistry` is untouched, and
+nothing was deployed or traded. **Sprint 14 is fully closed out**: 
+implemented, sandbox-verified, real-pytest-verified (1179 passed, 0
+failed), and real-provider-verified end-to-end through to a
+human-approved promotion.
 
 Sprint 15+ planning (a Market Monitoring Agent, or a controlled trading
 agent building on a promoted candidate) is open, with no blocking work

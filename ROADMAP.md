@@ -1081,7 +1081,7 @@ way, see `DECISIONS.md` ADR-0046). A manual real-provider smoke test
 against the live Anthropic API confirmed genuine, budget-respecting
 tool-selection behavior. Sprint 13 is fully closed out.
 
-## Sprint 14 -- AI Strategy Development Agent ✅ Complete (real pytest-confirmed: 1179 passed, 0 failed; real-provider smoke test pending)
+## Sprint 14 -- AI Strategy Development Agent ✅ Complete (real pytest-confirmed: 1179 passed, 0 failed; real-provider smoke test confirmed end-to-end through a human-approved promotion)
 
 Objective: the next capability up the trust ladder from Sprint 13's
 read-only `ResearchAgent` -- an agent that can write, test, and iterate
@@ -1163,8 +1163,16 @@ designed a good candidate but never once included the required
 `source` field across 10 retries, exhausting its budget with zero
 candidates created. Fixed with an explicit template in the system
 prompt (`prompts.py` v2), verified against the static safety validator
-directly, sandbox suite re-confirmed clean. A second real-provider
-smoke test, proving the fix, is the operator's next step.
+directly, sandbox suite re-confirmed clean. Re-run, the fix worked: the
+model self-corrected a single missing-field error in one retry, wrote
+valid `source`, and completed the full lifecycle end-to-end (create ->
+validate -> test -> dev backtest -> validation backtest -> freeze ->
+final out-of-sample test -> report), landing `COMPLETED` with an
+honest, self-critical report at `REVIEW_REQUIRED`. The operator then
+promoted the resulting candidate through `strategy-promote`'s
+interactive human-approval gate, confirming the promotion boundary
+holds end-to-end with a real model and a real human decision. Sprint 14
+is fully closed out.
 
 ## Sprint 15+ -- future work (planned)
 

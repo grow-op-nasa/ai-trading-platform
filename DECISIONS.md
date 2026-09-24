@@ -4282,14 +4282,15 @@ fake one. Sprint 13 is fully closed out.
 
 ## ADR-0047: Sprint 14 -- AI Strategy Development Agent
 
-**Status:** Accepted, implementation and sandbox verification complete
-(**1008 passed, 2 failed (pre-existing, environment-only), 17
-skipped**, all skips joblib/sklearn/streamlit-gated and expected to run
-for real on the dev machine). Real-machine `pytest` confirmation and a
-real-provider smoke test are the two remaining steps, handed off to the
-operator per the established Sprint 10-13 convention (sandbox
-verification is necessary but never sufficient, since this sandbox has
-neither `joblib`/`scikit-learn` nor a live Anthropic API key).
+**Status:** Accepted and fully closed out. Sandbox-confirmed (**1008
+passed, 2 failed (pre-existing, environment-only), 17 skipped**),
+confirmed via real `pytest` on the dev machine (**1179 passed, 0
+failed**, 91.41s, both commits pushed to `origin/main`), and confirmed
+via two real-provider smoke tests against the live Anthropic API -- the
+first surfaced a genuine prompt-design bug (fixed and re-confirmed
+below), the second completed the full candidate lifecycle end-to-end
+through to a human-approved promotion (see "Real-provider smoke test,
+round 1" and "round 2" below).
 
 **Context:**
 
@@ -4582,5 +4583,48 @@ string, so the bump required no test changes; the full sandbox suite
 re-ran clean (1008 passed, 2 pre-existing unrelated failures, 17
 skipped) after the change.
 
-**Real-provider smoke test, round 2:** pending -- the fix above is
-untested against the live API pending a second run from the operator.
+**Real-provider smoke test, round 2 (confirmed working):**
+
+Same goal, re-run against the live Anthropic API (run ID
+`3e8ee5af9206434e9b1f1b81f7c283c8`). The model again inspected existing
+strategies/indicators/experiments first, then called
+`create_candidate_strategy` -- this time missing only `signal_semantics`
+on its first attempt, and self-correcting on the very next call by
+including both `signal_semantics` and a complete, correct `source`
+field: a `BaseStrategy` subclass (`EmaCrossVolFilterStrategy`) importing
+only `src.strategies.sdk`/`src.signals.models`, computing EMA(8)/EMA(21)
+and an ATR(14)-based volatility-percentage filter, and emitting sparse
+LONG/FLAT signals via `self.emit_signal(...)` -- confirming the v2
+prompt fix worked, and that the model can now recover from a genuine
+missing-field error in one retry (unlike the source-field failure mode,
+where it never recovered across ten attempts, because it lacked any
+template to correct toward). The run then completed the full lifecycle
+end-to-end: `validate_candidate` -> `test_candidate` -> a development
+backtest (2018-2022, 27 trades, Sharpe 0.47) -> a validation backtest
+(2023-2024H1, 7 trades, Sharpe 1.70) -> `freeze_candidate` -> exactly
+one final out-of-sample test (2024H2-2025H1, 5 trades, Sharpe 1.11) ->
+a full report, terminating `COMPLETED` (not `BUDGET_EXHAUSTED`) with
+the candidate at `REVIEW_REQUIRED`. The report itself honestly flagged
+its own weaknesses unprompted -- small sample sizes across all three
+windows, zero fees/slippage assumed, no baseline comparison against the
+existing `ema_cross` strategy, and an untuned fixed volatility
+threshold -- and explicitly declined to call the candidate
+"promotion-ready," consistent with decision 8's human-only promotion
+principle holding under a real model's own incentive to look successful.
+
+The operator then ran `python -m src.cli strategy-promote
+--candidate-id 241a3b657ba846169476e8aa374235a1` and confirmed the
+full promotion-CLI contract end-to-end: full evidence printed
+(status, description, source/spec hashes, agent run id, all three
+stage evaluations with trade counts and the final test's exact date
+range) before any prompt, an explicit interactive `y/N` confirmation
+required (the operator answered `y` as a genuine human decision),
+`PROMOTED` recorded with full lineage (`candidate_id`, `source_hash`,
+`spec_hash`, `agent_run_id`, `approved_at`), and an explicit closing
+statement that promotion only marks the candidate registry -- it does
+not register anything in `StrategyRegistry`, deploy anything, or place
+a trade. Sprint 14 is fully closed out: implemented, sandbox-verified,
+real-pytest-verified (1179 passed, 0 failed), and now real-provider-
+verified end-to-end through to a human-approved promotion, with the
+one bug the smoke test found (round 1) already fixed and re-confirmed
+(round 2).

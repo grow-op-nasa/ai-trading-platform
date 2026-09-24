@@ -4628,3 +4628,100 @@ real-pytest-verified (1179 passed, 0 failed), and now real-provider-
 verified end-to-end through to a human-approved promotion, with the
 one bug the smoke test found (round 1) already fixed and re-confirmed
 (round 2).
+
+## ADR-0048: Production registration of the first promoted candidate
+
+**Status:** Accepted.
+
+**Context:** ADR-0047 deliberately stopped at `CandidateRegistry.
+promote()` marking a candidate `PROMOTED` -- it never registers
+anything in `src.strategies.registry`, deploys anything, or places a
+trade, by design (decision 8: promotion is a separate, human-only
+action; the agent has no path to `StrategyRegistry` at all). After the
+real-provider smoke test (round 2) produced and the operator promoted
+a genuine candidate (`candidate_id: 241a3b657ba846169476e8aa374235a1`,
+`source_hash: c4f7c8c2cdc3f88bbe728560e2fd6549786694915592cbfd7a4e8e
+93da529f71`, `agent_run_id: 3e8ee5af9206434e9b1f1b81f7c283c8`,
+`promoted_at: 2026-09-24T03:43:10.789233+00:00`), the deliberately
+deferred half of the story -- what it actually looks like for a
+promoted candidate to become a real, runnable strategy -- had never
+been demonstrated. This ADR records that demonstration.
+
+**Decision:**
+
+1. **The candidate's source becomes a new permanent strategy file,
+   written and reviewed by a human, not copied by any tool.**
+   `src/strategies/ema_cross_vol_filter.py`'s `EMACrossVolFilterStrategy`
+   is that file: an EMA(8)/EMA(21) momentum crossover gated by an
+   ATR(14) volatility-percentage filter, long-only, LONG/FLAT only.
+   Its `prepare()`/`generate_signals()` bodies are byte-for-byte the
+   same decision logic the candidate's development, validation, and
+   frozen out-of-sample test were evaluated against -- the only
+   additions are a docstring, type hints, and a `params` property
+   (the same reconstruction-support pattern every existing permanent
+   strategy already follows). The module docstring records full
+   lineage back to the candidate (`candidate_id`/`source_hash`/
+   `spec_hash`/`agent_run_id`/`promoted_at`) and states explicitly
+   that writing this file was the one deliberate human step ADR-0047
+   always deferred -- the agent has no path to it.
+2. **Registration is the existing, proven three-strategy pattern,
+   exercised a third time.** `@register_strategy("ema_cross_vol_filter")`
+   on the class, then `from src.strategies.ema_cross_vol_filter import
+   EMACrossVolFilterStrategy` added to `src/strategies/__init__.py`
+   alongside `EMACrossStrategy`/`RSIMeanReversionStrategy` -- the exact
+   same import-time side effect (`DECISIONS.md`, ADR-0035) that has
+   registered every permanent strategy since Sprint 6. No change to
+   `src/strategies/registry.py` itself was needed or made.
+3. **The registered strategy is proven indistinguishable from any
+   other permanent strategy, not merely present.** Two proof points,
+   both new tests rather than assertions in a docstring:
+   - `tests/test_ema_cross_vol_filter_strategy.py` (18 tests) mirrors
+     `test_rsi_mean_reversion_strategy.py`'s own structure and rigor,
+     closing with a dedicated "production-registration proof" section:
+     `get_strategy_class("ema_cross_vol_filter") is
+     EMACrossVolFilterStrategy`, and a reconstructed instance built
+     purely from `get_strategy_class(name)(symbol=..., **params)`
+     matches the original's `params`/`name`.
+   - `tests/test_run_experiment_script.py::
+     test_run_experiment_with_promoted_candidate_strategy` runs it
+     through the actual production path -- `run_experiment()` ->
+     `Backtester` -> `PerformanceAttributor` -> `ResearchReporter` ->
+     `ExperimentRegistry` -- by name alone, exactly like the
+     `"ema_cross"`/`"rsi_mean_reversion"` tests immediately above it
+     in the same file, then confirms `ExperimentSpec.
+     reconstruct_strategy()` round-trips it from the persisted spec.
+     No `PrecomputedSignalStrategy`, no candidate runner, no
+     special-casing anywhere in this path for the strategy's AI
+     origin.
+4. **The architecture boundary that has protected every prior
+   strategy addition since Sprint 6 was extended, not waived.**
+   `tests/test_architecture.py` gained
+   `test_promoted_candidate_strategy_required_no_changes_to_core_
+   pipeline_modules` (the same grep-the-committed-source pattern
+   proving `src/backtesting`, `src/experiments/registry.py`,
+   `src/attribution`, `src/research`, and `src/broker` never mention
+   this strategy by name or class) and a new complementary check,
+   `test_strategy_dev_agent_package_has_no_reference_to_the_promoted_
+   strategy`, proving `src/ai/agents/strategy_dev/*.py` itself never
+   mentions the promoted strategy's name or class either -- direct
+   proof, not a docstring claim, that production registration
+   happened entirely outside the agent package, by a human, exactly
+   as ADR-0047 always said it would.
+
+**Consequences:** The platform now has a complete, demonstrated
+answer to "what happens after promotion?" -- a human reads the
+`strategy-promote` evidence, writes a small permanent strategy file
+with full lineage back to the candidate, registers it exactly like
+any hand-written strategy, and it becomes runnable through the exact
+same `StrategyRegistry -> Backtester -> ExperimentSpec` path as
+`EMACrossStrategy`/`RSIMeanReversionStrategy` -- with two dedicated
+tests proving that path was never special-cased for AI-produced code.
+Nothing about `CandidateRegistry.promote()`, the agent, or
+`StrategyRegistry` itself changed -- this ADR documents a human using
+the existing tools the way they were always meant to be used, not a
+new automated capability. Whether `ema_cross_vol_filter` is worth
+trading is unresolved and explicitly out of scope here: its own
+docstring states the promotion-time evidence was small-sample,
+zero-cost, and never benchmarked against a baseline -- registering it
+makes it discoverable for further, more rigorous research, not a
+claim that research is finished.

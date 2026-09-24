@@ -1081,7 +1081,7 @@ way, see `DECISIONS.md` ADR-0046). A manual real-provider smoke test
 against the live Anthropic API confirmed genuine, budget-respecting
 tool-selection behavior. Sprint 13 is fully closed out.
 
-## Sprint 14 -- AI Strategy Development Agent ✅ Complete (real pytest-confirmed: 1179 passed, 0 failed; real-provider smoke test confirmed end-to-end through a human-approved promotion)
+## Sprint 14 -- AI Strategy Development Agent ✅ Complete (real pytest-confirmed: 1179 passed, 0 failed; real-provider smoke test confirmed end-to-end through a human-approved promotion; production registration of that promoted candidate demonstrated, ADR-0048)
 
 Objective: the next capability up the trust ladder from Sprint 13's
 read-only `ResearchAgent` -- an agent that can write, test, and iterate
@@ -1173,6 +1173,21 @@ promoted the resulting candidate through `strategy-promote`'s
 interactive human-approval gate, confirming the promotion boundary
 holds end-to-end with a real model and a real human decision. Sprint 14
 is fully closed out.
+
+Production registration of that promoted candidate -- the deliberately
+deferred second half of the promotion story -- is now demonstrated
+(`DECISIONS.md`, ADR-0048): `src/strategies/ema_cross_vol_filter.py`'s
+`EMACrossVolFilterStrategy`, the platform's third permanent strategy
+and the first ever produced by the agent, registered by a human via
+the existing `@register_strategy` pattern with full lineage recorded
+back to the candidate. Proven indistinguishable from any hand-written
+strategy through the same `StrategyRegistry -> Backtester ->
+ExperimentSpec` seam (18 new strategy tests, a new `run_experiment()`
+production-path test, and two new architecture boundary tests, one
+proving the agent package itself never references the promoted
+strategy). Sandbox: 1029 passed (up from 1008), same 2 pre-existing
+environment-only failures, 17 skipped -- pending real-`pytest`
+confirmation.
 
 ## Sprint 15+ -- future work (planned)
 

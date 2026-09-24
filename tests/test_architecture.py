@@ -258,6 +258,64 @@ def test_second_strategy_required_no_changes_to_core_pipeline_modules():
     )
 
 
+def test_promoted_candidate_strategy_required_no_changes_to_core_pipeline_modules():
+    # Sprint 14 (DECISIONS.md, ADR-0047/ADR-0048): registering
+    # EMACrossVolFilterStrategy -- the first strategy ever promoted out
+    # of the Strategy Development Agent -- must not have required
+    # touching the backtester, experiment registry, attribution engine,
+    # reporter, or broker layer either. From the core pipeline's point
+    # of view, a promoted candidate is just a new strategy file, with
+    # nothing about its AI origin leaking into modules that have no
+    # business knowing where a strategy came from.
+    core_modules = [
+        SRC_ROOT / "backtesting",
+        SRC_ROOT / "experiments" / "registry.py",
+        SRC_ROOT / "attribution",
+        SRC_ROOT / "research",
+        SRC_ROOT / "broker",
+    ]
+    forbidden_mentions = ("ema_cross_vol_filter", "EMACrossVolFilterStrategy")
+
+    offenders = []
+    for module_path in core_modules:
+        files = [module_path] if module_path.is_file() else sorted(module_path.glob("*.py"))
+        for path in files:
+            text = path.read_text()
+            if any(mention in text for mention in forbidden_mentions):
+                offenders.append(str(path))
+
+    assert offenders == [], (
+        f"Registering a promoted candidate must not require modifying "
+        f"core pipeline modules -- it should compose without leaking "
+        f"responsibilities into them. Offending files: {offenders}"
+    )
+
+
+def test_strategy_dev_agent_package_has_no_reference_to_the_promoted_strategy():
+    # The complementary check: the agent package that produced this
+    # candidate must have no reference to it either, once promoted --
+    # production registration (src/strategies/ema_cross_vol_filter.py,
+    # src/strategies/__init__.py) was a human action performed outside
+    # src/ai/agents/strategy_dev entirely, matching ADR-0047 decision 8
+    # ("turning a promoted candidate into something the platform
+    # actually runs remains a deliberate, separate, human action").
+    agent_package = SRC_ROOT / "ai" / "agents" / "strategy_dev"
+    forbidden_mentions = ("ema_cross_vol_filter", "EMACrossVolFilterStrategy")
+
+    offenders = []
+    for path in sorted(agent_package.glob("*.py")):
+        text = path.read_text()
+        if any(mention in text for mention in forbidden_mentions):
+            offenders.append(str(path))
+
+    assert offenders == [], (
+        f"The Strategy Development Agent package must never reference "
+        f"a specific promoted strategy by name -- production "
+        f"registration happens entirely outside it. Offending files: "
+        f"{offenders}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Sprint 8 (DECISIONS.md, ADR-0041): "No strategy, backtest, or
 # experiment consumes raw provider data directly" -- everything passes

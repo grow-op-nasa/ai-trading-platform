@@ -1,19 +1,31 @@
 # Project State
 
 _Last updated: 2026-09-24 -- **Sprint 14 (AI Strategy Development
-Agent) is fully closed out.** Real `pytest` on the dev machine: 1179
-passed, 0 failed (91.41s), both joblib-gated test files running for
-real. Real-provider smoke testing found and fixed one genuine bug (the
-system prompt never showed the model what candidate `source` should
-look like, so it never once included that required field across ten
-retries against a live goal -- fixed with an explicit template in
+Agent), including production registration of its first promoted
+candidate, is fully closed out.** Real `pytest` on the dev machine:
+1179 passed, 0 failed (91.41s), both joblib-gated test files running
+for real. Real-provider smoke testing found and fixed one genuine bug
+(the system prompt never showed the model what candidate `source`
+should look like, so it never once included that required field across
+ten retries against a live goal -- fixed with an explicit template in
 `prompts.py` v2), then, re-run, completed the full candidate lifecycle
 end-to-end against the live Anthropic API -- create -> validate -> test
 -> backtest -> freeze -> final out-of-sample test -> report -- and the
 resulting candidate was promoted by the operator through
 `strategy-promote`'s interactive human-approval gate, with full
-lineage recorded and `StrategyRegistry` left completely untouched. All
-three commits pushed to `origin/main`. `src.ai.agents.strategy_dev.dev_agent.
+lineage recorded and `StrategyRegistry` left completely untouched.
+That deliberately-deferred second half -- what production registration
+of a promoted candidate actually looks like -- is now demonstrated:
+`src/strategies/ema_cross_vol_filter.py`'s `EMACrossVolFilterStrategy`
+is the platform's third permanent strategy and the first ever produced
+by the agent, written and registered by a human with full lineage back
+to the candidate (`candidate_id`/`source_hash`/`agent_run_id`), proven
+indistinguishable from any hand-written strategy via 18 new unit tests,
+a new `run_experiment()` production-path test, and two new architecture
+boundary tests (one proving the agent package itself never references
+the promoted strategy). Sandbox: 1029 passed (up from 1008), 2
+pre-existing environment-only failures, 17 skipped. See `DECISIONS.md`,
+ADR-0048. `src.ai.agents.strategy_dev.dev_agent.
 StrategyDevelopmentAgent` can create, statically validate, backtest,
 revise, and freeze a candidate strategy, and run its one-shot final
 out-of-sample test -- but it structurally cannot promote a candidate,
@@ -1458,6 +1470,30 @@ nothing was deployed or traded. **Sprint 14 is fully closed out**:
 implemented, sandbox-verified, real-pytest-verified (1179 passed, 0
 failed), and real-provider-verified end-to-end through to a
 human-approved promotion.
+
+**Production registration of that promoted candidate is now
+demonstrated (`DECISIONS.md`, ADR-0048), closing the one remaining
+gap.** `src/strategies/ema_cross_vol_filter.py`'s
+`EMACrossVolFilterStrategy` -- the platform's third permanent strategy,
+registered via `@register_strategy("ema_cross_vol_filter")` exactly
+like `EMACrossStrategy`/`RSIMeanReversionStrategy` -- carries the
+promoted candidate's logic byte-for-byte, with full lineage in its
+module docstring back to `candidate_id`/`source_hash`/`agent_run_id`.
+Proven indistinguishable from any hand-written strategy by three new
+test surfaces: `tests/test_ema_cross_vol_filter_strategy.py` (18 tests,
+including a dedicated registry-discoverability/reconstruction proof),
+`tests/test_run_experiment_script.py::
+test_run_experiment_with_promoted_candidate_strategy` (runs it through
+the real `run_experiment()` -> `Backtester` -> `ExperimentSpec`
+production path by name alone, then confirms
+`ExperimentSpec.reconstruct_strategy()` round-trips it), and two new
+`tests/test_architecture.py` boundary tests (the existing
+grep-the-source pattern extended to this strategy, plus a new check
+proving `src/ai/agents/strategy_dev/*.py` never references the
+promoted strategy by name -- direct evidence this was a human action
+entirely outside the agent). Sandbox: **1029 passed** (up from 1008),
+same 2 pre-existing environment-only failures, 17 skipped. Pending a
+real-`pytest` confirmation and commit on the dev machine.
 
 Sprint 15+ planning (a Market Monitoring Agent, or a controlled trading
 agent building on a promoted candidate) is open, with no blocking work

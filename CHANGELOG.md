@@ -158,6 +158,56 @@ design.
   the promotion boundary holds end-to-end against a real model and a
   real human decision.
 
+### Added (production registration of the first promoted candidate)
+
+- `src/strategies/ema_cross_vol_filter.py` -- `EMACrossVolFilterStrategy`,
+  the platform's third permanent strategy and the first ever produced by
+  the Strategy Development Agent. Registered via
+  `@register_strategy("ema_cross_vol_filter")`, exported from
+  `src/strategies/__init__.py`, exactly like `EMACrossStrategy`/
+  `RSIMeanReversionStrategy`. Its `prepare()`/`generate_signals()` logic
+  is byte-for-byte the promoted candidate's own source (`candidate_id:
+  241a3b657ba846169476e8aa374235a1`); only a docstring, type hints, and
+  a `params` property were added -- written and reviewed by a human, not
+  copied by any tool. See `DECISIONS.md`, ADR-0048.
+- `tests/test_ema_cross_vol_filter_strategy.py` (18 tests) -- mirrors
+  `test_rsi_mean_reversion_strategy.py`'s structure, closing with a
+  "production-registration proof" section confirming
+  `get_strategy_class("ema_cross_vol_filter")` resolves to the class and
+  reconstructs an equivalent instance from `params` alone.
+- `tests/test_run_experiment_script.py::
+  test_run_experiment_with_promoted_candidate_strategy` -- runs the
+  promoted strategy through the real production path
+  (`run_experiment()` -> `Backtester` -> `PerformanceAttributor` ->
+  `ResearchReporter` -> `ExperimentRegistry`) by name alone, then
+  confirms `ExperimentSpec.reconstruct_strategy()` round-trips it from
+  the persisted spec -- the same proof already established for
+  `"ema_cross"`/`"rsi_mean_reversion"` in the same file.
+- `tests/test_architecture.py` gained
+  `test_promoted_candidate_strategy_required_no_changes_to_core_pipeline_modules`
+  (the existing grep-the-source pattern, now covering this strategy)
+  and `test_strategy_dev_agent_package_has_no_reference_to_the_promoted_strategy`
+  (new: proves `src/ai/agents/strategy_dev/*.py` never mentions the
+  promoted strategy by name or class -- direct evidence production
+  registration happened entirely outside the agent package).
+
+### Not changed (production registration)
+
+- `src/ai/agents/strategy_dev/` -- untouched; no tool, prompt, or policy
+  change anywhere in the agent package.
+- `src.strategies.registry` / `CandidateRegistry.promote()` -- untouched;
+  registration used the existing three-strategy pattern exactly as-is.
+
+### Verified (production registration)
+
+- Sandbox: **1029 passed, 2 failed, 17 skipped** -- the 2 failures are
+  the same pre-existing, environment-only `test_cli_doctor.py` failures
+  every sprint since Sprint 7 has carried forward unchanged (sandbox
+  Python version mismatch), in a file this change never touched. Net
+  gain of 21 tests over Sprint 14's own 1008-passed baseline (18 new
+  strategy tests, 2 new architecture tests, 1 new `run_experiment`
+  test).
+
 ## Sprint 13 -- 2026-09-24, AI Research Agent
 
 The platform's first genuine agentic loop: a tool-using LLM that

@@ -1943,6 +1943,51 @@ not just a well-behaved one.
   `ResearchTrialService`/`ModelRegistry`/`joblib` and must not be made
   to import them just by being in the same package.
 
+### `src/strategies/ema_cross_vol_filter.py` -- production registration of a promoted candidate (Sprint 14, ADR-0048)
+
+The platform's third permanent strategy, and the first ever produced
+by `src.ai.agents.strategy_dev` rather than hand-written from scratch.
+Demonstrates the deliberately-deferred second half of ADR-0047's
+promotion story: what it actually looks like for a `PROMOTED` candidate
+to become a real, runnable strategy.
+
+- **Written and registered by a human, not by any tool.** A human read
+  `strategy-promote`'s full evidence printout for
+  `candidate_id: 241a3b657ba846169476e8aa374235a1`, then wrote this
+  file. Its `prepare()`/`generate_signals()` bodies are byte-for-byte
+  the candidate's own evaluated logic; only a docstring (recording full
+  lineage: `candidate_id`/`source_hash`/`spec_hash`/`agent_run_id`/
+  `promoted_at`), type hints, and a `params` property were added.
+- **Registered exactly like `EMACrossStrategy`/`RSIMeanReversionStrategy`,
+  no new mechanism.** `@register_strategy("ema_cross_vol_filter")` on
+  the class, imported in `src/strategies/__init__.py` -- the same
+  import-time side effect (ADR-0035) every permanent strategy has always
+  relied on. `src/strategies/registry.py` itself needed zero changes.
+- **Proven indistinguishable from a hand-written strategy, not just
+  present.** `tests/test_ema_cross_vol_filter_strategy.py` closes with
+  a dedicated proof that `get_strategy_class("ema_cross_vol_filter")`
+  resolves to the class and reconstructs an equivalent instance from
+  `params` alone; `tests/test_run_experiment_script.py::
+  test_run_experiment_with_promoted_candidate_strategy` runs it through
+  the real `run_experiment()` -> `Backtester` -> `PerformanceAttributor`
+  -> `ResearchReporter` -> `ExperimentRegistry` path by name alone (no
+  `PrecomputedSignalStrategy`, no candidate runner anywhere in this
+  path) and confirms `ExperimentSpec.reconstruct_strategy()` round-trips
+  it from the persisted spec.
+- **The architecture boundary was extended, not waived.**
+  `tests/test_architecture.py` gained
+  `test_promoted_candidate_strategy_required_no_changes_to_core_pipeline_modules`
+  (the existing grep-the-committed-source pattern, now covering this
+  strategy) and `test_strategy_dev_agent_package_has_no_reference_to_the_promoted_strategy`
+  -- direct proof that `src/ai/agents/strategy_dev/*.py` never mentions
+  the promoted strategy by name or class, confirming production
+  registration happened entirely outside the agent package.
+- **What this doesn't claim:** the strategy's own docstring states the
+  promotion-time evidence was small-sample, assumed zero fees/slippage,
+  and was never benchmarked against `ema_cross`. Registering it makes
+  it discoverable for further research, not a claim that it's ready to
+  trade.
+
 ## Testing philosophy
 
 Unit tests never touch the network. `tests/test_market_data.py` uses a

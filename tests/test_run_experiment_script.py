@@ -34,6 +34,19 @@ EMA_CLOSES = [110, 108, 106, 104, 102, 100, 105, 110, 115, 120, 110, 100, 90, 80
 # tests/test_rsi_mean_reversion_strategy.py.
 RSI_CLOSES = [100 - i * 2 for i in range(15)] + [70 + i * 3 for i in range(15)]
 
+# Same empirically-verified quiet-warmup -> volatility-burst -> quiet-
+# drift -> decline shape used in tests/test_ema_cross_vol_filter_
+# strategy.py's VOL_COLLAPSE_EXIT_CLOSES -- a third, independently
+# registered strategy (Sprint 14, the first ever promoted out of the
+# Strategy Development Agent, DECISIONS.md ADR-0047/ADR-0048), proving
+# run_experiment() runs it through the exact same wiring with no
+# special-casing for its AI origin.
+_QUIET_WARMUP = [100 + i * 0.05 for i in range(30)]
+_BURST_UP = [_QUIET_WARMUP[-1] + i * 3 for i in range(1, 11)]
+_QUIET_DRIFT_UP = [_BURST_UP[-1] + i * 0.05 for i in range(1, 20)]
+_GENTLE_DECLINE = [_QUIET_DRIFT_UP[-1] - i * 3 for i in range(1, 11)]
+VOL_FILTER_CLOSES = _QUIET_WARMUP + _BURST_UP + _QUIET_DRIFT_UP + _GENTLE_DECLINE
+
 
 def make_candles(closes: list[float]) -> pd.DataFrame:
     dates = pd.date_range("2024-01-01", periods=len(closes), freq="D", name="timestamp")
@@ -142,6 +155,52 @@ def test_run_experiment_with_rsi_mean_reversion(tmp_path):
 
     fetched_spec = registry.get_spec(run_result.experiment_id)
     assert fetched_spec == run_result.spec
+
+
+def test_run_experiment_with_promoted_candidate_strategy(tmp_path):
+    # The platform's third permanent strategy, and the first ever
+    # promoted out of the Strategy Development Agent rather than
+    # hand-written (Sprint 14, DECISIONS.md ADR-0047/ADR-0048). Proves
+    # production registration is real, end to end: run_experiment()
+    # finds it purely by the name "ema_cross_vol_filter" through
+    # src.strategies.registry -- the same StrategyRegistry ->
+    # Backtester -> ExperimentSpec path as "ema_cross"/
+    # "rsi_mean_reversion" above, with no PrecomputedSignalStrategy and
+    # no candidate runner anywhere in this path.
+    candles = make_candles(VOL_FILTER_CLOSES)
+    registry = ExperimentRegistry(db_path=tmp_path / "experiments.db")
+
+    run_result = run_experiment(
+        strategy_name="ema_cross_vol_filter",
+        symbol="QQQ",
+        candles=candles,
+        strategy_params={"fast": 3, "slow": 8, "atr_period": 5, "min_atr_pct": 0.01},
+        registry=registry,
+    )
+
+    assert isinstance(run_result, ExperimentRunResult)
+    assert run_result.result.trades  # sanity check: this fixture must produce a trade
+    assert run_result.spec.strategy_name == "ema_cross_vol_filter"
+    assert run_result.spec.symbol == "QQQ"
+    assert run_result.spec.strategy_params == {
+        "fast": 3,
+        "slow": 8,
+        "atr_period": 5,
+        "min_atr_pct": 0.01,
+        "confidence": 0.6,
+    }
+    assert run_result.attribution.total_trades == len(run_result.result.trades)
+    assert run_result.report.findings is not None
+
+    # ExperimentSpec.reconstruct_strategy() round-trips it by name --
+    # the same reconstruction seam every permanent strategy relies on
+    # (DECISIONS.md, ADR-0035), proving this one was never special-
+    # cased into the pipeline.
+    fetched_spec = registry.get_spec(run_result.experiment_id)
+    assert fetched_spec == run_result.spec
+    reconstructed = fetched_spec.reconstruct_strategy()
+    assert reconstructed.name == "ema_cross_vol_filter"
+    assert reconstructed.params == run_result.spec.strategy_params
 
 
 def test_run_experiment_respects_custom_risk_limits(tmp_path):

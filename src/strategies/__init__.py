@@ -17,6 +17,13 @@ end rather than to be profitable as-is. `rsi_mean_reversion.py`'s
 out) -- a deliberately different trading idea (mean reversion, not
 trend following), proving the platform's abstractions generalize rather
 than having been quietly shaped around one strategy's needs.
+`ema_cross_vol_filter.py`'s `EMACrossVolFilterStrategy` is the third,
+and the first ever produced by the Strategy Development Agent
+(`src/ai/agents/strategy_dev/`, Sprint 14, `DECISIONS.md` ADR-0047/
+ADR-0048) -- registered here only after a human reviewed its full
+evidence via `python -m src.cli strategy-promote` and explicitly
+approved it; the agent itself has no path to this module or to
+`src.strategies.registry` at all.
 
 Importing this package registers every built-in strategy with
 `src.strategies.registry` (`@register_strategy`, `DECISIONS.md`
@@ -26,7 +33,14 @@ depends on this having happened at least once in the process.
 
 from src.strategies.base import Strategy
 from src.strategies.ema_cross import EMACrossStrategy
+from src.strategies.ema_cross_vol_filter import EMACrossVolFilterStrategy
 from src.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
 from src.strategies.sdk import BaseStrategy
 
-__all__ = ["Strategy", "BaseStrategy", "EMACrossStrategy", "RSIMeanReversionStrategy"]
+__all__ = [
+    "Strategy",
+    "BaseStrategy",
+    "EMACrossStrategy",
+    "RSIMeanReversionStrategy",
+    "EMACrossVolFilterStrategy",
+]

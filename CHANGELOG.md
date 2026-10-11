@@ -38,6 +38,11 @@ See `DECISIONS.md`, ADR-0049 and ADR-0050.
 - `src/ai/agents/monitoring/` Market Monitoring Agent (policy, seven
   read tools, versioned prompt, loop, audit store) and
   `python -m src.cli market-monitor-agent --goal ...`.
+- Fix: the monitoring agent now appends code-derived UNKNOWN / not-evaluable limitations after any
+  tool that returns run checks (`get_monitoring_run`, `get_market_data_health`), not only after
+  `run_monitoring_checks`.
+- Manual live tests (not pytest): `scripts/monitoring_agent_live_smoke.py`,
+  `scripts/monitoring_live_integration.py`.
 - Tests: `tests/test_strategy_promotion.py`, `tests/test_monitoring.py`,
   `tests/test_monitor_cli.py`, `tests/test_market_monitoring_agent.py`,
   extended `tests/test_strategy_dev_workspace.py`.

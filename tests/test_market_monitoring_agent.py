@@ -320,6 +320,26 @@ def test_uncited_ids_in_observed_facts_are_flagged_as_unverified():
     assert any(fake in l and "unverified" in l for l in run.final_report.limitations)
 
 
+def test_inspecting_a_stored_unknown_run_still_carries_the_code_derived_limitations():
+    svc = make_service()
+    stored = svc.run_once()  # an UNKNOWN run produced outside the agent (e.g. by `monitor --once`)
+    agent, _, _ = make_agent([call("get_monitoring_run", {"run_id": stored.run_id}),
+                              final("Summary: looked at the stored run.")], svc)
+    run = agent.run("inspect the stored run")
+    lims = " ".join(run.final_report.limitations)
+    assert run.monitoring_run_count == 0  # it did not execute a new run
+    assert "is UNKNOWN" in lims and "not confirmed healthy" in lims
+    assert "market_data_freshness was not evaluable" in lims
+
+
+def test_market_data_health_tool_also_carries_not_evaluable_limitations():
+    svc = make_service()
+    svc.run_once()
+    agent, _, _ = make_agent([call("get_market_data_health"), final("Summary: checked market data.")], svc)
+    lims = " ".join(agent.run("x").final_report.limitations)
+    assert "market_data_freshness was not evaluable" in lims
+
+
 def test_audit_record_has_provenance_and_no_hidden_reasoning(tmp_path):
     agent, _, _ = make_agent([call("run_monitoring_checks"), final("Summary: done.")], tmp_path=tmp_path)
     run = agent.run("g")

@@ -22,7 +22,21 @@ so a header with bullets underneath produced empty facts/suggestions; fixed in
 test did not exercise findings, because there was no portfolio to produce any. The deterministic
 monitor reports `UNKNOWN` (not healthy) when nothing can be evaluated,
 e.g. no saved paper portfolio or no market data.
-Details of earlier sprints follow._
+**Live findings integration test (2026-10-12): PASS, 33/33 required checks.**
+`scripts/monitoring_live_integration.py` ran the real `monitor --once` and `market-monitor-agent` CLIs
+against the same isolated persisted paper portfolio (QQQ 80 sh, 80% exposure vs a 50% ceiling, ~15%
+drawdown). The deterministic run persisted exactly the 2 expected findings (risk.portfolio_exposure
+CRITICAL, drawdown.portfolio WARNING; live market data HEALTHY). A live `claude-sonnet-5` run then read
+the stored run with `get_monitoring_run`, fetched both findings with `get_finding`, cited both finding ids
+and the run id (all returned by tools), kept facts/hypotheses/suggestions separate, stated limitations,
+and used only read tools. Registry file hash, cash, positions, equity curve, risk config, strategies and
+promoted manifest were identical before and after; no duplicate findings. Earlier attempts: one run
+scored 28/31 because three harness criteria assumed the agent would re-run the checks; that exposed a real
+gap (code-derived UNKNOWN/not-evaluable limitations were only added after `run_monitoring_checks`, not after
+inspecting a stored run), fixed in `agent.py` with 2 regression tests. Real `pytest -q`: 1360 passed.
+Scope of this evidence: one scenario, one live run; a not-evaluable live scenario was covered only by the
+fake-provider tests. The model correctly caveated that `execution_consistency` is HEALTHY only for trades
+(orders/fills are not persisted). Details of earlier sprints follow._
 
 _Last updated: 2026-09-24 -- **Sprint 14 (AI Strategy Development
 Agent), including production registration of its first promoted

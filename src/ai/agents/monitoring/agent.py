@@ -36,6 +36,7 @@ from src.ai.agents.tools import ToolRegistry, ToolResult
 
 _BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
 RUN_TOOL = "run_monitoring_checks"
+RUN_RESULT_TOOLS = (RUN_TOOL, "get_monitoring_run", "get_market_data_health")
 _HEX_ID = re.compile(r"\b[0-9a-f]{32}\b")
 _NOT_EXECUTED = {"POLICY_REJECTED", "UNKNOWN_TOOL", "INVALID_ARGUMENTS", _BUDGET_EXHAUSTED}
 
@@ -182,9 +183,11 @@ class MarketMonitoringAgent:
                 f"({', '.join(sorted(uncited))}); treat those statements as unverified."
             )
         for rec in session.tool_calls:
-            if rec.tool_name == RUN_TOOL and not rec.is_error:
+            # every tool that returns a monitoring run's check results is covered, not only a fresh run:
+            # an agent inspecting a stored UNKNOWN run must still carry the limitation.
+            if rec.tool_name in RUN_RESULT_TOOLS and not rec.is_error:
                 st = rec.result_summary.get("status")
-                if st == "UNKNOWN":
+                if rec.tool_name != "get_market_data_health" and st == "UNKNOWN":
                     out.append(
                         f"Monitoring run {rec.result_summary.get('run_id')} is UNKNOWN: at least one "
                         "check could not be evaluated, so the platform is not confirmed healthy."

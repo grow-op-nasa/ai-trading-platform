@@ -337,6 +337,25 @@ def test_agent_never_calls_the_provider_with_a_forbidden_tool_definition():
     assert offered == EXPECTED_TOOLS
 
 
+def test_report_parses_header_then_bullets_as_produced_by_a_real_model():
+    text = ("Summary: nothing evaluable.\n\nObserved:\n- run X is UNKNOWN\n- no portfolio: \"none saved\"\n\n"
+            "Hypothesis (unproven):\n- nothing registered yet\n\nSuggested investigation:\n- check persistence\n\n"
+            "Limitation:\n- cannot confirm positions\n")
+    agent, _, _ = make_agent([final(text)])
+    rep = agent.run("x").final_report
+    assert rep.observed_facts == ("run X is UNKNOWN", 'no portfolio: "none saved"')
+    assert rep.hypotheses == ("nothing registered yet",)
+    assert rep.suggested_investigations == ("check persistence",)
+    assert "cannot confirm positions" in rep.limitations
+
+
+def test_report_never_contains_empty_items():
+    agent, _, _ = make_agent([final("Summary: s\nObserved:\nHypothesis:\nSuggested investigation:\nLimitation:\n")])
+    rep = agent.run("x").final_report
+    assert not rep.observed_facts and not rep.hypotheses and not rep.suggested_investigations
+    assert all(l.strip() for l in rep.limitations)
+
+
 # ------------------------------------------------------------------ read-only boundary
 def _registry_with_portfolio(tmp_path):
     reg = ExperimentRegistry(db_path=tmp_path / "e.db")

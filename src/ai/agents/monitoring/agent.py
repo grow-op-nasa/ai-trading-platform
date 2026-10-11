@@ -207,20 +207,40 @@ def _payload(result: ToolResult) -> dict[str, Any]:
     return {"status": "ok", "data": result.data}
 
 
-_PREFIXES = (
-    ("observed", "facts"), ("hypothesis", "hyps"),
-    ("suggested investigation", "sugg"), ("limitation", "lims"),
+_HEADER = re.compile(
+    r"^(?:[-*]\s*)?(?P<name>observed(?: facts?)?|hypothes[ei]s|suggested investigations?|limitations?)"
+    r"\b[^:]*:\s*(?P<rest>.*)$",
+    re.IGNORECASE,
 )
+_KEYS = {"observed": "facts", "hypothes": "hyps", "suggested": "sugg", "limitation": "lims"}
+_BULLET = re.compile(r"^(?:[-*\u2022]|\d+[.)])\s+(?P<body>.+)$")
 
 
 def _parse_sections(text: str):
-    """Line-based extraction of the labelled lines the prompt asks for."""
+    """Extract labelled sections from the model's final text. Supports both
+    `Observed: item` on one line and a bare `Observed:` header followed by
+    bullet lines (what a real model produced in the first live run). Empty
+    items are never recorded."""
     buckets: dict[str, list[str]] = {"facts": [], "hyps": [], "sugg": [], "lims": []}
+    current: str | None = None
     for raw in text.splitlines():
-        line = raw.strip().lstrip("-* ").strip()
-        low = line.lower()
-        for prefix, key in _PREFIXES:
-            if low.startswith(prefix + ":") or low.startswith(prefix + "s:"):
-                buckets[key].append(line.split(":", 1)[1].strip())
-                break
+        line = raw.strip()
+        if not line:
+            continue
+        m = _HEADER.match(line)
+        if m:
+            name = m.group("name").lower()
+            current = next(v for k, v in _KEYS.items() if name.startswith(k))
+            rest = m.group("rest").strip()
+            if rest:
+                buckets[current].append(rest)
+            continue
+        if line.lower().startswith("summary"):
+            current = None
+            continue
+        b = _BULLET.match(line)
+        if b and current:
+            buckets[current].append(b.group("body").strip())
+        elif not b:
+            current = None  # free prose ends the list
     return buckets["facts"], buckets["hyps"], buckets["sugg"], buckets["lims"]

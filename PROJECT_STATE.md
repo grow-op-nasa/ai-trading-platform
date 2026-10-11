@@ -9,8 +9,17 @@ Monitoring Agent (`market-monitor-agent`, ADR-0050). Sandbox results
 monitor CLI 8/8, fake-provider agent tests 57/57, promotion 26/26 (+2
 skipped), full sandbox sweep 1183 passed, 2 failed (both known
 sandbox-only: Python-version doctor check, loguru stub), 19 skipped.
-**Not yet verified:** real `pytest -q` on the dev machine and the
-real-provider smoke test; neither is claimed here. The deterministic
+**Real `pytest -q` on the dev machine: 1356 passed, 0 failed (29.92s)**, pushed to
+`origin/main` (`0c19c69..e95abc7`). **Real-provider smoke test (2026-10-11): passed with one bug found and fixed.**
+After two attempts failed with 401s (placeholder key, then an expired key), a live
+`claude-sonnet-5` run against the real registry completed: 3 steps, 5 tool calls,
+1 monitoring run. The registry holds no saved paper portfolio, so the run was UNKNOWN
+with all 7 checks NOT_EVALUABLE; the model reported exactly that, confirmed nothing,
+and did not call anything healthy. A premature `get_monitoring_run` correctly returned
+NOT_FOUND. Bug found: the report parser read only same-line text after `Observed:`,
+so a header with bullets underneath produced empty facts/suggestions; fixed in
+`_parse_sections` with two regression tests (sandbox: 59/59 agent tests). The smoke
+test did not exercise findings, because there was no portfolio to produce any. The deterministic
 monitor reports `UNKNOWN` (not healthy) when nothing can be evaluated,
 e.g. no saved paper portfolio or no market data.
 Details of earlier sprints follow._

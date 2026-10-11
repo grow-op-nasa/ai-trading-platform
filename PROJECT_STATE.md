@@ -1,5 +1,20 @@
 # Project State
 
+_Sprint 15 update (2026-10-11): **implemented, awaiting real-machine
+verification.** Part A-C corrected the Sprint 14 promotion gap (`PROMOTED`
+now means approved and registered, ADR-0049). Part D added deterministic
+`src/monitoring/` (`monitor --once`, no LLM) and a read-only Market
+Monitoring Agent (`market-monitor-agent`, ADR-0050). Sandbox results
+(no real pytest, no network there): deterministic monitor tests 57/57,
+monitor CLI 8/8, fake-provider agent tests 57/57, promotion 26/26 (+2
+skipped), full sandbox sweep 1183 passed, 2 failed (both known
+sandbox-only: Python-version doctor check, loguru stub), 19 skipped.
+**Not yet verified:** real `pytest -q` on the dev machine and the
+real-provider smoke test; neither is claimed here. The deterministic
+monitor reports `UNKNOWN` (not healthy) when nothing can be evaluated,
+e.g. no saved paper portfolio or no market data.
+Details of earlier sprints follow._
+
 _Last updated: 2026-09-24 -- **Sprint 14 (AI Strategy Development
 Agent), including production registration of its first promoted
 candidate, is fully closed out.** Real `pytest` on the dev machine:

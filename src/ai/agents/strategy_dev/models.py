@@ -26,6 +26,7 @@ __all__ = [
     "CandidateStrategyStatus",
     "CandidateStrategySpec",
     "CandidateStrategy",
+    "registration_state",
     "CandidateEvaluation",
     "DevResearchReport",
     "DevAgentRun",
@@ -45,13 +46,20 @@ class CandidateStrategyStatus(str, Enum):
     Progression is strictly forward:
 
         DRAFT -> VALIDATING -> VALIDATED -> DEVELOPMENT_TESTED ->
-        FROZEN -> OUT_OF_SAMPLE_TESTED -> REVIEW_REQUIRED
+        FROZEN -> OUT_OF_SAMPLE_TESTED -> REVIEW_REQUIRED ->
+        APPROVED -> PROMOTED
 
     with two terminal states reachable from anywhere in that chain:
     `REJECTED` (validation/testing failed, or the researcher/agent gave
-    up on this candidate) and `PROMOTED` (a human explicitly approved
-    it -- Sprint 14 spec, section 57; never reachable by the agent
-    itself, see `CandidateRegistry.promote()`'s own guard).
+    up on this candidate) and `PROMOTED`.
+
+    **`PROMOTED` means production-registered (Sprint 14 correction,
+    ADR-0049).** A human approval alone is `APPROVED`; only after the
+    human-operated promotion service has materialized the candidate
+    into the production strategy package, registered it with
+    `StrategyRegistry`, and verified it resolves and emits canonical
+    `Signal`s does the candidate become `PROMOTED`. Neither state is
+    reachable by the agent (Sprint 14 spec, section 57).
 
     `FROZEN` is the one-way gate (Sprint 14 spec, sections 5, 35-36):
     once a candidate reaches it, `source_hash`/`spec_hash` become
@@ -67,7 +75,13 @@ class CandidateStrategyStatus(str, Enum):
     FROZEN = "FROZEN"
     OUT_OF_SAMPLE_TESTED = "OUT_OF_SAMPLE_TESTED"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    #: A human explicitly approved the candidate, but production
+    #: registration has not (yet) completed. Truthful intermediate
+    #: state: approved, *not* registered (ADR-0049).
+    APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+    #: Human-approved AND genuinely registered in the production
+    #: `StrategyRegistry` (ADR-0049).
     PROMOTED = "PROMOTED"
 
 
@@ -79,6 +93,7 @@ IMMUTABLE_AFTER = frozenset(
         CandidateStrategyStatus.FROZEN,
         CandidateStrategyStatus.OUT_OF_SAMPLE_TESTED,
         CandidateStrategyStatus.REVIEW_REQUIRED,
+        CandidateStrategyStatus.APPROVED,
         CandidateStrategyStatus.REJECTED,
         CandidateStrategyStatus.PROMOTED,
     }
@@ -207,6 +222,17 @@ class CandidateStrategy:
             each stage (`None` until that stage has run).
         rejection_reason: populated only when `status ==
             CandidateStrategyStatus.REJECTED`.
+        approval: set by `CandidateRegistry.approve()` -- the human
+            approval record (`approved_at` ISO string, `approved_by`,
+            and the `source_hash`/`spec_hash` that were approved).
+            `None` until a human approves (ADR-0049).
+        registration: set by `CandidateRegistry.promote()` -- the
+            production registration record (`strategy_name`,
+            `module`, `class_name`, `module_sha256`, `registered_at`,
+            `manifest`). `None` for every candidate that is not
+            genuinely production-registered, including *legacy*
+            candidates promoted before ADR-0049 (see
+            `registration_state()`).
     """
 
     candidate_id: str
@@ -234,6 +260,8 @@ class CandidateStrategy:
     validation_evaluation: "CandidateEvaluation | None" = None
     final_test_evaluation: "CandidateEvaluation | None" = None
     rejection_reason: str | None = None
+    approval: dict[str, Any] | None = None
+    registration: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.created_at.tzinfo is None:
@@ -247,6 +275,31 @@ class CandidateStrategy:
 
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_STATES
+
+    def is_production_registered(self) -> bool:
+        """`True` only for a `PROMOTED` candidate carrying a recorded
+        production registration (ADR-0049). A `PROMOTED` record without
+        one is a *legacy* pre-ADR-0049 record: the human approved it,
+        but this record proves no registration."""
+        return (
+            self.status == CandidateStrategyStatus.PROMOTED
+            and bool(self.registration)
+            and bool(self.registration.get("strategy_name"))
+        )
+
+
+def registration_state(candidate: "CandidateStrategy") -> str:
+    """A truthful, human-readable registration label for `candidate`:
+    `REGISTERED`, `APPROVED_NOT_REGISTERED`, `LEGACY_PROMOTED_UNVERIFIED`
+    (promoted under the pre-ADR-0049 meaning; never reinterpreted or
+    back-filled), or `NOT_REGISTERED`."""
+    if candidate.is_production_registered():
+        return "REGISTERED"
+    if candidate.status == CandidateStrategyStatus.APPROVED:
+        return "APPROVED_NOT_REGISTERED"
+    if candidate.status == CandidateStrategyStatus.PROMOTED:
+        return "LEGACY_PROMOTED_UNVERIFIED"
+    return "NOT_REGISTERED"
 
 
 @dataclass(frozen=True)

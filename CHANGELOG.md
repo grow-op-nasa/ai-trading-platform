@@ -11,6 +11,41 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 15 -- 2026-10-11, Promotion correction + Market Monitoring
+
+See `DECISIONS.md`, ADR-0049 and ADR-0050.
+
+### Changed (Sprint 14 correction, ADR-0049)
+
+- `PROMOTED` now means human-approved **and** registered in
+  `StrategyRegistry`. New `APPROVED` status;
+  `CandidateRegistry.transition()` refuses `APPROVED`/`PROMOTED`;
+  `approve()` and `promote(candidate_id, registration)` are the only
+  routes. Atomic JSON writes. `registration_state()` marks legacy
+  `PROMOTED` records `LEGACY_PROMOTED_UNVERIFIED` without back-filling.
+- `strategy-promote` rewritten around `src/promotion/PromotionService`
+  (preflight, approve, materialize, manifest, register, verify, with
+  rollback and idempotent resume; never overwrites an existing name).
+
+### Added
+
+- `src/strategies/promoted/` (manifest + hash-verified loader),
+  `src/promotion/`, `StrategyRegistry._unregister_strategy` (rollback
+  hook).
+- `src/monitoring/` deterministic monitoring (models, config, state,
+  seven checks, SQLite store, service, model lookup) and
+  `python -m src.cli monitor --once` (no LLM, no API key).
+- `src/ai/agents/monitoring/` Market Monitoring Agent (policy, seven
+  read tools, versioned prompt, loop, audit store) and
+  `python -m src.cli market-monitor-agent --goal ...`.
+- Tests: `tests/test_strategy_promotion.py`, `tests/test_monitoring.py`,
+  `tests/test_monitor_cli.py`, `tests/test_market_monitoring_agent.py`,
+  extended `tests/test_strategy_dev_workspace.py`.
+
+Extension Cost: existing files changed -- `src/ai/agents/strategy_dev/
+{models,workspace}.py`, `src/strategies/{registry,__init__}.py`,
+`src/cli/{__main__,strategy_promote}.py`.
+
 ## Sprint 14 -- 2026-09-24, AI Strategy Development Agent
 
 An agent that can write, test, and iterate on new candidate trading

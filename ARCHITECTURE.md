@@ -1988,6 +1988,28 @@ to become a real, runnable strategy.
   it discoverable for further research, not a claim that it's ready to
   trade.
 
+### `src/monitoring` + `src/ai/agents/monitoring` -- Market Monitoring (Sprint 15, ADR-0050)
+
+`src/monitoring/` is deterministic and LLM-free: a `StateSource`
+(registry-backed persisted paper snapshot, or static for tests) feeds
+seven checks that return `HEALTHY`/`WARNING`/`CRITICAL`/`NOT_EVALUABLE`.
+`MonitoringService.run_once()` shares one market-data observation per
+target (via `MarketDataService`), applies the finding lifecycle
+(fingerprint, dedupe, resolve only on a later valid observation), and
+persists to SQLite. `src/cli/monitor.py` is its CLI.
+
+`src/ai/agents/monitoring/` is the agent: it reuses the Sprint 13
+runtime and exposes seven read tools over the service/store. It imports
+no broker, execution engine, promotion, subprocess or HTTP module;
+`src/monitoring` imports nothing from `src.ai.agents`. Boundaries are
+enforced in `tests/test_market_monitoring_agent.py` and
+`tests/test_architecture.py`.
+
+### Promotion (Sprint 15, ADR-0049)
+
+`src/promotion/` (human-CLI only) + `src/strategies/promoted/` (manifest
+and verified loader). `src/ai` may not import either.
+
 ## Testing philosophy
 
 Unit tests never touch the network. `tests/test_market_data.py` uses a

@@ -44,3 +44,8 @@ __all__ = [
     "RSIMeanReversionStrategy",
     "EMACrossVolFilterStrategy",
 ]
+
+# Registered last: the approved-strategy package (ADR-0049). It imports
+# only manifest-listed, hash-verified modules, so it can safely depend
+# on everything above having been imported first.
+from src.strategies import promoted  # noqa: E402,F401

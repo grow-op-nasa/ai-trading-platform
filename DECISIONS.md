@@ -4725,3 +4725,117 @@ docstring states the promotion-time evidence was small-sample,
 zero-cost, and never benchmarked against a baseline -- registering it
 makes it discoverable for further, more rigorous research, not a
 claim that research is finished.
+
+
+## ADR-0049: Sprint 14 correction -- PROMOTED means approved AND production-registered
+
+**Status:** Accepted (Sprint 15, Part A-C).
+
+**Context:** Sprint 14's `CandidateRegistry.promote()` only flipped a
+candidate to `PROMOTED`; nothing registered it in `StrategyRegistry`
+(ADR-0048 later did that by hand). The label therefore claimed more
+than the platform had done.
+
+**Decision:**
+
+1. `PROMOTED` now means *human-approved AND genuinely registered*:
+   resolvable through `get_strategy_class`, instantiable, emitting
+   canonical `Signal`s, lineage preserved. A new `APPROVED` status
+   (`REVIEW_REQUIRED -> APPROVED -> PROMOTED`) means approved but not
+   yet registered. `CandidateStrategy.registration_state()` reports
+   `REGISTERED`, `APPROVED_NOT_REGISTERED`, `LEGACY_PROMOTED_UNVERIFIED`
+   or `NOT_REGISTERED`.
+2. `CandidateRegistry.transition()` refuses `APPROVED`/`PROMOTED`;
+   only `approve()` and `promote(candidate_id, registration)` reach
+   them, and `promote()` requires a complete registration record.
+3. Registration lives in `src/strategies/promoted/`: a manifest-listed
+   package of verbatim, SHA-256-verified modules loaded fail-closed per
+   entry at import. No generic filesystem discovery. A candidate cannot
+   self-register (the static validator forbids it), so the loader does,
+   and the registered id must equal `instance.name`.
+4. `src/promotion/PromotionService` (imported only by the human CLI
+   `strategy-promote`) runs preflight -> approve -> materialize ->
+   manifest -> register -> verify -> `PROMOTED`, with rollback and
+   idempotent resume. It never overwrites an existing strategy name; a
+   failed registration never leaves a false `PROMOTED`.
+5. Legacy `PROMOTED` records (ADR-0047/0048 era) are reported as
+   `LEGACY_PROMOTED_UNVERIFIED`. They are never reinterpreted or
+   back-filled.
+6. Nothing in `src/ai` may import `src.promotion`,
+   `src.cli.strategy_promote` or `src.strategies.promoted`, or call
+   `.approve(`/`.promote(`/`_unregister_strategy` (architecture test).
+
+**Consequences:** the status vocabulary is truthful; promotion stays
+human-only; no deployment, trading or broker connection is involved.
+
+
+## ADR-0050: Sprint 15 -- Market Monitoring (deterministic monitors + read-only agent)
+
+**Status:** Accepted.
+
+**Context:** Nothing watched the platform's operational/risk state. An
+LLM must not be the thing that decides whether the platform is healthy.
+
+**Decision:**
+
+1. **Deterministic first.** `src/monitoring/` detects conditions with no
+   LLM and no API key (`python -m src.cli monitor --once`). Seven
+   monitors: market-data freshness (session-aware via `TradingCalendar`),
+   market-data integrity (through the `MarketDataService` validation
+   boundary), portfolio valuation (`PortfolioValuationService`,
+   read-only), risk/exposure, drawdown, execution/fill consistency,
+   strategy/model compatibility. Thresholds live in `MonitoringConfig`.
+2. **Unknown is not healthy.** A check without evidence returns
+   `NOT_EVALUABLE` with a reason. A run is `HEALTHY` only if every check
+   was evaluated and clean; otherwise the worst status wins, and
+   `UNKNOWN` when nothing is wrong but something was not evaluable. The
+   CLI exit codes are 0 OK, 1 attention, 2 error, 3 unknown.
+3. **Finding lifecycle.** Stable fingerprints (rule + entities), dedupe,
+   `first_seen`/`last_seen`/`occurrence_count`. A finding is resolved
+   only by a later *valid* observation of the same (rule, entity)
+   (`CheckResult.checked`); an `UNKNOWN`/`NOT_EVALUABLE` check never
+   resolves anything. Persistence failure is surfaced, never claimed.
+4. **State source.** The registry-backed source is a persisted paper
+   portfolio *snapshot* per experiment, not a live session. Orders,
+   fills and risk decisions are not persisted, so checks that need them
+   are `NOT_EVALUABLE` unless a source supplies them. Nothing invents a
+   sample portfolio. Daily-bar session = the bar's UTC date. The NYSE
+   calendar is verified for 2015-2035; outside it is `NOT_EVALUABLE`.
+5. **The agent observes and explains.** `src/ai/agents/monitoring/`
+   reuses the Sprint 13 runtime unmodified (`LLMProvider`,
+   `ToolRegistry`, `ToolCallRecord`). Seven read tools:
+   `run_monitoring_checks`, `list_findings`, `get_finding`,
+   `get_monitoring_run`, `get_paper_portfolio_snapshot`,
+   `get_execution_summary`, `get_market_data_health`. No reconciliation
+   tool exists because there is no real reconciliation source;
+   `get_execution_summary` reports that as unavailable.
+6. **Policy, in code.** `max_steps=12`, `max_monitoring_runs=3`, both
+   enforced by the loop (exhaustion -> `BUDGET_EXHAUSTED` with a partial
+   report that says so). Eighteen dangerous flags (trading, orders,
+   portfolio/risk/execution mutation, recovery, finding mutation,
+   config mutation, training, registration, promotion, git, web, shell,
+   filesystem, http) raise `ValueError` if set `True`.
+7. **Honest reports.** `MonitoringAgentReport` separates observed facts,
+   hypotheses, suggested investigations and limitations, with no
+   trade/order/recovery/promotion field. Code appends limitations the
+   model cannot omit: no tool called, ids cited that no tool returned,
+   `UNKNOWN` runs, and every not-evaluable check with its reason.
+8. **Audit.** One JSON file per run under `data/monitoring_agent_runs/`
+   (goal, tool calls with compact results, counters, prompt/tool-schema
+   versions, policy hash, linked `monitoring_run_ids`). No hidden
+   reasoning is stored. The deterministic store is SQLite at
+   `data/monitoring/monitoring.db`.
+9. **The only write** any tool can cause is `run_monitoring_checks`
+   appending a monitoring run and finding updates, identical to
+   `monitor --once`. All other tools are read-only; a test verifies
+   portfolio, experiments, strategy registry and the promoted manifest
+   are unchanged after a full agent run.
+10. **Excluded:** daemon/scheduler, trading/order/recovery tools,
+    candidate promotion by the monitor, model training,
+    web/shell/filesystem/HTTP tools, multi-agent, memory/RAG, dashboard
+    redesign.
+
+**Verification status:** deterministic monitor tests, CLI tests and
+fake-provider agent tests pass in the sandbox. A real-provider smoke
+test and real-machine `pytest -q` are separate steps; see
+`PROJECT_STATE.md` for their recorded result.

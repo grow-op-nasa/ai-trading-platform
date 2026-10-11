@@ -1190,11 +1190,21 @@ environment-only failures, 17 skipped. **Confirmed via real `pytest` on
 the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 `origin/main` (`1b43a93..0c19c69`).
 
-## Sprint 15+ -- future work (planned)
+## Sprint 15 -- Promotion Correction & Market Monitoring (implemented; real-machine verification pending, see PROJECT_STATE.md)
 
-- A Market Monitoring Agent -- a scheduled/background agent watching
-  live conditions. Sprint 13's `ResearchAgent` runs only when explicitly
-  invoked; no cron/daemon exists.
+- Done: `PROMOTED` = approved + registered (ADR-0049); deterministic
+  `src/monitoring/` with seven monitors and `monitor --once`; read-only
+  Market Monitoring Agent and `market-monitor-agent` CLI (ADR-0050).
+- Deliberately not built: scheduler/daemon, live-session state source,
+  persisted orders/fills/risk decisions (so those checks are
+  `NOT_EVALUABLE`), a reconciliation tool, alert delivery.
+
+## Sprint 16+ -- future work (planned)
+
+- A scheduler/daemon to run `monitor --once` periodically, plus alert
+  delivery (nothing runs in the background today).
+- Persisting orders, fills and risk decisions so the execution and
+  risk-decision monitors become evaluable.
 - LLM-based trading-context signal research as a second AI signal
   approach (distinct from Sprint 13's research-brain LLM, which never
   generates a trading signal) -- if warranted after Sprint 10's

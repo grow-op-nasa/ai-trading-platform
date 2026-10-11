@@ -67,3 +67,16 @@ service.get_candles(
 
 Returns a DataFrame indexed by a `timestamp` `DatetimeIndex` with columns
 `open, high, low, close, volume` -- sorted ascending, no duplicate rows.
+
+## Monitoring
+
+```
+python -m src.cli monitor --once                  # deterministic, no API key
+python -m src.cli market-monitor-agent --goal "..."   # needs ANTHROPIC_API_KEY
+```
+
+`monitor --once` runs seven checks against the persisted paper state and
+exits 0 (ok), 1 (warning/critical), 2 (error) or 3 (unknown). A check that
+cannot be evaluated is reported as such, never as healthy. Nothing runs in
+the background. The agent only reads and explains; it cannot trade, change
+state or promote anything. See `DECISIONS.md` ADR-0050.

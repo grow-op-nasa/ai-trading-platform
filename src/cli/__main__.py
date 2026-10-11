@@ -43,6 +43,20 @@ def _run_strategy_promote(argv: list[str]) -> int:
     return run_strategy_promote(argv)
 
 
+def _run_market_monitor_agent(argv: list[str]) -> int:
+    from src.cli.market_monitor_agent import run_market_monitor_agent
+
+    return run_market_monitor_agent(argv)
+
+
+def _run_monitor(argv: list[str]) -> int:
+    # Lazy for the same reason: the deterministic monitor needs no LLM
+    # stack and must never pull `anthropic`/agent modules in.
+    from src.cli.monitor import run_monitor
+
+    return run_monitor(argv)
+
+
 # Commands that take the remaining argv themselves, rather than being
 # zero-argument callables -- kept as a separate mapping so `doctor`'s
 # existing zero-argument contract (and every test against it) is
@@ -55,6 +69,8 @@ ARGV_COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "research-agent": run_research_agent,
     "strategy-dev": _run_strategy_dev_agent,
     "strategy-promote": _run_strategy_promote,
+    "monitor": _run_monitor,
+    "market-monitor-agent": _run_market_monitor_agent,
 }
 
 

@@ -67,3 +67,15 @@ def get_strategy_class(name: str) -> type:
 def available_strategies() -> list[str]:
     """Every registered strategy name, sorted."""
     return sorted(_REGISTRY)
+
+
+def _unregister_strategy(name: str) -> None:
+    """Remove `name` from the registry -- a **rollback hook** for the
+    human-only promotion service (`src.promotion`, ADR-0049) and for
+    test isolation. Not part of the public strategy API: nothing in
+    `src.ai.agents` may import it (`tests/test_architecture.py`).
+
+    Raises:
+        KeyError: nothing is registered under `name`.
+    """
+    del _REGISTRY[name]

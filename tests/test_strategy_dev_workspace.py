@@ -166,6 +166,7 @@ def test_is_immutable_and_is_terminal_match_the_spec():
         (S.FROZEN, True, False),
         (S.OUT_OF_SAMPLE_TESTED, True, False),
         (S.REVIEW_REQUIRED, True, False),
+        (S.APPROVED, True, False),
         (S.REJECTED, True, True),
         (S.PROMOTED, True, True),
     ]
@@ -267,9 +268,15 @@ _VALID_EDGES = {
     (S.DEVELOPMENT_TESTED, S.REJECTED),
     (S.FROZEN, S.OUT_OF_SAMPLE_TESTED),
     (S.OUT_OF_SAMPLE_TESTED, S.REVIEW_REQUIRED),
-    (S.REVIEW_REQUIRED, S.PROMOTED),
+    (S.REVIEW_REQUIRED, S.APPROVED),
     (S.REVIEW_REQUIRED, S.REJECTED),
+    (S.APPROVED, S.PROMOTED),
+    (S.APPROVED, S.REJECTED),
 }
+
+# APPROVED/PROMOTED are guarded (ADR-0049): reachable only via approve()/promote(),
+# never the generic transition(); covered by the dedicated tests below.
+_GUARDED = {S.APPROVED, S.PROMOTED}
 
 
 def test_valid_transition_succeeds(registry):
@@ -289,6 +296,8 @@ def test_valid_transition_succeeds(registry):
         ],
     }
     for index, (start, end) in enumerate(sorted(_VALID_EDGES, key=str)):
+        if end in _GUARDED or start in _GUARDED:
+            continue
         candidate_id = f"candidate-{index}"
         _make(registry, candidate_id=candidate_id)
         for step in path_to[start]:
@@ -419,32 +428,110 @@ def test_record_evaluation_on_missing_candidate_raises_keyerror(registry):
 # ---------------------------------------------------------------------------
 
 
-def test_promote_requires_review_required_and_final_test_evidence(registry):
-    _make(registry)
-    with pytest.raises(InvalidTransitionError):
-        registry.promote("candidate-001")  # still DRAFT
+def _to_review_required(registry, candidate_id="candidate-001", with_final=True):
+    _make(registry, candidate_id=candidate_id)
+    for step in (S.VALIDATING, S.VALIDATED, S.DEVELOPMENT_TESTED, S.FROZEN):
+        registry.transition(candidate_id, step)
+    if with_final:
+        registry.record_evaluation(candidate_id, "final_test", _evaluation("final_test"))
+    for step in (S.OUT_OF_SAMPLE_TESTED, S.REVIEW_REQUIRED):
+        registry.transition(candidate_id, step)
+    return registry.get(candidate_id)
 
-    for step in (S.VALIDATING, S.VALIDATED, S.DEVELOPMENT_TESTED, S.FROZEN, S.OUT_OF_SAMPLE_TESTED, S.REVIEW_REQUIRED):
-        registry.transition("candidate-001", step)
-    # REVIEW_REQUIRED but no final_test_evaluation was ever recorded.
+
+_REGISTRATION = {
+    "strategy_name": "ema_vol_filter",
+    "module": "src/strategies/promoted/ema_vol_filter.py",
+    "class_name": "EmaVolFilter",
+    "module_sha256": "a" * 64,
+    "registered_at": "2026-10-11T00:00:00+00:00",
+}
+
+
+def test_approve_requires_review_required_and_final_test_evidence(registry):
+    _make(registry)
+    cand = registry.get("candidate-001")
+    with pytest.raises(InvalidTransitionError):
+        registry.approve("candidate-001", approved_by="t", source_hash=cand.source_hash, spec_hash=cand.spec_hash)
+
+    cand = _to_review_required(registry, "candidate-002", with_final=False)
+    # REVIEW_REQUIRED reached via transition without a final evaluation.
+    with pytest.raises(InvalidTransitionError):
+        registry.approve("candidate-002", approved_by="t", source_hash=cand.source_hash, spec_hash=cand.spec_hash)
+
+
+def test_approved_is_not_promoted_and_records_the_approval(registry):
+    cand = _to_review_required(registry)
+    approved = registry.approve("candidate-001", approved_by="human", source_hash=cand.source_hash, spec_hash=cand.spec_hash)
+    assert approved.status == S.APPROVED
+    assert approved.approval["approved_by"] == "human"
+    assert approved.registration is None
+    assert not approved.is_production_registered()
+
+
+def test_approve_rejects_changed_hashes(registry):
+    cand = _to_review_required(registry)
+    with pytest.raises(InvalidTransitionError):
+        registry.approve("candidate-001", approved_by="t", source_hash="x" * 64, spec_hash=cand.spec_hash)
+
+
+def test_promote_requires_approval_and_a_registration_record(registry):
+    cand = _to_review_required(registry)
+    # REVIEW_REQUIRED (not yet APPROVED) cannot be promoted.
+    with pytest.raises(InvalidTransitionError):
+        registry.promote("candidate-001", dict(_REGISTRATION))
+    registry.approve("candidate-001", approved_by="t", source_hash=cand.source_hash, spec_hash=cand.spec_hash)
+    # APPROVED but no registration -> still refused (human approval alone is not PROMOTED).
     with pytest.raises(InvalidTransitionError):
         registry.promote("candidate-001")
+    with pytest.raises(InvalidTransitionError):
+        registry.promote("candidate-001", {"strategy_name": "x"})
+    assert registry.get("candidate-001").status == S.APPROVED
 
 
-def test_promote_succeeds_once_full_evidence_exists(registry):
-    _make(registry)
-    for step in (S.VALIDATING, S.VALIDATED, S.DEVELOPMENT_TESTED, S.FROZEN):
-        registry.transition("candidate-001", step)
-    registry.record_evaluation("candidate-001", "final_test", _evaluation("final_test"))
-    for step in (S.OUT_OF_SAMPLE_TESTED, S.REVIEW_REQUIRED):
-        registry.transition("candidate-001", step)
-    promoted = registry.promote("candidate-001")
+def test_promote_succeeds_with_registration_record(registry):
+    cand = _to_review_required(registry)
+    registry.approve("candidate-001", approved_by="t", source_hash=cand.source_hash, spec_hash=cand.spec_hash)
+    promoted = registry.promote("candidate-001", dict(_REGISTRATION))
     assert promoted.status == S.PROMOTED
+    assert promoted.is_production_registered()
+
+
+def test_generic_transition_cannot_reach_approved_or_promoted(registry):
+    _to_review_required(registry)
+    for target in (S.APPROVED, S.PROMOTED):
+        with pytest.raises(InvalidTransitionError):
+            registry.transition("candidate-001", target)
+
+
+def test_registered_candidate_cannot_be_rejected(registry):
+    cand = _to_review_required(registry)
+    registry.approve("candidate-001", approved_by="t", source_hash=cand.source_hash, spec_hash=cand.spec_hash)
+    registry.promote("candidate-001", dict(_REGISTRATION))
+    with pytest.raises(InvalidTransitionError):
+        registry.reject("candidate-001", "too late")
 
 
 def test_promote_on_missing_candidate_raises_keyerror(registry):
     with pytest.raises(KeyError):
         registry.promote("nope")
+
+
+def test_legacy_promoted_record_is_flagged_not_reinterpreted(registry):
+    from src.ai.agents.strategy_dev.models import registration_state
+    import json
+
+    _to_review_required(registry)
+    path = registry._record_path("candidate-001")
+    raw = json.loads(path.read_text())
+    raw["status"] = "PROMOTED"  # a pre-ADR-0049 record: promoted, no registration
+    raw.pop("approval", None)
+    raw.pop("registration", None)
+    path.write_text(json.dumps(raw))
+    legacy = registry.get("candidate-001")
+    assert legacy.status == S.PROMOTED
+    assert not legacy.is_production_registered()
+    assert registration_state(legacy) == "LEGACY_PROMOTED_UNVERIFIED"
 
 
 # ---------------------------------------------------------------------------

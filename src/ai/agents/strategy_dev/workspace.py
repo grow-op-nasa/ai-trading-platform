@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 
@@ -65,10 +66,26 @@ _TRANSITIONS: dict[CandidateStrategyStatus, tuple[CandidateStrategyStatus, ...]]
     CandidateStrategyStatus.FROZEN: (CandidateStrategyStatus.OUT_OF_SAMPLE_TESTED,),
     CandidateStrategyStatus.OUT_OF_SAMPLE_TESTED: (CandidateStrategyStatus.REVIEW_REQUIRED,),
     CandidateStrategyStatus.REVIEW_REQUIRED: (
+        CandidateStrategyStatus.APPROVED,
+        CandidateStrategyStatus.REJECTED,
+    ),
+    # ADR-0049: APPROVED -> PROMOTED happens only through
+    # `CandidateRegistry.promote()` with a production registration
+    # record; APPROVED -> REJECTED lets a human abandon an approval
+    # whose registration can never succeed (e.g. an unresolvable name
+    # collision) -- refused if a registration record exists.
+    CandidateStrategyStatus.APPROVED: (
         CandidateStrategyStatus.PROMOTED,
         CandidateStrategyStatus.REJECTED,
     ),
 }
+
+#: Statuses that may only be entered through their dedicated, guarded
+#: `CandidateRegistry` methods (`approve()` / `promote()`), never via
+#: the generic `transition()` (ADR-0049).
+_GUARDED_TARGETS = frozenset(
+    {CandidateStrategyStatus.APPROVED, CandidateStrategyStatus.PROMOTED}
+)
 
 
 class CandidateImmutableError(Exception):
@@ -224,10 +241,23 @@ class CandidateRegistry:
         one-way lifecycle graph (`_TRANSITIONS`) and immutability after
         freeze (Sprint 14 spec, sections 5, 35-36).
 
+        `APPROVED` and `PROMOTED` are reachable only via `approve()` /
+        `promote()` (ADR-0049) -- `PROMOTED` in particular must never
+        be set without a production registration record.
+
         Raises:
             InvalidTransitionError: `new_status` is not a permitted
-                successor of the candidate's current status.
+                successor of the candidate's current status, or is a
+                guarded target.
         """
+        if new_status in _GUARDED_TARGETS:
+            raise InvalidTransitionError(
+                f"cannot transition candidate {candidate_id!r} to {new_status.value!r} "
+                f"directly -- use CandidateRegistry.approve()/promote() (ADR-0049)"
+            )
+        return self._transition(candidate_id, new_status)
+
+    def _transition(self, candidate_id: str, new_status: CandidateStrategyStatus) -> CandidateStrategy:
         candidate = self.get(candidate_id)
         if candidate is None:
             raise KeyError(f"no such candidate: {candidate_id!r}")
@@ -299,37 +329,117 @@ class CandidateRegistry:
         return candidate
 
     def reject(self, candidate_id: str, reason: str) -> CandidateStrategy:
+        existing = self.get(candidate_id)
+        if existing is not None and existing.registration:
+            raise InvalidTransitionError(
+                f"candidate {candidate_id!r} has a production registration record and "
+                f"cannot be rejected"
+            )
         candidate = self.transition(candidate_id, CandidateStrategyStatus.REJECTED)
         candidate.rejection_reason = reason
         self._save(candidate)
         return candidate
 
-    def promote(self, candidate_id: str) -> CandidateStrategy:
-        """Move a candidate to `PROMOTED`. **Never called by the agent
-        or any agent tool** (Sprint 14 spec, sections 57, 92) -- this
-        method exists for `src.cli.strategy_promote` (a human-only CLI
-        command) to call directly. No tool in `tools.py` wraps this
-        method."""
+    def approve(
+        self,
+        candidate_id: str,
+        *,
+        approved_by: str,
+        source_hash: str,
+        spec_hash: str,
+    ) -> CandidateStrategy:
+        """Record the human approval: `REVIEW_REQUIRED -> APPROVED`.
+        **Never called by the agent or any agent tool** (Sprint 14
+        spec, sections 57, 92) -- reachable only from the human-only
+        promotion service (`src.promotion`). Approval is *not*
+        production registration; see `promote()` (ADR-0049).
+
+        The approved `source_hash`/`spec_hash` are stored so that the
+        later registration step can prove nothing changed in between.
+        """
         candidate = self.get(candidate_id)
         if candidate is None:
             raise KeyError(f"no such candidate: {candidate_id!r}")
         if candidate.status != CandidateStrategyStatus.REVIEW_REQUIRED:
             raise InvalidTransitionError(
-                f"candidate {candidate_id!r} must be REVIEW_REQUIRED to promote "
+                f"candidate {candidate_id!r} must be REVIEW_REQUIRED to approve "
                 f"(currently {candidate.status.value}) -- full evidence "
                 f"(validation + final test) must exist first"
             )
         if candidate.final_test_evaluation is None:
             raise InvalidTransitionError(
                 f"candidate {candidate_id!r} has no final test evaluation -- cannot "
-                f"promote without complete out-of-sample evidence"
+                f"approve without complete out-of-sample evidence"
             )
-        return self.transition(candidate_id, CandidateStrategyStatus.PROMOTED)
+        if source_hash != candidate.source_hash or spec_hash != candidate.spec_hash:
+            raise InvalidTransitionError(
+                f"candidate {candidate_id!r}: approved hashes do not match the recorded "
+                f"source_hash/spec_hash"
+            )
+        candidate.approval = {
+            "approved_at": utc_now().isoformat(),
+            "approved_by": approved_by,
+            "source_hash": source_hash,
+            "spec_hash": spec_hash,
+        }
+        candidate.status = CandidateStrategyStatus.APPROVED
+        self._save(candidate)
+        return candidate
+
+    def promote(
+        self, candidate_id: str, registration: dict | None = None
+    ) -> CandidateStrategy:
+        """Move an `APPROVED` candidate to `PROMOTED`, recording its
+        production `registration`. **Never called by the agent or any
+        agent tool** (Sprint 14 spec, sections 57, 92) -- reserved for
+        `src.promotion` (invoked only by the human-only
+        `src.cli.strategy_promote`). No tool in `tools.py` wraps this
+        method.
+
+        `PROMOTED` means *production-registered* (ADR-0049): the
+        caller must pass the `registration` record produced after the
+        strategy was materialized, registered with `StrategyRegistry`
+        and verified. Without one, nothing is promoted.
+        """
+        candidate = self.get(candidate_id)
+        if candidate is None:
+            raise KeyError(f"no such candidate: {candidate_id!r}")
+        if candidate.status != CandidateStrategyStatus.APPROVED:
+            raise InvalidTransitionError(
+                f"candidate {candidate_id!r} must be APPROVED to promote "
+                f"(currently {candidate.status.value}) -- human approval and "
+                f"full evidence (validation + final test) must exist first"
+            )
+        if candidate.final_test_evaluation is None or not candidate.approval:
+            raise InvalidTransitionError(
+                f"candidate {candidate_id!r} lacks a final test evaluation or an "
+                f"approval record -- cannot promote"
+            )
+        required = ("strategy_name", "module", "class_name", "module_sha256", "registered_at")
+        if not registration or any(not registration.get(k) for k in required):
+            raise InvalidTransitionError(
+                f"candidate {candidate_id!r}: PROMOTED requires a complete production "
+                f"registration record ({', '.join(required)}) -- human approval alone "
+                f"is APPROVED, not PROMOTED (ADR-0049)"
+            )
+        if registration.get("source_hash", candidate.source_hash) != candidate.source_hash:
+            raise InvalidTransitionError(
+                f"candidate {candidate_id!r}: registration source_hash does not match "
+                f"the candidate's recorded source_hash"
+            )
+        candidate.registration = dict(registration)
+        candidate.status = CandidateStrategyStatus.PROMOTED
+        self._save(candidate)
+        return candidate
 
     def _save(self, candidate: CandidateStrategy) -> None:
         path = self._record_path(candidate.candidate_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(_to_dict(candidate), indent=2, sort_keys=True), encoding="utf-8")
+        # Atomic replace (ADR-0049): a crash mid-write must never leave
+        # a truncated manifest where a candidate's lifecycle record was.
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(_to_dict(candidate), indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
 
 
 def _to_dict(candidate: CandidateStrategy) -> dict:

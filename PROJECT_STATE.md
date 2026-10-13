@@ -9,7 +9,7 @@ findings cited with no invented ids, both NOT_EVALUABLE checks reported as limit
 exposed (1) the model skipped `get_finding` (required check FAILED -- instruction-following, not fabrication), (2) the
 report was truncated at the 2048-token output cap with no flag (fixed afterwards: cap 4096 for the CLI provider and a
 code-derived "truncated" limitation), and (3) a script crash (list + tuple) before the verdict printed (fixed).
-A re-run is required; no PASS is claimed. `monitor-scheduler` on the real `data/` correctly refused experiment 1
+Second live run (agent c444af453bc9471587a5e159441a33ac, pushed 79b9b30): verdict **FAIL 32/34** -- the model again skipped `get_finding` (genuine instruction-following gap), and one criterion was a harness false positive ("unknown, not healthy" matched a regex meant to catch calling drawdown healthy; corrected to ignore negation). Follow-up: prompt v2 + tool description say run/list tools return summaries only, and code now adds a limitation when findings were never fetched via `get_finding`. A third live run is required; no PASS is claimed. `monitor-scheduler` on the real `data/` correctly refused experiment 1
 (no saved paper portfolio) with exit 2; a scheduler run against a real portfolio has not been done on the dev machine.
 
 _Sprint 15 update (2026-10-11): **implemented, awaiting real-machine

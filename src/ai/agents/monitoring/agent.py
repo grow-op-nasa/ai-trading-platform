@@ -201,6 +201,14 @@ class MarketMonitoringAgent:
                 for c in rec.result_summary.get("checks", []):
                     if c.get("status") == "NOT_EVALUABLE":
                         out.append(f"Check {c.get('check_id')} was not evaluable: {c.get('reason')}")
+        fetched = {rec.result_summary.get("finding_id") for rec in session.tool_calls
+                   if rec.tool_name == "get_finding" and not rec.is_error}
+        unfetched = sorted(set(session.finding_ids) - fetched)
+        if unfetched:
+            out.append(
+                f"Full evidence was not fetched (get_finding not called) for {len(unfetched)} finding(s): "
+                f"{', '.join(unfetched)}; their details are summary fields from other tools."
+            )
         return out
 
 

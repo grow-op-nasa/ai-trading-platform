@@ -119,7 +119,8 @@ class GetFindingTool(_Tool):
 class GetMonitoringRunTool(_Tool):
     name = "get_monitoring_run"
     required_permission = PERM_RUNS_READ
-    description = "Get a stored monitoring run (default: the most recent) with check statuses and findings."
+    description = ("Get a stored monitoring run (default: the most recent) with check statuses and finding "
+                   "SUMMARIES (no evidence; call get_finding for a finding's evidence).")
 
     def schema(self):
         return {"type": "object", "properties": {"run_id": {"type": "string"}}, "required": []}

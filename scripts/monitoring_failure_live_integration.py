@@ -202,7 +202,7 @@ def main(argv=None) -> int:
     text = " ".join([rep.summary, *rep.observed_facts]).lower() if rep else ""
     lims = " ".join(rep.limitations).lower() if rep else ""
     sup.add("drawdown not-evaluable is a limitation and not described as healthy",
-            "portfolio_drawdown" in lims and not re.search(r"drawdown[^.]{0,60}\bhealthy\b", text), "")
+            "portfolio_drawdown" in lims and not re.search(r"drawdown[^.]{0,60}(?<!not )\bhealthy\b", text), "")
     sup.add("market-data failure described from stored evidence (error type or finding id)",
             bool(rep) and ("dataprovidererror" in text or "retrieval" in text or "unavailable" in text), "")
     sup.add("agent states the failure was injected/synthetic OR does not claim a real outage",

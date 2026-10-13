@@ -537,3 +537,29 @@ def test_complete_final_report_has_no_truncation_limitation():
     agent, _, _ = make_agent([final("Summary: ok")], make_service())
     run = agent.run("x")
     assert not any("truncated" in l for l in run.final_report.limitations)
+
+
+def test_findings_seen_but_never_fetched_carry_a_code_derived_limitation():
+    svc = make_service(breach_state())
+    agent, _, _ = make_agent([call("run_monitoring_checks"), final("Summary: exposure breach.")], svc)
+    run = agent.run("x")
+    assert any("get_finding not called" in l for l in run.final_report.limitations)
+
+
+def test_fetching_each_finding_removes_the_unfetched_limitation():
+    n = len(make_service(breach_state()).run_once().finding_ids)
+    svc = make_service(breach_state())
+    holder = {}
+    orig = svc.run_once
+
+    def spy():
+        r = orig()
+        holder["ids"] = list(r.finding_ids)
+        return r
+
+    svc.run_once = spy  # type: ignore[method-assign]
+    fetches = [(lambda i=i: call("get_finding", {"finding_id": holder["ids"][i]}, f"c{i + 2}")) for i in range(n)]
+    agent, _, _ = make_agent([call("run_monitoring_checks"), *fetches, final("Summary: done.")], svc)
+    run = agent.run("x")
+    assert n >= 1 and len(holder["ids"]) == n
+    assert not any("get_finding not called" in l for l in run.final_report.limitations)

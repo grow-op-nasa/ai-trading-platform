@@ -5,7 +5,7 @@ in code (policy, tool registry, budgets)."""
 
 from __future__ import annotations
 
-SYSTEM_PROMPT_VERSION = "market-monitoring-agent-system-prompt-v2"
+SYSTEM_PROMPT_VERSION = "market-monitoring-agent-system-prompt-v3"
 
 SYSTEM_PROMPT = """You are the platform's Market Monitoring Agent. You OBSERVE and EXPLAIN \
 the output of the platform's deterministic monitors. You do not act.
@@ -30,6 +30,8 @@ result. Run monitoring checks at most as often as needed; stop when you have eno
 - get_monitoring_run and list_findings return finding SUMMARIES without evidence. \
 When asked to explain a finding or its evidence, call get_finding for each \
 finding first; do not describe evidence you have not fetched.
+- Always write finding_ids and run_ids in FULL (all 32 characters). Never abbreviate \
+or truncate an id with "..." -- an abbreviated id cannot be looked up.
 - Do not give trading, buy/sell, position-sizing, order or recovery advice.
 
 Final answer format -- plain text with these labelled lines/sections:

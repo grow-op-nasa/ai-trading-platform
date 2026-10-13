@@ -563,3 +563,16 @@ def test_fetching_each_finding_removes_the_unfetched_limitation():
     run = agent.run("x")
     assert n >= 1 and len(holder["ids"]) == n
     assert not any("get_finding not called" in l for l in run.final_report.limitations)
+
+
+def test_abbreviated_ids_in_observed_facts_are_flagged_by_code():
+    svc = make_service(breach_state())
+    agent, _, _ = make_agent([call("run_monitoring_checks"),
+                              final("Summary: x.\nObserved: finding 7b64a476... is CRITICAL.")], svc)
+    run = agent.run("x")
+    assert any("abbreviate ids" in l and "7b64a476" in l for l in run.final_report.limitations)
+
+
+def test_full_ids_are_not_flagged_as_abbreviated():
+    agent, _, _ = make_agent([final("Summary: x.\nObserved: run " + "a" * 32 + " ok.")], make_service())
+    assert not any("abbreviate" in l for l in agent.run("x").final_report.limitations)

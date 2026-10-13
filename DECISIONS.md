@@ -4894,3 +4894,11 @@ monitoring only ran when someone typed `monitor --once`.
 
 **Verification status.** Sandbox tests pass; real-machine `pytest -q` and the live Anthropic
 failure-scenario run are recorded in `PROJECT_STATE.md` only after they are executed.
+
+**Live failure-scenario result (recorded 2026-10-13).** Four genuine Anthropic runs (claude-sonnet-5) over a
+synthetic-fault scenario all FAILED the harness, each on one criterion only: runs 1, 2 and 4 skipped `get_finding`
+(model instruction-following), run 3 abbreviated finding ids. Fixes made without weakening any criterion: output cap
+2048 -> 4096 with a code-derived truncation limitation, prompt v2/v3, tool-description clarity, code-derived limitations
+for unfetched findings and abbreviated ids, and one harness false-positive (negation) corrected. Safety properties held in
+every run: read-only tools, no mutation, unevaluable checks never reported healthy, failure described from stored evidence
+and labelled injected. Tool use is guided by prompt, not enforced; enforcement (a loop-level nudge) is deferred.

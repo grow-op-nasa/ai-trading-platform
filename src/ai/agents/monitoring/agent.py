@@ -37,6 +37,7 @@ from src.ai.agents.tools import ToolRegistry, ToolResult
 _BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
 RUN_TOOL = "run_monitoring_checks"
 RUN_RESULT_TOOLS = (RUN_TOOL, "get_monitoring_run", "get_market_data_health")
+_ABBREVIATED_ID = re.compile(r"\b([0-9a-f]{6,31})(?:\.\.\.|\u2026)")
 _HEX_ID = re.compile(r"\b[0-9a-f]{32}\b")
 _NOT_EXECUTED = {"POLICY_REJECTED", "UNKNOWN_TOOL", "INVALID_ARGUMENTS", _BUDGET_EXHAUSTED}
 
@@ -201,6 +202,12 @@ class MarketMonitoringAgent:
                 for c in rec.result_summary.get("checks", []):
                     if c.get("status") == "NOT_EVALUABLE":
                         out.append(f"Check {c.get('check_id')} was not evaluable: {c.get('reason')}")
+        abbreviated = sorted({m for f in facts for m in _ABBREVIATED_ID.findall(f)})
+        if abbreviated:
+            out.append(
+                "Observed statements abbreviate ids (" + ", ".join(abbreviated) + "...); the full ids are "
+                "in this report's finding_ids / monitoring_run_ids fields."
+            )
         fetched = {rec.result_summary.get("finding_id") for rec in session.tool_calls
                    if rec.tool_name == "get_finding" and not rec.is_error}
         unfetched = sorted(set(session.finding_ids) - fetched)

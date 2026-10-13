@@ -1,5 +1,7 @@
 # Project State
 
+_Sprint 16 follow-up (2026-10-13): **runtime-enforced `get_finding` retrieval implemented; real-machine verification and the fifth live run are PENDING.** See the ADR-0051 amendment in `DECISIONS.md`. Sandbox only so far: monitoring-agent tests 67 + 28 passed, including a regression that reproduces the live failure (model claims full evidence without calling `get_finding`; the runtime fetches all four). No live PASS is claimed until the user's run is recorded here.
+
 _Sprint 16 update (2026-10-13): **implemented and pushed (ddff80c); live failure-scenario run NOT yet a PASS.**
 Real-machine results (dev machine): focused Sprint 16 tests 93 passed; **full `pytest -q`: 1453 passed, 0 failed (80.06s)**;
 `monitoring_failure_live_integration.py --skip-agent`: all deterministic checks PASS (verdict PARTIAL by design).

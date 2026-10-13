@@ -127,16 +127,16 @@ class ScriptedProvider:
         self.stored = stored
 
     def generate(self, *, system, messages, tools):
+        # Sprint 16: the runtime itself fetches every finding's full detail right after the run is read,
+        # so tool messages are no longer positional. Identify results by content instead.
         tool_msgs = [json.loads(m.content) for m in messages if m.role == "tool"]
-        n = len(tool_msgs)
-        if n == 0:
+        if not tool_msgs:
             return _call("get_monitoring_run", {}, "c1") if self.stored else _call("run_monitoring_checks", {}, "c1")
-        if n == 1:
+        listed = [m for m in tool_msgs if isinstance(m.get("data"), dict) and "count" in m["data"]]
+        if not listed:
             return _call("list_findings", {}, "c2")
-        ids = [f["finding_id"] for f in tool_msgs[1]["data"]["findings"]]
-        if n - 1 <= len(ids):
-            return _call("get_finding", {"finding_id": ids[n - 2]}, f"c{n + 1}")
-        run_id = tool_msgs[0]["data"]["run_id"]
+        ids = [f["finding_id"] for f in listed[0]["data"]["findings"]]
+        run_id = next(m["data"]["run_id"] for m in tool_msgs if isinstance(m.get("data"), dict) and "run_id" in m["data"])
         lines = ["Summary: the persisted paper portfolio has two active problems.", "Observed:"]
         lines += [f"- finding {i} is open (run {run_id})" for i in ids]
         lines += ["Hypothesis:", "- the position was sized without regard to the exposure ceiling",

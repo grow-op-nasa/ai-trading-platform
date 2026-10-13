@@ -199,6 +199,25 @@ def main(argv=None) -> int:
     sup.add("no duplicate/new findings created by the agent", open_before.items() <= open_after.items(),
             f"open before={len(open_before)} after={len(open_after)}")
     rep = arun.final_report
+    expected_ids = set(open_before.values())
+    fcalls = [c for c in arun.tool_calls if c.tool_name == "get_finding"]
+    ok_ids = {c.arguments.get("finding_id") for c in fcalls if not c.is_error
+              and c.result_summary.get("finding_id") == c.arguments.get("finding_id")
+              and isinstance(c.result_summary.get("evidence"), list)}
+    sup.add("every expected finding had its full detail returned by the registered get_finding handler",
+            expected_ids <= ok_ids, f"{len(expected_ids & ok_ids)} of {len(expected_ids)} (retrieval failures: "
+            f"{sum(1 for c in fcalls if c.is_error)})")
+    sup.add("report evidence metadata (derived by code) agrees: complete, all expected ids retrieved, none incomplete",
+            bool(rep) and rep.evidence_complete and expected_ids <= set(rep.findings_retrieved)
+            and not rep.findings_incomplete, f"retrieved={len(rep.findings_retrieved) if rep else 0}")
+    by = {c.initiated_by for c in arun.tool_calls}
+    sup.add("audit distinguishes initiators; runtime calls are get_finding only",
+            by <= {"model", "runtime"} and all(c.tool_name == "get_finding" for c in arun.tool_calls
+                                               if c.initiated_by == "runtime"),
+            f"model={sum(1 for c in arun.tool_calls if c.initiated_by == 'model')} "
+            f"runtime={sum(1 for c in arun.tool_calls if c.initiated_by == 'runtime')}")
+    sup.add("runtime did not rerun monitoring", arun.monitoring_run_count == 0
+            and not any(c.tool_name == "run_monitoring_checks" and c.initiated_by == "runtime" for c in arun.tool_calls), "")
     text = " ".join([rep.summary, *rep.observed_facts]).lower() if rep else ""
     lims = " ".join(rep.limitations).lower() if rep else ""
     sup.add("drawdown not-evaluable is a limitation and not described as healthy",

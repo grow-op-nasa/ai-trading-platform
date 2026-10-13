@@ -46,6 +46,11 @@ class MonitoringAgentRunStore:
                 monitoring_run_ids=tuple(rep.get("monitoring_run_ids", [])),
                 finding_ids=tuple(rep.get("finding_ids", [])),
                 evidence_references=tuple(rep.get("evidence_references", [])),
+                evidence_complete=bool(rep.get("evidence_complete", False)),
+                findings_required=tuple(rep.get("findings_required", [])),
+                findings_retrieved=tuple(rep.get("findings_retrieved", [])),
+                findings_incomplete=tuple(rep.get("findings_incomplete", [])),
+                evidence_incomplete_reasons=tuple(rep.get("evidence_incomplete_reasons", [])),
             )
         return MonitoringAgentRun(
             run_id=raw["run_id"], goal=raw["goal"], provider=raw["provider"], model=raw["model"],

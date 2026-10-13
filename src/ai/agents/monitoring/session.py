@@ -16,6 +16,9 @@ class MonitoringAgentSession:
     monitoring_run_ids: list[str] = field(default_factory=list)
     finding_ids: list[str] = field(default_factory=list)
     evidence_references: list[str] = field(default_factory=list)
+    retrieved_finding_ids: list[str] = field(default_factory=list)      # validated get_finding results
+    retrieval_failures: dict[str, str] = field(default_factory=dict)    # finding_id -> reason
+    runtime_attempted: set[str] = field(default_factory=set)            # ids the runtime already tried
     step_count: int = 0
     monitoring_run_count: int = 0
 

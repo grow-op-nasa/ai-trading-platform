@@ -11,6 +11,13 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 16 follow-up -- 2026-10-13, Runtime-enforced finding retrieval
+
+See `DECISIONS.md`, ADR-0051 amendment. The monitoring agent runtime now executes the registered `get_finding` handler
+for every finding of a retrieved monitoring run (audit field `initiated_by`), derives evidence completeness from
+validated tool results, and reports incomplete evidence in code. Prompt v4. Extension Cost: 4 existing files changed
+(`ai/agents/models.py` optional field, `monitoring/{agent,policy,models,store,session}.py`, `cli/market_monitor_agent.py`).
+
 ## Sprint 16 -- 2026-10-13, Failure-state validation, fault injection, monitoring scheduler
 
 See `DECISIONS.md`, ADR-0051.

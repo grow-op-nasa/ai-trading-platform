@@ -83,11 +83,15 @@ def _print_run(run: MonitoringAgentRun) -> None:
     print(f"Steps: {run.step_count}  Tool calls: {run.tool_call_count}  Monitoring runs: {run.monitoring_run_count}")
     if run.monitoring_run_ids:
         print("Monitoring runs referenced: " + ", ".join(run.monitoring_run_ids))
+    n_runtime = sum(1 for c in run.tool_calls if getattr(c, "initiated_by", "model") == "runtime")
+    if n_runtime:
+        print(f"  ({run.tool_call_count - n_runtime} model-requested, {n_runtime} runtime-initiated tool call(s))")
     for c in run.tool_calls:
+        tag = " [runtime]" if getattr(c, "initiated_by", "model") == "runtime" else ""
         if c.is_error:
-            print(f"  x {c.tool_name}({c.arguments}) -- {c.error_code}: {c.error_message}")
+            print(f"  x {c.tool_name}({c.arguments}){tag} -- {c.error_code}: {c.error_message}")
         else:
-            print(f"  -> {c.tool_name}({c.arguments})")
+            print(f"  -> {c.tool_name}({c.arguments}){tag}")
     r = run.final_report
     if r is not None:
         for title, items in (
@@ -98,7 +102,13 @@ def _print_run(run: MonitoringAgentRun) -> None:
                 print(f"\n{title}:")
                 for i in items:
                     print(f"  - {i}")
-        print("\nSummary:")
+        print("\nEvidence completeness (derived by the runtime from tool results, not from the model's text):")
+        print(f"  full finding details retrieved via get_finding: {len(r.findings_retrieved)} of "
+              f"{len(r.findings_required)} finding(s) of the monitoring run -> "
+              + ("COMPLETE" if r.evidence_complete else "INCOMPLETE"))
+        for reason in r.evidence_incomplete_reasons:
+            print(f"  - not retrieved: {reason}")
+        print("\nSummary (model-written; may not override the evidence status above):")
         print(r.summary)
     if run.error:
         print(f"\nError: {run.error}")

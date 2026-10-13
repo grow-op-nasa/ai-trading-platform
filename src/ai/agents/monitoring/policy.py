@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 
 DEFAULT_MAX_STEPS = 12
 DEFAULT_MAX_MONITORING_RUNS = 3
+DEFAULT_MAX_MANDATORY_FINDING_RETRIEVALS = 20
 
 FORBIDDEN_FLAGS = (
     "allow_live_trading",
@@ -45,6 +46,8 @@ class MarketMonitoringAgentPolicy:
     Args:
         max_steps: maximum loop iterations (provider calls).
         max_monitoring_runs: maximum `run_monitoring_checks` executions.
+        max_mandatory_finding_retrievals: cap on runtime-initiated `get_finding` calls per run;
+            findings beyond it are reported as incomplete evidence, never silently skipped.
         allow_monitoring_runs / allow_finding_reads / allow_run_reads /
             allow_portfolio_reads / allow_execution_reads /
             allow_market_data_health_reads: which read tool groups are
@@ -54,6 +57,7 @@ class MarketMonitoringAgentPolicy:
 
     max_steps: int = DEFAULT_MAX_STEPS
     max_monitoring_runs: int = DEFAULT_MAX_MONITORING_RUNS
+    max_mandatory_finding_retrievals: int = DEFAULT_MAX_MANDATORY_FINDING_RETRIEVALS
     allow_monitoring_runs: bool = True
     allow_finding_reads: bool = True
     allow_run_reads: bool = True
@@ -80,7 +84,7 @@ class MarketMonitoringAgentPolicy:
     allow_http_access: bool = False
 
     def __post_init__(self) -> None:
-        for name in ("max_steps", "max_monitoring_runs"):
+        for name in ("max_steps", "max_monitoring_runs", "max_mandatory_finding_retrievals"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer, got {value!r}")

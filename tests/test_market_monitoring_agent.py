@@ -539,11 +539,15 @@ def test_complete_final_report_has_no_truncation_limitation():
     assert not any("truncated" in l for l in run.final_report.limitations)
 
 
-def test_findings_seen_but_never_fetched_carry_a_code_derived_limitation():
+def test_listed_only_findings_that_were_never_fetched_still_carry_a_code_derived_limitation():
+    # list_findings is not a monitoring-run result, so these ids are not runtime-hydrated (ADR-0051);
+    # the report must still say their full evidence was not fetched.
     svc = make_service(breach_state())
-    agent, _, _ = make_agent([call("run_monitoring_checks"), final("Summary: exposure breach.")], svc)
+    svc.run_once()  # stored outside the agent
+    agent, _, _ = make_agent([call("list_findings", {}), final("Summary: exposure breach.")], svc)
     run = agent.run("x")
     assert any("get_finding not called" in l for l in run.final_report.limitations)
+    assert not any(c.initiated_by == "runtime" for c in run.tool_calls)
 
 
 def test_fetching_each_finding_removes_the_unfetched_limitation():

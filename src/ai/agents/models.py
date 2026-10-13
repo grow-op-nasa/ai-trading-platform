@@ -96,6 +96,9 @@ class ToolCallRecord:
             on success. Never a raw stack trace (Sprint 13 spec,
             section 48) -- detailed diagnostics are logged separately,
             not handed to the model or persisted here.
+        initiated_by: `"model"` (the LLM requested the call, the default
+            and the only value before Sprint 16) or `"runtime"` (the agent
+            runtime executed a mandatory call itself; ADR-0051).
     """
 
     step: int
@@ -105,6 +108,7 @@ class ToolCallRecord:
     result_summary: dict[str, Any] = field(default_factory=dict)
     error_code: str | None = None
     error_message: str | None = None
+    initiated_by: str = "model"
 
 
 @dataclass(frozen=True)

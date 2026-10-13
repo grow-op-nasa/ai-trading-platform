@@ -34,6 +34,13 @@ class MonitoringAgentReport:
     monitoring_run_ids: tuple[str, ...] = ()
     finding_ids: tuple[str, ...] = ()
     evidence_references: tuple[str, ...] = ()
+    # Evidence completeness is DERIVED BY CODE from successful registered `get_finding` results
+    # (ADR-0051); nothing the model writes can change these fields.
+    evidence_complete: bool = False
+    findings_required: tuple[str, ...] = ()
+    findings_retrieved: tuple[str, ...] = ()
+    findings_incomplete: tuple[str, ...] = ()
+    evidence_incomplete_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

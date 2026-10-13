@@ -4902,3 +4902,20 @@ synthetic-fault scenario all FAILED the harness, each on one criterion only: run
 for unfetched findings and abbreviated ids, and one harness false-positive (negation) corrected. Safety properties held in
 every run: read-only tools, no mutation, unevaluable checks never reported healthy, failure described from stored evidence
 and labelled injected. Tool use is guided by prompt, not enforced; enforcement (a loop-level nudge) is deferred.
+
+**Amendment (2026-10-13): mandatory finding-detail retrieval is enforced by the runtime, not the prompt.**
+Four live runs showed the model skipping `get_finding` and, once, claiming it already had the evidence. Decision:
+immediately after the agent loop processes a response that read a monitoring run (`run_monitoring_checks`,
+`get_monitoring_run` or `get_market_data_health`), the runtime executes the *registered* `get_finding` handler through
+the normal `ToolRegistry`/policy pipeline for every authoritative finding id in that tool result that has not already
+been successfully retrieved. No extra model turn, no monitoring rerun, no new tool. A retrieval counts only if the
+handler returned no error, the returned `finding_id` equals the requested id, and `evidence` is a list; errors, mismatches
+and malformed results stay incomplete (`NOT_FOUND`, `ID_MISMATCH`, `MALFORMED_RESULT`, `POLICY_REJECTED`,
+`RETRIEVAL_LIMIT`). `max_mandatory_finding_retrievals` (default 20) is a policy cap. Each audited `ToolCallRecord` carries
+`initiated_by` (`"model"` default, `"runtime"`); runtime calls appear in the model's context as a clearly marked
+`[runtime]` tool-call/tool-result pair. `MonitoringAgentReport` gains code-derived `evidence_complete`,
+`findings_required/retrieved/incomplete` and `evidence_incomplete_reasons`; an incomplete run keeps status
+`COMPLETED` but carries an `INCOMPLETE EVIDENCE` limitation and the CLI prints the code-derived status above the model's
+summary. Model prose cannot change any of these. Tool error text is redacted for `sk-ant-` patterns and bounded.
+Rejected: prompt-only fixes (failed 3 times), a post-hoc "nudge" turn (extra provider call, still model-dependent),
+forced provider `tool_choice` (not guaranteed across the LLM abstraction).

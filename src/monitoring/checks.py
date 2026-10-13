@@ -238,9 +238,14 @@ class MarketDataIntegrityCheck:
             seen += 1
             ent = {"symbol": target.symbol, "interval": target.interval.value}
             ref = f"market_data:{target.key}"
-            for rule in ("market_data.retrieval_failed", "market_data.insufficient_data",
-                         "market_data.coverage_gaps", "market_data.identity_unavailable"):
-                result.mark_checked(rule, **ent)
+            # A rule counts as "checked" (and so may resolve an open finding) only if it was
+            # actually evaluated. A failed retrieval proves nothing about gaps, row counts or
+            # dataset identity, so those rules are NOT checked on a failed observation.
+            result.mark_checked("market_data.retrieval_failed", **ent)
+            if obs.ok:
+                for rule in ("market_data.insufficient_data", "market_data.coverage_gaps",
+                             "market_data.identity_unavailable"):
+                    result.mark_checked(rule, **ent)
             if not obs.ok:
                 result.candidates.append(
                     FindingCandidate(
@@ -325,7 +330,6 @@ class PortfolioValuationCheck:
         for pv in snapshot.positions:
             ent = {"symbol": pv.symbol}
             result.mark_checked("valuation.missing_price", **ent)
-            result.mark_checked("valuation.stale_input", **ent)
             if not pv.price_available:
                 result.candidates.append(
                     FindingCandidate(
@@ -341,6 +345,8 @@ class PortfolioValuationCheck:
             for obs in state.market_data.values():
                 if obs.symbol == pv.symbol and obs.ok:
                     fr = evaluate_freshness(obs, config, CheckContext(ctx.now, ctx.calendar))
+                    if fr.status != CheckStatus.NOT_EVALUABLE:  # only a real freshness verdict can clear the finding
+                        result.mark_checked("valuation.stale_input", **ent)
                     if fr.status in (CheckStatus.WARNING, CheckStatus.CRITICAL):
                         result.candidates.append(
                             FindingCandidate(

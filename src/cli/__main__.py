@@ -49,6 +49,14 @@ def _run_market_monitor_agent(argv: list[str]) -> int:
     return run_market_monitor_agent(argv)
 
 
+def _run_monitor_scheduler(argv: list[str]) -> int:
+    # Lazy and explicit: importing this module (or running any other
+    # command) never starts a scheduler.
+    from src.cli.monitor_scheduler import run_monitor_scheduler
+
+    return run_monitor_scheduler(argv)
+
+
 def _run_monitor(argv: list[str]) -> int:
     # Lazy for the same reason: the deterministic monitor needs no LLM
     # stack and must never pull `anthropic`/agent modules in.
@@ -71,6 +79,7 @@ ARGV_COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "strategy-promote": _run_strategy_promote,
     "monitor": _run_monitor,
     "market-monitor-agent": _run_market_monitor_agent,
+    "monitor-scheduler": _run_monitor_scheduler,
 }
 
 

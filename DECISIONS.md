@@ -4839,3 +4839,58 @@ LLM must not be the thing that decides whether the platform is healthy.
 fake-provider agent tests pass in the sandbox. A real-provider smoke
 test and real-machine `pytest -q` are separate steps; see
 `PROJECT_STATE.md` for their recorded result.
+
+
+## ADR-0051: Sprint 16 -- Failure-state semantics, fault injection, and a deterministic monitoring scheduler
+
+**Context.** Sprint 15 left three gaps: unevaluable checks had never been exercised end to end,
+a market-data failure had never travelled the full monitoring -> report -> agent path, and
+monitoring only ran when someone typed `monitor --once`.
+
+**Decisions.**
+
+1. **Failure-state semantics.** *Healthy* = a rule was evaluated on valid evidence and is clear.
+   *Unhealthy* = evidence of a real condition (including "data required but unavailable").
+   *Not evaluable* = no reliable conclusion is possible; it is never healthy, never proof of
+   recovery, and contributes `UNKNOWN` (not `HEALTHY`) to the run. *Failure to execute* = the
+   monitor itself broke (persistence/state-source error): CLI exit 2. *Recovery* = a finding
+   resolves only when its own rule was genuinely re-evaluated on valid evidence and found clear.
+2. **"Checked" fingerprints fixed.** Two false-recovery bugs were found by the new tests and fixed
+   in `src/monitoring/checks.py`: after a failed fetch the integrity check marked coverage/row/
+   identity rules as checked (so their findings could resolve), and the valuation check marked
+   `valuation.stale_input` as checked while price was unavailable. Rules are now marked only
+   when actually evaluated.
+3. **Provider outputs are normalised at one seam.** `MarketDataService._from_provider` wraps
+   fetch + canonicalisation and converts non-DataFrame / missing-column / bad-type responses
+   into `StructuralValidationError`, so malformed provider output becomes a failed observation
+   (`market_data.retrieval_failed`) instead of an uncaught exception.
+4. **Fault injection is a seam, not a mode.** `src/data/fault_injection.py` provides
+   `FaultInjectingProvider` / `SyntheticCandleProvider` wrapping the `DataProvider` interface.
+   It has no production CLI hook; it is constructed explicitly by tests and by
+   `scripts/monitoring_failure_live_integration.py`. Injected messages carry `[fault-injection]`.
+   An injected failure is **not** evidence of a real third-party outage and is labelled so.
+5. **CLI exit codes.** `monitor`: 0 OK, 1 attention, 2 error (including monitor-internal errors
+   that leave the run UNKNOWN), 3 UNKNOWN.
+6. **Scheduler** (`src/monitoring/scheduler.py`, `monitor-scheduler` CLI): a single-thread
+   stdlib loop with injectable clock/wait; runs `MonitoringService.run_once()` only. It imports
+   no LLM, broker, execution, promotion or research code (AST + subprocess tests), so a timer
+   never spends LLM credits. First run immediate (or `--no-immediate`); ticks on a fixed grid;
+   one active execution per schedule (synchronous); ticks elapsing during a long run are dropped
+   and recorded `SKIPPED/OVERLAP`; waking more than one interval late records `SKIPPED/MISSED`
+   and runs once (no catch-up burst); signals let an in-flight run finish (`SKIPPED/SHUTDOWN`
+   for a due tick). Exceptions are recorded as `ERROR` and the schedule continues; an
+   unpersisted run is `ERROR`; three consecutive attempt-record failures abort. Interval
+   validated 1 s .. 7 days. A `fcntl.flock` lock per schedule id (beside the monitoring DB)
+   prevents duplicate schedulers. Attempts are stored in `monitoring_schedule_attempts` inside
+   the same SQLite file `monitor --once` uses (UTC timestamps, schedule id, scheduled time,
+   start/finish/duration, outcome, linked run id, error, skip reason/count). Exit codes: 0 clean,
+   1 attempt infrastructure errors, 2 config/storage, 3 lock held. A CRITICAL monitoring result
+   is data, not a scheduler failure.
+7. **Rejected:** the pinned `schedule` package (unused, cron-ish semantics, no injectable clock or
+   misfire policy, would add thread/overlap handling we need to control); APScheduler/cron
+   inside the app (heavy infrastructure). Run under systemd/launchd/tmux to survive reboots.
+8. **Not implemented:** notification/alert delivery, scheduler auto-start, cross-host locking,
+   catch-up replay, dashboard changes, live market-session state source.
+
+**Verification status.** Sandbox tests pass; real-machine `pytest -q` and the live Anthropic
+failure-scenario run are recorded in `PROJECT_STATE.md` only after they are executed.

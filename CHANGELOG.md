@@ -11,6 +11,21 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 16 -- 2026-10-13, Failure-state validation, fault injection, monitoring scheduler
+
+See `DECISIONS.md`, ADR-0051.
+
+- Fixed two false-recovery bugs in monitoring checks (coverage-gap findings resolving after a
+  failed fetch; `valuation.stale_input` resolving while price was unavailable).
+- `MarketDataService._from_provider`: malformed provider responses -> `StructuralValidationError`.
+- New `src/data/fault_injection.py` (test/script only) and `tests/test_monitoring_failure_states.py`.
+- `monitor` CLI: exit 2 when the monitor itself errors and the run is UNKNOWN.
+- New `src/monitoring/scheduler.py` + `monitor-scheduler` CLI (deterministic only; no LLM calls),
+  `tests/test_monitor_scheduler.py`, `tests/test_market_monitoring_agent_failure_states.py`.
+- New `scripts/monitoring_failure_live_integration.py` (synthetic fault + unevaluable check +
+  optional genuine Anthropic run).
+- Extension Cost: 4 existing files changed (`checks.py`, `service.py`, `cli/monitor.py`, `cli/__main__.py`).
+
 ## Sprint 15 -- 2026-10-11, Promotion correction + Market Monitoring
 
 See `DECISIONS.md`, ADR-0049 and ADR-0050.

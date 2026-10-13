@@ -1,5 +1,12 @@
 # Project State
 
+_Sprint 16 update (2026-10-13): **implemented in the sandbox; real-machine verification and the
+live failure-scenario Anthropic run are PENDING (not yet executed).** Added failure-state tests,
+a fault-injection seam, two false-recovery fixes, and a deterministic `monitor-scheduler`
+(ADR-0051). Sandbox only: failure-state tests 29/29, scheduler tests 57 (2 need pytest's
+`monkeypatch`, checked with a shim), agent failure-state tests 7/7. No real-machine `pytest -q`
+number is recorded here until the user runs it.
+
 _Sprint 15 update (2026-10-11): **implemented, awaiting real-machine
 verification.** Part A-C corrected the Sprint 14 promotion gap (`PROMOTED`
 now means approved and registered, ADR-0049). Part D added deterministic

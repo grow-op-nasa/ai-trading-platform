@@ -24,14 +24,15 @@ from src.monitoring.models import MonitoringReport
 EXIT_OK, EXIT_ATTENTION, EXIT_UNKNOWN, EXIT_ERROR = 0, 1, 3, 2
 
 
-def _default_service(experiment_id: int | None, db_path: str | None) -> MonitoringService:
+def _default_service(
+    experiment_id: int | None, db_path: str | None, registry_path: str | None = None
+) -> MonitoringService:
     from src.data.service import MarketDataService
     from src.experiments.registry import ExperimentRegistry
     from src.monitoring.model_lookup import registry_model_lookup
 
-    source = RegistryStateSource(
-        ExperimentRegistry(), experiment_id=experiment_id, model_lookup=registry_model_lookup()
-    )
+    registry = ExperimentRegistry(registry_path) if registry_path else ExperimentRegistry()
+    source = RegistryStateSource(registry, experiment_id=experiment_id, model_lookup=registry_model_lookup())
     store = MonitoringStore(db_path) if db_path else MonitoringStore()
     return MonitoringService(source, store, market_data=MarketDataService())
 
@@ -100,6 +101,10 @@ def run_monitor(argv: Sequence[str] | None = None, *, service_factory=None) -> i
 
     print(json.dumps(asdict(report), indent=2, default=str) if args.json else format_report(report))
     if run.persistence_error:
+        return EXIT_ERROR
+    if run.errors and report.status == "UNKNOWN":
+        # the monitor itself failed (state source / check execution), so "unknown" is not a
+        # data judgement -- surface it as an error, distinct from legitimately missing evidence
         return EXIT_ERROR
     if report.status in ("CRITICAL", "WARNING"):
         return EXIT_ATTENTION

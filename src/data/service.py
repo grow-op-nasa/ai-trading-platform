@@ -39,7 +39,7 @@ from src.calendar.base import TradingCalendar
 from src.config.settings import DEFAULT_INTERVAL, DEFAULT_PERIOD
 from src.data.base import DataProvider, Interval
 from src.data.canonical import canonicalize_candles
-from src.data.exceptions import NoDataError
+from src.data.exceptions import NoDataError, StructuralValidationError
 from src.data.models import CandleDataset, SessionPolicy
 from src.data.validation import validate_candles
 from src.data.yfinance_provider import YFinanceProvider
@@ -311,7 +311,7 @@ class MarketDataService:
         cached = self._cache.get(cache_key) if should_use_cache else None
 
         if cached is None or cached.empty:
-            return canonicalize_candles(self._provider.fetch_candles(symbol, start, end, interval))
+            return self._from_provider(symbol, start, end, interval)
 
         cached = canonicalize_candles(cached)
         cached_start = cached.index.min().date()
@@ -323,9 +323,7 @@ class MarketDataService:
         if start >= cached_start and end > cached_end:
             fetch_start = cached_end + timedelta(days=1)
             try:
-                new_data = canonicalize_candles(
-                    self._provider.fetch_candles(symbol, fetch_start, end, interval)
-                )
+                new_data = self._from_provider(symbol, fetch_start, end, interval)
             except NoDataError:
                 return cached  # nothing new yet (e.g. no trading day since cached_end)
             merged = pd.concat([cached, new_data])
@@ -333,7 +331,30 @@ class MarketDataService:
             return merged
 
         # start < cached_start: fall back to a full refetch of [start, end].
-        return canonicalize_candles(self._provider.fetch_candles(symbol, start, end, interval))
+        return self._from_provider(symbol, start, end, interval)
+
+    def _from_provider(self, symbol: str, start: date, end: date, interval: Interval) -> pd.DataFrame:
+        """Fetch from the provider and canonicalise, normalising a response that
+        breaks the DataProvider contract (not a DataFrame, missing columns,
+        uncastable values) into a typed `StructuralValidationError`.
+
+        Without this a malformed provider response surfaced as a bare
+        `KeyError`/`TypeError` from deep inside canonicalisation, which
+        downstream consumers (monitoring) could only label "unexpected".
+        Provider-raised `DataProviderError`/`NoDataError` pass through unchanged.
+        """
+        raw = self._provider.fetch_candles(symbol, start, end, interval)
+        if not isinstance(raw, pd.DataFrame):
+            raise StructuralValidationError(
+                f"provider {self._provider_name()} returned {type(raw).__name__} for {symbol}, expected a DataFrame"
+            )
+        try:
+            return canonicalize_candles(raw)
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise StructuralValidationError(
+                f"provider {self._provider_name()} returned a malformed response for {symbol}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
     def _slice_to_range(self, df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
         start_ts = pd.Timestamp(start, tz="UTC")

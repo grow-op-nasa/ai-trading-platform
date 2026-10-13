@@ -1190,6 +1190,13 @@ environment-only failures, 17 skipped. **Confirmed via real `pytest` on
 the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 `origin/main` (`1b43a93..0c19c69`).
 
+## Sprint 16 -- Monitoring Operations, Scheduling & Failure-State Validation (implemented; real-machine verification pending)
+
+- Done: failure-state semantics + tests, fault-injection seam, two false-recovery fixes,
+  `monitor-scheduler` (deterministic only), failure-scenario live integration script (ADR-0051).
+- Deliberately not built: alert/notification delivery, scheduler auto-start or daemonisation
+  (use systemd/launchd), catch-up replay, cross-host locking, live-session state source.
+
 ## Sprint 15 -- Promotion Correction & Market Monitoring (implemented; real-machine verification pending, see PROJECT_STATE.md)
 
 - Done: `PROMOTED` = approved + registered (ADR-0049); deterministic

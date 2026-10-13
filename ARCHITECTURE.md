@@ -2005,6 +2005,15 @@ no broker, execution engine, promotion, subprocess or HTTP module;
 enforced in `tests/test_market_monitoring_agent.py` and
 `tests/test_architecture.py`.
 
+### Monitoring scheduler + fault injection (Sprint 16, ADR-0051)
+
+`src/monitoring/scheduler.py` runs `MonitoringService.run_once()` on an injectable-clock loop and
+records every attempt (completed / error / skipped) in `monitoring_schedule_attempts` in the same
+SQLite file as `monitor --once`. It imports no LLM, broker, execution or promotion code. The
+`monitor-scheduler` CLI is the only entry point. `src/data/fault_injection.py` wraps a
+`DataProvider` to inject controlled failures through the production path
+(`MarketDataService` -> observation -> checks -> findings); it is never wired into a production CLI.
+
 ### Promotion (Sprint 15, ADR-0049)
 
 `src/promotion/` (human-CLI only) + `src/strategies/promoted/` (manifest

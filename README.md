@@ -80,3 +80,26 @@ exits 0 (ok), 1 (warning/critical), 2 (error) or 3 (unknown). A check that
 cannot be evaluated is reported as such, never as healthy. Nothing runs in
 the background. The agent only reads and explains; it cannot trade, change
 state or promote anything. See `DECISIONS.md` ADR-0050.
+
+### Running monitoring on a schedule (Sprint 16)
+
+```bash
+python -m src.cli monitor-scheduler --experiment-id 1 --interval-seconds 900     # until Ctrl+C / SIGTERM
+python -m src.cli monitor-scheduler --experiment-id 1 --interval-seconds 900 --max-runs 3
+python -m src.cli monitor-scheduler --status [--schedule-id exp-1]              # read-only history
+```
+
+Deterministic monitoring only: it never calls Anthropic or any broker, so a timer costs no LLM
+credits. The first run is immediate (`--no-immediate` waits one interval). Runs never overlap;
+ticks missed during a long run or a suspend are skipped and recorded, not replayed. One scheduler
+per schedule id (a lock beside the monitoring DB refuses a second). The registry and monitoring DB
+must already exist; the scheduler never invents a portfolio. It does not auto-start and does not
+survive reboots on its own: run it under systemd/launchd/tmux. Exit codes: 0 clean, 1 attempt
+errors, 2 config/storage, 3 lock held. There is no alert delivery yet.
+
+Failure-state check (synthetic injected fault, not a real outage; `--skip-agent` needs no key):
+
+```bash
+python scripts/monitoring_failure_live_integration.py --skip-agent
+python scripts/monitoring_failure_live_integration.py     # genuine Anthropic run; needs ANTHROPIC_API_KEY
+```

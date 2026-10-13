@@ -2014,6 +2014,15 @@ SQLite file as `monitor --once`. It imports no LLM, broker, execution or promoti
 `DataProvider` to inject controlled failures through the production path
 (`MarketDataService` -> observation -> checks -> findings); it is never wired into a production CLI.
 
+### Alerting (Sprint 17, ADR-0052)
+
+`MonitoringService` derives NEW / ESCALATED / RESOLVED events from a run's transitions and `MonitoringStore.apply` writes them
+(plus one PENDING delivery per channel) in the same transaction as the findings (`src/monitoring/alerts/store.py`). Delivery is a
+separate step: `AlertDispatcher` claims deliveries (lease, per-fingerprint ordering), renders a deterministic message
+(`format.py`), sends through an `AlertTransport` (`SmtpTransport`/`ConsoleTransport`) and records attempts. Monitoring never
+depends on delivery. Entry points: `alerts` CLI, `monitor-scheduler --dispatch-alerts`. The package imports no LLM, broker,
+execution, promotion or strategy code; the monitoring agent has no alert tool. Guarantee: at-least-once.
+
 ### Promotion (Sprint 15, ADR-0049)
 
 `src/promotion/` (human-CLI only) + `src/strategies/promoted/` (manifest

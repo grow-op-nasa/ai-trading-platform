@@ -97,6 +97,28 @@ must already exist; the scheduler never invents a portfolio. It does not auto-st
 survive reboots on its own: run it under systemd/launchd/tmux. Exit codes: 0 clean, 1 attempt
 errors, 2 config/storage, 3 lock held. There is no alert delivery yet.
 
+### Alerts (Sprint 17)
+
+Off by default. Enable with environment variables (never commit them):
+
+```bash
+export ATP_ALERTS_ENABLED=true ATP_ALERT_SMTP_HOST=smtp.example.com ATP_ALERT_FROM=atp@example.com \
+       ATP_ALERT_TO=you@example.com ATP_ALERT_SMTP_USERNAME=... # password: read -rs ATP_ALERT_SMTP_PASSWORD
+python -m src.cli alerts config                       # validate (never prints the secret)
+python -m src.cli alerts preview --sample NEW         # render, send nothing
+python -m src.cli monitor --once --experiment-id 1    # queues events, does not send
+python -m src.cli alerts dispatch --once              # deliver; retries use backoff
+python -m src.cli alerts status | retry --all-failed
+python -m src.cli alerts test-send --to me@example.com [--confirm-send]   # needs ATP_ALERT_TEST_RECIPIENTS
+python -m src.cli monitor-scheduler --experiment-id 1 --interval-seconds 900 --dispatch-alerts
+```
+
+Alerts fire for new findings, strictly higher severity, and valid resolutions (an unevaluable check never "resolves" anything).
+Delivery is at-least-once: a crash right after the server accepts a message can cause one duplicate. `DELIVERED` means the SMTP
+server accepted it. `alerts` exit codes: 0 ok, 1 pending/retry, 2 config/usage, 3 failed deliveries. Validation:
+`python scripts/scheduler_validation.py` (isolated synthetic fixture, not your real portfolio) and
+`python scripts/alert_delivery_validation.py` (local sink; proves the platform, not a real mail provider).
+
 Failure-state check (synthetic injected fault, not a real outage; `--skip-agent` needs no key):
 
 ```bash

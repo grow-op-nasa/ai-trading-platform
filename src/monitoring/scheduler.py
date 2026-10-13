@@ -317,7 +317,9 @@ class MonitoringScheduler:
         clock: Callable[[], datetime] = utc_now,
         wait: Callable[[float], bool] | None = None,
         emit: Callable[[str], None] | None = None,
+        after_run: Callable[[MonitoringRun | None], str | None] | None = None,
     ) -> None:
+        self._after_run = after_run  # optional, bounded post-run hook (alert dispatch); never affects outcomes
         self._service = service
         self._store = store
         self._cfg = config
@@ -409,6 +411,14 @@ class MonitoringScheduler:
             self.summary.errors += 1
             self._emit(f"{finished.isoformat()} attempt SCHEDULER-ERROR {error} ({attempt.duration_seconds:.2f}s)")
         self._record(attempt)
+        if self._after_run is not None:
+            try:
+                line = self._after_run(run)
+                if line:
+                    self._emit(f"{self._clock().isoformat()} {line}")
+            except Exception as exc:  # noqa: BLE001 -- delivery trouble must not stop or alter monitoring
+                self._emit(f"{self._clock().isoformat()} ALERT-DISPATCH-ERROR {_safe_error(exc)} "
+                           "(monitoring result and attempt record are unaffected)")
 
     def _skip(self, scheduled: datetime, now: datetime, reason: str, count: int) -> None:
         self.summary.skipped_ticks += count

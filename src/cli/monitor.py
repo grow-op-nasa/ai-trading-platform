@@ -34,7 +34,11 @@ def _default_service(
     registry = ExperimentRegistry(registry_path) if registry_path else ExperimentRegistry()
     source = RegistryStateSource(registry, experiment_id=experiment_id, model_lookup=registry_model_lookup())
     store = MonitoringStore(db_path) if db_path else MonitoringStore()
-    return MonitoringService(source, store, market_data=MarketDataService())
+    from src.monitoring.alerts.config import AlertConfig
+
+    # Alert EVENTS are recorded only when alerting is explicitly enabled and valid (invalid => raises).
+    alerts = AlertConfig.from_env().event_settings()
+    return MonitoringService(source, store, market_data=MarketDataService(), alerts=alerts)
 
 
 def format_report(report: MonitoringReport) -> str:
@@ -76,6 +80,19 @@ def format_report(report: MonitoringReport) -> str:
     return "\n".join(lines)
 
 
+def _alert_info(service, run) -> dict | None:
+    """Queued alert events for this run, or None when alerting is off (or the service has no alert store)."""
+    settings = getattr(service, "alert_settings", None)
+    if settings is None or not getattr(settings, "enabled", False) or not run.persisted:
+        return None
+    try:
+        events = service.store.alerts.events_for_run(run.run_id)
+    except Exception:  # noqa: BLE001 -- reporting must never fail the command
+        return None
+    return {"queued_events": len(events), "event_ids": [e.event_id for e in events],
+            "delivery": "queued only; run `alerts dispatch --once` to deliver"}
+
+
 def run_monitor(argv: Sequence[str] | None = None, *, service_factory=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m src.cli monitor")
     parser.add_argument("--once", action="store_true", help="run all checks once (required; no daemon exists)")
@@ -99,7 +116,17 @@ def run_monitor(argv: Sequence[str] | None = None, *, service_factory=None) -> i
         print(f"monitor: failed to run ({type(exc).__name__}: {str(exc)[:200]})")
         return EXIT_ERROR
 
-    print(json.dumps(asdict(report), indent=2, default=str) if args.json else format_report(report))
+    alert_info = _alert_info(service, run)
+    if args.json:
+        payload = asdict(report)
+        if alert_info is not None:
+            payload["alerts"] = alert_info
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(format_report(report))
+        if alert_info is not None:
+            print(f"\nAlerts: {alert_info['queued_events']} event(s) recorded for this run "
+                  "(queued, NOT delivered). Deliver with: python -m src.cli alerts dispatch --once")
     if run.persistence_error:
         return EXIT_ERROR
     if run.errors and report.status == "UNKNOWN":

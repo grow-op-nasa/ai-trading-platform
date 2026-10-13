@@ -11,6 +11,16 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 17 -- 2026-10-13, Reliable finding alerts and scheduler fixture validation
+
+See `DECISIONS.md`, ADR-0052. Added: durable alert events (NEW / ESCALATED / RESOLVED) recorded atomically with finding
+transitions, a retrying outbox with leases and per-finding ordering, SMTP + console transports, the `alerts` CLI,
+`monitor-scheduler --dispatch-alerts`, a loopback `SmtpSink`, `tests/test_alerts.py`, `scripts/scheduler_validation.py` and
+`scripts/alert_delivery_validation.py`. Alerting is off unless `ATP_ALERTS_ENABLED=true`. Guarantee: at-least-once, no exactly-once.
+Fixed in review: SMTP 4xx sender/recipient refusals are retryable (not permanent); TLS verify-error text no longer assumes an attribute.
+Extension Cost: 6 existing file(s) changed: src/monitoring/store.py, src/monitoring/service.py, src/monitoring/scheduler.py,
+src/cli/monitor.py, src/cli/monitor_scheduler.py, src/cli/__main__.py.
+
 ## Sprint 16 follow-up -- 2026-10-13, Runtime-enforced finding retrieval
 
 See `DECISIONS.md`, ADR-0051 amendment. The monitoring agent runtime now executes the registered `get_finding` handler

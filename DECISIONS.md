@@ -4919,3 +4919,70 @@ and malformed results stay incomplete (`NOT_FOUND`, `ID_MISMATCH`, `MALFORMED_RE
 summary. Model prose cannot change any of these. Tool error text is redacted for `sk-ant-` patterns and bounded.
 Rejected: prompt-only fixes (failed 3 times), a post-hoc "nudge" turn (extra provider call, still model-dependent),
 forced provider `tool_choice` (not guaranteed across the LLM abstraction).
+
+
+## ADR-0052: Sprint 17 -- Reliable finding alerts (durable outbox, retrying SMTP delivery) and scheduler fixture validation
+
+**Status:** implemented; verified on the dev machine (full `pytest -q` 1562 passed; both validation scripts PASS; external SMTP untested) -- see `PROJECT_STATE.md`.
+
+1. **What triggers an alert.** Exactly three transitions of the existing finding lifecycle: `NEW` (a finding is opened),
+   `ESCALATED` (severity strictly rises, ordering WARNING < CRITICAL, versus the stored severity), `RESOLVED` (a valid
+   resolution: the rule was actually evaluated and the condition is gone). Decreases, unchanged findings and repeat
+   observations never alert. `NOT_EVALUABLE`/UNKNOWN checks can never produce a resolution, hence never a RESOLVED event.
+   Reappearance after resolution is, per the existing lifecycle, a NEW finding with a new `finding_id`; it produces a new
+   NEW event (documented, not a "reopen").
+2. **Identity and idempotency.** Events are derived deterministically from the transitions of one run. Keys:
+   `NEW:<finding_id>`, `RESOLVED:<finding_id>`, `ESCALATED:<finding_id>:<occurrence_count>`. `alert_events` has UNIQUE
+   `event_id` and `idempotency_key`; `alert_deliveries` has UNIQUE `(event_id, channel)`. Reprocessing a transition inserts
+   nothing.
+3. **Outbox, atomic with the transition.** Events and one PENDING delivery per configured channel are inserted in the same
+   SQLite transaction as the run and finding changes (`MonitoringStore.apply`). Failure to record rolls back both. A bug in
+   event derivation is caught, appended to the run's errors and never aborts monitoring. Events are recorded only while
+   alerting is enabled.
+4. **Initial open findings.** `ATP_ALERT_EXISTING_FINDINGS=baseline` (default): findings already open when alerting is first
+   enabled are not announced (their later ESCALATED/RESOLVED events are); `notify`: each is announced once as a NEW event
+   (`reason=existing_at_enablement`) using the normal NEW key, so no duplicate is possible. The choice is stored once in
+   `alert_meta`.
+5. **Delivery.** Statuses `PENDING -> IN_PROGRESS -> DELIVERED | RETRY_PENDING | FAILED`, with an attempt row per try
+   (`alert_attempts`). A delivery is claimed by one conditional UPDATE (race-safe) with a lease; an expired lease is
+   re-claimable and the abandoned attempt is recorded as `ABANDONED`. Retries reuse the same event and delivery ids.
+   Backoff is deterministic exponential `min(base*2^(n-1), max)`, no jitter; exhaustion or a permanent error ends in
+   `FAILED`, which stays inspectable and can be requeued manually (`alerts retry`) keeping attempt history. Misconfiguration
+   is detected before claiming, so no attempts are burned. Later events for the same fingerprint wait for earlier
+   non-terminal deliveries (ordering per finding); a FAILED delivery does not block later ones.
+6. **Guarantees (honest).** At-least-once to the transport. If the process dies after the server accepted a message but
+   before `DELIVERED` is stored, the lease expires and the message is sent again: a duplicate is possible at that crash
+   boundary. There is no exactly-once claim. Order is guaranteed per finding, not globally. DELIVERED means "the transport
+   accepted it" (local sink or SMTP server), never "a human read it".
+7. **Transport.** `AlertTransport` abstraction; `SmtpTransport` (stdlib `smtplib`) and `ConsoleTransport` (preview). TLS uses
+   `ssl.create_default_context()` always (certificate and hostname verification are never disabled); STARTTLS is mandatory
+   when selected (no downgrade); `none` is only accepted for loopback hosts without credentials. Timeouts are bounded.
+   Errors are classified: authentication, refusal, 5xx, certificate -> permanent; 4xx, disconnect, timeout, OSError -> retryable.
+   Credentials come only from `ATP_ALERT_SMTP_USERNAME/PASSWORD`, never stored, never in repr/logs/errors (`redact`).
+   Header values are sanitised; recipients are validated.
+8. **Content.** Deterministic plain text built from stored finding fields: no AI text, no links, explicit "stored paper-portfolio
+   snapshot, not a live trading session" and "informational only" wording. `alerts preview` renders without sending.
+9. **Configuration (env, all prefixed `ATP_ALERT`).** Alerting is OFF unless `ATP_ALERTS_ENABLED=true`. Settings:
+   `ATP_ALERT_TRANSPORT` (smtp|console), `_EXISTING_FINDINGS`, `_SMTP_HOST/PORT/SECURITY(starttls|ssl|none)/USERNAME/PASSWORD/
+   TIMEOUT_SECONDS`, `_FROM`, `_TO` (comma-separated), `_MAX_ATTEMPTS`, `_BACKOFF_BASE_SECONDS`, `_BACKOFF_MAX_SECONDS`,
+   `_BATCH_LIMIT`, `_LEASE_SECONDS`, `_SUBJECT_PREFIX`, `_ENVIRONMENT_LABEL`, `_TEST_RECIPIENTS` (allow-list for `test-send`).
+   An enabled but invalid configuration fails loudly (CLI exit 2) instead of silently dropping alerts.
+10. **CLI.** `python -m src.cli alerts config|preview|status|dispatch --once|retry|test-send`. Exit codes: 0 OK; 1 completed with
+   pending/retry deliveries; 2 invalid config/usage/missing DB (nothing sent; a missing DB is never created); 3 FAILED
+   deliveries or failed test-send. `test-send` is a dry run unless `--confirm-send`, and only to an address in
+   `ATP_ALERT_TEST_RECIPIENTS`. `monitor --once` queues events but never sends.
+11. **Scheduler integration.** `monitor-scheduler --dispatch-alerts` (opt-in) dispatches after each run, bounded by a 20 s
+   budget and the batch limit, stops on shutdown request, never overlaps runs, never calls an LLM. Dispatch failure is logged
+   (`ALERT-DISPATCH-ERROR`) and can never change an attempt outcome, the monitoring result or the exit code. Delivery failure
+   creates no further alert (no recursion). Dispatch is also possible independently of monitoring via `alerts dispatch --once`.
+12. **Isolation.** `src/monitoring/alerts/` and `src/cli/alerts.py` import no LLM, broker, execution, promotion, portfolio-
+   mutation or strategy code (AST + subprocess tests). The monitoring agent gains no alert/send tool.
+13. **Scheduler validation, and what it is not.** `scripts/scheduler_validation.py` runs the real `monitor-scheduler` process
+   on a synthetic, disposable, isolated fixture (own cwd/registry/monitoring DB). It is fixture validation, not validation
+   against the user's real paper portfolio. `scripts/alert_delivery_validation.py` drives the full lifecycle through
+   `SmtpSink`, a loopback test server: it proves outbox/retry/restart/SMTP-client behaviour, **not** delivery by any real
+   provider. External delivery is untested unless the user runs `alerts test-send` with real config and explicit authorisation.
+14. **Rejected / not built:** a notification framework or other providers (Slack, SMS, webhooks), HTML email, AI-written alert
+   text, exactly-once semantics, jitter, a dashboard, a workflow engine, any trading/recovery action from an alert, a daemon.
+15. **Known limitations.** Single-host SQLite outbox; SMTP only; crash-boundary duplicates; no alert for findings that changed
+   while alerting was disabled; the plaintext-loopback mode exists solely for the local sink.

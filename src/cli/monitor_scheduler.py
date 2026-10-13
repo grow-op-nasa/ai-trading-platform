@@ -19,7 +19,9 @@ Exit codes
     3  another scheduler with the same schedule id is already running
 
 Monitoring outcomes (CRITICAL, UNKNOWN, ...) are findings stored with each run;
-they never change the scheduler's exit code.
+they never change the scheduler's exit code. With --dispatch-alerts the scheduler also delivers pending
+alert events after each run (Sprint 17, ADR-0052); delivery trouble is logged and never changes either
+the monitoring result or the exit code.
 """
 
 from __future__ import annotations
@@ -41,6 +43,21 @@ from src.monitoring.scheduler import (
 from src.monitoring.store import DEFAULT_DB_PATH
 
 EXIT_OK, EXIT_ATTEMPT_ERRORS, EXIT_CONFIG, EXIT_LOCKED = 0, 1, 2, 3
+DISPATCH_BUDGET_SECONDS = 20.0  # max time one tick may spend delivering alerts (each send is also timeout-bounded)
+
+
+def _build_dispatcher(db_path: Path):
+    """Alert dispatcher bound to the same monitoring database; raises if alerting is not usable."""
+    from src.monitoring.alerts.config import AlertConfig, AlertConfigError
+    from src.monitoring.alerts.dispatcher import AlertDispatcher
+    from src.monitoring.alerts.transports import build_transport
+    from src.monitoring.store import MonitoringStore
+
+    cfg = AlertConfig.from_env()
+    if not cfg.enabled:
+        raise AlertConfigError("alerting is not enabled (set ATP_ALERTS_ENABLED=true and the ATP_ALERT_* settings)")
+    cfg.validate()
+    return AlertDispatcher(MonitoringStore(db_path).alerts, build_transport(cfg), cfg)
 
 
 def _default_service(experiment_id: int, db_path: str | None, registry_path: str | None):
@@ -102,6 +119,9 @@ def run_monitor_scheduler(
     p.add_argument("--no-immediate", action="store_true", help="first run after one interval instead of now")
     p.add_argument("--max-runs", type=int, default=None, help="stop after this many runs (default: until stopped)")
     p.add_argument("--log-file", default=None, help="also append status lines to this size-rotated log file")
+    p.add_argument("--dispatch-alerts", action="store_true",
+                   help="after each monitoring run, deliver pending alert events (requires ATP_ALERTS_ENABLED=true "
+                        "and valid ATP_ALERT_* settings; bounded per tick; never calls an LLM)")
     p.add_argument("--status", action="store_true", help="show recent scheduler attempts and exit (read-only)")
     p.add_argument("--limit", type=int, default=20, help="rows shown by --status")
     args = p.parse_args(list(argv) if argv is not None else None)
@@ -129,6 +149,14 @@ def run_monitor_scheduler(
         emit(f"monitor-scheduler: could not start ({type(exc).__name__}: {str(exc)[:200]})")
         return EXIT_CONFIG
 
+    dispatcher = None
+    if args.dispatch_alerts:
+        try:
+            dispatcher = _build_dispatcher(db_path)
+        except Exception as exc:  # noqa: BLE001 -- AlertConfigError and storage errors alike
+            emit(f"monitor-scheduler: --dispatch-alerts is not usable: {exc}")
+            return EXIT_CONFIG
+
     lock = SchedulerLock(db_path.parent, cfg.schedule_id)
     try:
         lock.acquire()
@@ -145,6 +173,10 @@ def run_monitor_scheduler(
     try:
         store = ScheduleStore(db_path)
         scheduler = MonitoringScheduler(service, store, cfg, clock=clock or utc_now, wait=wait, emit=sink)
+        if dispatcher is not None:
+            scheduler._after_run = lambda run: dispatcher.dispatch(  # noqa: E731
+                budget_seconds=DISPATCH_BUDGET_SECONDS, should_stop=lambda: scheduler.stop_requested
+            ).one_line()
         sink(f"monitor-scheduler: schedule={cfg.schedule_id} experiment={args.experiment_id} "
              f"interval={cfg.interval_seconds:g}s immediate={cfg.run_immediately} db={db_path}")
         sink("deterministic monitoring only: no LLM, broker, promotion or recovery action is ever called. "

@@ -26,6 +26,14 @@ from typing import Callable
 from src.calendar.base import TradingCalendar
 from src.calendar.nyse import NYSECalendar
 from src.data.service import MarketDataService
+from src.monitoring.alerts.models import (
+    AlertEvent,
+    AlertEventSettings,
+    AlertEventType,
+    event_key,
+    is_escalation,
+)
+from src.monitoring.alerts.store import new_id as new_event_id
 from src.monitoring.checks import Check, CheckContext, default_checks
 from src.monitoring.config import CONFIG_VERSION, MonitoringConfig
 from src.monitoring.models import (
@@ -55,6 +63,7 @@ class MonitoringService:
         checks: list[Check] | None = None,
         calendar: TradingCalendar | None = None,
         clock: Callable[[], datetime] = utc_now,
+        alerts: AlertEventSettings | None = None,
     ) -> None:
         self._source = source
         self._store = store
@@ -63,10 +72,15 @@ class MonitoringService:
         self._checks = checks if checks is not None else default_checks()
         self._calendar = calendar or NYSECalendar()
         self._clock = clock
+        self._alerts = alerts or AlertEventSettings()
 
     @property
     def state_source(self) -> StateSource:
         return self._source
+
+    @property
+    def alert_settings(self) -> AlertEventSettings:
+        return self._alerts
 
     @property
     def store(self) -> MonitoringStore:
@@ -106,6 +120,7 @@ class MonitoringService:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"could not read open findings: {type(exc).__name__}")
             open_fp = {}
+        start_severity = {fp: f.severity for fp, f in open_fp.items()}  # before observe_again mutates them
         changed: dict[str, MonitorFinding] = {}
         active_fp: set[str] = set()
         per_check_ids: dict[str, list[str]] = {}
@@ -145,8 +160,24 @@ class MonitoringService:
             finding_ids=[f.finding_id for fp, f in changed.items() if fp in active_fp],
             resolved_finding_ids=resolved_ids, errors=errors,
         )
+        events: list[AlertEvent] = []
+        init_policy: str | None = None
+        if self._alerts.enabled:
+            try:
+                events, init_policy = self._alert_events(
+                    state, run_id, now, open_fp, start_severity, changed, active_fp, resolved_ids
+                )
+            except Exception as exc:  # noqa: BLE001 -- alert capture must never break monitoring
+                errors.append(f"alert event capture failed: {type(exc).__name__}: {str(exc)[:200]}")
+                run.errors = errors
         try:
-            self._store.apply(run, list(changed.values()))
+            if events or init_policy is not None:
+                self._store.apply(
+                    run, list(changed.values()), alert_events=events,
+                    alert_channels=self._alerts.channels, alert_initialize_policy=init_policy,
+                )
+            else:  # unchanged call shape when alerting is off or idle (keeps store subclasses compatible)
+                self._store.apply(run, list(changed.values()))
             run.persisted = True
         except Exception as exc:  # noqa: BLE001 -- surface, never claim persisted
             run.persisted = False
@@ -154,6 +185,43 @@ class MonitoringService:
             run.errors.append(f"persistence failed: {run.persistence_error}")
         self._last_changed = changed
         return run
+
+    # ------------------------------------------------------------------ alert events (ADR-0052)
+    def _alert_events(self, state, run_id, now, open_fp, start_severity, changed, active_fp, resolved_ids):
+        """Derive logical alert events from THIS run's persisted-to-be finding transitions. Pure and
+        deterministic: NEW (finding created), ESCALATED (severity strictly rose vs. the stored one),
+        RESOLVED (the lifecycle above resolved it). Nothing here evaluates a rule."""
+        initialized = self._store.alerts.is_initialized()
+        events: list[AlertEvent] = []
+        resolved = set(resolved_ids)
+
+        def make(etype, f, *, previous=None, reason="transition", sequence=None):
+            seq = f.occurrence_count if sequence is None else sequence
+            return AlertEvent(
+                event_id=new_event_id(), idempotency_key=event_key(etype, f.finding_id, seq),
+                event_type=etype, finding_id=f.finding_id, fingerprint=f.fingerprint, rule_id=f.rule_id,
+                severity=f.severity, previous_severity=previous, finding_status=f.status, title=f.title,
+                run_id=run_id, sequence=seq, occurred_at=now, created_at=now,
+                snapshot=_alert_snapshot(f, state), reason=reason,
+            )
+
+        for fp in sorted(active_fp):  # deterministic order
+            f = changed[fp]
+            if fp not in open_fp:
+                events.append(make(AlertEventType.NEW, f))
+            elif is_escalation(start_severity[fp], f.severity):
+                events.append(make(AlertEventType.ESCALATED, f, previous=start_severity[fp]))
+        for fp, f in sorted(open_fp.items()):
+            if f.finding_id in resolved:
+                events.append(make(AlertEventType.RESOLVED, f))
+        init_policy = None
+        if not initialized:
+            init_policy = "notify" if self._alerts.notify_existing else "baseline"
+            if self._alerts.notify_existing:
+                for fp, f in sorted(open_fp.items()):
+                    if f.finding_id not in resolved:
+                        events.append(make(AlertEventType.NEW, f, reason="existing_at_enablement", sequence=1))
+        return events, init_policy
 
     def report(self, run: MonitoringRun) -> MonitoringReport:
         findings = [f for f in (self._store.get_finding(i) for i in run.finding_ids) if f is not None]
@@ -183,3 +251,22 @@ class MonitoringService:
         if not results or CheckStatus.NOT_EVALUABLE in statuses:
             return MonitoringStatus.UNKNOWN
         return MonitoringStatus.HEALTHY
+
+
+def _alert_snapshot(f: MonitorFinding, state: PlatformState) -> dict:
+    """Facts frozen at the transition, so a delayed email describes the transition accurately."""
+    desc = state.describe()
+    return {
+        "category": f.category,
+        "description": f.description,
+        "observed_value": f.observed_value,
+        "expected_value": f.expected_value,
+        "entities": dict(f.entities),
+        "first_seen": f.first_seen.isoformat(),
+        "last_seen": f.last_seen.isoformat(),
+        "occurrence_count": f.occurrence_count,
+        "resolved_at": f.resolved_at.isoformat() if f.resolved_at else None,
+        "evidence": [{"reference": e.reference, "kind": e.kind, "summary": e.summary} for e in f.evidence],
+        "source": {"source": desc.get("source"), "experiment_id": desc.get("experiment_id")},
+        "is_paper_snapshot": desc.get("source") == "experiment_registry",
+    }

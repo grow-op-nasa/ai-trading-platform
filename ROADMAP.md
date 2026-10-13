@@ -1190,6 +1190,13 @@ environment-only failures, 17 skipped. **Confirmed via real `pytest` on
 the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 `origin/main` (`1b43a93..0c19c69`).
 
+## Sprint 17 -- Operational Monitoring Validation & Reliable Alert Delivery (implemented; verified on the dev machine, see PROJECT_STATE.md)
+
+- Done: scheduler fixture validation script; durable, idempotent alert events; retrying SMTP/console outbox; `alerts` CLI;
+  scheduler `--dispatch-alerts`; loopback SMTP sink + lifecycle validation script (ADR-0052).
+- Deliberately not built: other notification providers, HTML/AI-written alerts, exactly-once delivery, a daemon, dashboards.
+- Untested unless authorised: delivery through a real external SMTP provider.
+
 ## Sprint 16 -- Monitoring Operations, Scheduling & Failure-State Validation (implemented; real-machine verification pending)
 
 - Done: failure-state semantics + tests, fault-injection seam, two false-recovery fixes,
@@ -1197,7 +1204,7 @@ the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 - Deliberately not built: alert/notification delivery, scheduler auto-start or daemonisation
   (use systemd/launchd), catch-up replay, cross-host locking, live-session state source.
 
-## Sprint 15 -- Promotion Correction & Market Monitoring (implemented; real-machine verification pending, see PROJECT_STATE.md)
+## Sprint 15 -- Promotion Correction & Market Monitoring (implemented; verified on the dev machine, see PROJECT_STATE.md)
 
 - Done: `PROMOTED` = approved + registered (ADR-0049); deterministic
   `src/monitoring/` with seven monitors and `monitor --once`; read-only

@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from src.monitoring.alerts.models import AlertEvent
+from src.monitoring.alerts.store import ALERT_SCHEMA, AlertStore, insert_events, mark_initialized
 from src.monitoring.models import (
     CheckStatus,
     CheckSummary,
@@ -127,6 +129,17 @@ class MonitoringStore:
             self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(_SCHEMA)
+            c.executescript(ALERT_SCHEMA)
+        self._alerts = AlertStore(self)
+
+    @property
+    def alerts(self) -> AlertStore:
+        """The durable alert outbox sharing this store's database (ADR-0052)."""
+        return self._alerts
+
+    def _close(self, conn: sqlite3.Connection) -> None:
+        if not self._memory:
+            conn.close()
 
     def _conn(self) -> sqlite3.Connection:
         if self._memory:
@@ -136,7 +149,17 @@ class MonitoringStore:
         return sqlite3.connect(self._path)
 
     # -- writes (one transaction) -------------------------------------
-    def apply(self, run: MonitoringRun, findings: list[MonitorFinding]) -> None:
+    def apply(
+        self,
+        run: MonitoringRun,
+        findings: list[MonitorFinding],
+        *,
+        alert_events: list[AlertEvent] | None = None,
+        alert_channels: tuple[str, ...] = (),
+        alert_initialize_policy: str | None = None,
+    ) -> None:
+        """Persist the run, its finding transitions AND the alert events (+ their pending deliveries) for
+        those transitions in ONE transaction: either all are stored or none are (ADR-0052)."""
         conn = self._conn()
         try:
             with conn:  # commit on success, rollback on any exception
@@ -150,6 +173,10 @@ class MonitoringStore:
                     "INSERT OR REPLACE INTO monitoring_runs VALUES (?,?,?)",
                     (run.run_id, run.started_at.isoformat(), _run_to_json(run)),
                 )
+                if alert_events:
+                    insert_events(conn, alert_events, alert_channels, run.finished_at)
+                if alert_initialize_policy is not None:
+                    mark_initialized(conn, run.finished_at, alert_initialize_policy)
         finally:
             if not self._memory:
                 conn.close()

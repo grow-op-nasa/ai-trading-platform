@@ -523,3 +523,17 @@ def test_cli_is_registered_in_the_dispatcher():
     from src.cli import __main__ as m
 
     assert "market-monitor-agent" in m.ARGV_COMMANDS and "monitor" in m.ARGV_COMMANDS
+
+
+def test_truncated_final_report_is_flagged_by_code_not_left_to_the_model():
+    svc = make_service()
+    cut = LLMResponse(text="Summary: partial", stop_reason="max_tokens")
+    agent, _, _ = make_agent([cut], svc)
+    run = agent.run("x")
+    assert any("truncated by the output-token limit" in l for l in run.final_report.limitations)
+
+
+def test_complete_final_report_has_no_truncation_limitation():
+    agent, _, _ = make_agent([final("Summary: ok")], make_service())
+    run = agent.run("x")
+    assert not any("truncated" in l for l in run.final_report.limitations)

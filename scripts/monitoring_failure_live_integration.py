@@ -199,7 +199,7 @@ def main(argv=None) -> int:
     sup.add("no duplicate/new findings created by the agent", open_before.items() <= open_after.items(),
             f"open before={len(open_before)} after={len(open_after)}")
     rep = arun.final_report
-    text = " ".join([rep.summary] + rep.observed_facts).lower() if rep else ""
+    text = " ".join([rep.summary, *rep.observed_facts]).lower() if rep else ""
     lims = " ".join(rep.limitations).lower() if rep else ""
     sup.add("drawdown not-evaluable is a limitation and not described as healthy",
             "portfolio_drawdown" in lims and not re.search(r"drawdown[^.]{0,60}\bhealthy\b", text), "")
@@ -210,7 +210,7 @@ def main(argv=None) -> int:
             required=False)
     sup.add("no recovery/trading instructions", not re.search(
         r"\b(restart|reboot|switch provider|rerun the scheduler|buy|sell|liquidate)\b",
-        " ".join(rep.suggested_investigations + rep.hypotheses).lower() if rep else ""), "", required=False)
+        " ".join([*rep.suggested_investigations, *rep.hypotheses]).lower() if rep else ""), "", required=False)
     rows = vrep.rows + sup.rows
     req_fail = [r for r in rows if r["required"] and not r["ok"]]
     verdict = "PASS" if (not req_fail and is_real) else ("FAIL" if req_fail else "PARTIAL")

@@ -22,7 +22,8 @@ from src.ai.agents.provider import LLMProvider, ProviderError
 def _default_provider() -> LLMProvider:
     from src.ai.agents.anthropic_provider import AnthropicLLMProvider
 
-    return AnthropicLLMProvider()
+    # Long failure-state reports exceeded the 2048 default and were truncated (Sprint 16 live run).
+    return AnthropicLLMProvider(max_tokens=4096)
 
 
 def _default_service(experiment_id: int | None, db_path: str | None):

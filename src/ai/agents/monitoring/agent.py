@@ -106,7 +106,13 @@ class MarketMonitoringAgent:
             if not response.tool_calls:
                 text = response.text or ""
                 session.add_message(LLMMessage(role="assistant", content=text))
-                return self._build_report(run_id, goal, STATUS_COMPLETED, text, session)
+                extra = []
+                if getattr(response, "stop_reason", "end_turn") == "max_tokens":
+                    # Code-derived: the model's report was cut off by the output-token cap, so
+                    # the final item(s) may be incomplete. The model cannot omit this.
+                    extra.append("The model's final report was truncated by the output-token limit; "
+                                 "the last item(s) may be incomplete.")
+                return self._build_report(run_id, goal, STATUS_COMPLETED, text, session, extra)
             session.add_message(
                 LLMMessage(role="assistant", content=response.text or "", tool_calls=response.tool_calls)
             )

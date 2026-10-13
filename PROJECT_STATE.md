@@ -1,11 +1,16 @@
 # Project State
 
-_Sprint 16 update (2026-10-13): **implemented in the sandbox; real-machine verification and the
-live failure-scenario Anthropic run are PENDING (not yet executed).** Added failure-state tests,
-a fault-injection seam, two false-recovery fixes, and a deterministic `monitor-scheduler`
-(ADR-0051). Sandbox only: failure-state tests 29/29, scheduler tests 57 (2 need pytest's
-`monkeypatch`, checked with a shim), agent failure-state tests 7/7. No real-machine `pytest -q`
-number is recorded here until the user runs it.
+_Sprint 16 update (2026-10-13): **implemented and pushed (ddff80c); live failure-scenario run NOT yet a PASS.**
+Real-machine results (dev machine): focused Sprint 16 tests 93 passed; **full `pytest -q`: 1453 passed, 0 failed (80.06s)**;
+`monitoring_failure_live_integration.py --skip-agent`: all deterministic checks PASS (verdict PARTIAL by design).
+Live Anthropic run (claude-sonnet-5, agent run b78a6c7f12dd4cc5be201c4c66b0f8eb over monitoring run
+9e7c6f24f344441ab52dd34de3fc3598; failure = SYNTHETIC injected fault): agent COMPLETED, read-only tools only, all four
+findings cited with no invented ids, both NOT_EVALUABLE checks reported as limitations, nothing mutated. But the run
+exposed (1) the model skipped `get_finding` (required check FAILED -- instruction-following, not fabrication), (2) the
+report was truncated at the 2048-token output cap with no flag (fixed afterwards: cap 4096 for the CLI provider and a
+code-derived "truncated" limitation), and (3) a script crash (list + tuple) before the verdict printed (fixed).
+A re-run is required; no PASS is claimed. `monitor-scheduler` on the real `data/` correctly refused experiment 1
+(no saved paper portfolio) with exit 2; a scheduler run against a real portfolio has not been done on the dev machine.
 
 _Sprint 15 update (2026-10-11): **implemented, awaiting real-machine
 verification.** Part A-C corrected the Sprint 14 promotion gap (`PROMOTED`

@@ -5083,3 +5083,16 @@ forced provider `tool_choice` (not guaranteed across the LLM abstraction).
 **Extension cost:** existing files changed: `src/dashboard/app.py` (rewritten as the shell entry point), `src/dashboard/views.py` (small-sample
 caption), `src/dashboard/__init__.py` (docstring), `tests/test_dashboard_smoke.py` (rewritten for the new navigation). New: `src/appsvc/`,
 `src/config/envfile.py`, `src/dashboard/{shell,ui,launch,page_*}.py`, scripts, `.env.example`, tests.
+
+### ADR-0054 addendum (2026-10-16): Paper Trading controls were not usable; workflow rebuilt
+
+**Defect.** The Run tab required a saved profile before showing the preflight button, and profiles were created in a separate tab, so a fresh user saw no
+strategy selector, no preflight and no run control. The AppTest validation created the profile through the service, so it never saw the gap, and the Sprint 19
+report overstated usability.
+
+**Decision.** No prerequisite object. The page always shows strategy (names from the production registry only), paper account (experiments with a saved
+portfolio), instrument (saved-experiment symbols or typed) and timeframe (`1d` only). Preflight is an explicit click. Its result is stored with
+`PaperRunConfig.identity_hash()`; any change to selections or settings, or age over 30 minutes, disables the run control. `PaperService.run_cycle(...,
+approved_config_hash=)` refuses a mismatch and still applies the hard-FAIL preflight gate; the runtime's idempotency is untouched. With no portfolio, the page
+explains and offers an explicit `create_paper_account` form (a new experiment record with a cash-only portfolio, labelled as not a backtest); paper-account
+initialisation stays a separate explicit step. Nothing is created, reset or run by a rerun, refresh or navigation.

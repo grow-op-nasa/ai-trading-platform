@@ -59,14 +59,14 @@ Open `http://localhost:8501` (a browser window opens unless you pass `--no-brows
 **4. Configuration.** Market data needs no key (yfinance). Optional settings live in `.env` (see `.env.example`; never commit it): `ANTHROPIC_API_KEY`
 (only the explicit AI-agent CLI commands use it) and the `ATP_ALERT_*` variables for email alerts. The launcher loads `.env` for the app only
 (existing environment variables win). For CLI commands in a terminal: `set -a; source .env; set +a`. The app shows whether each is configured and never
-shows a value. Paper-run settings are validated JSON "profiles" in `data/app/paper_profiles/`, created from the Paper Trading page.
+shows a value. Paper-run settings are validated JSON "profiles" in `data/app/paper_profiles/`, optionally saved from the Paper Trading page for CLI use (not required to run).
 
 **5. First run, step by step.**
 
 - *Setup & System Status* shows what is missing and how to fix it. A fresh install has no experiments, so most pages show an honest empty state.
 - Create experiments with `python scripts/run_experiment.py` (historical backtests; the app does not launch them).
 - Choose a paper account (an experiment with a saved portfolio) in the sidebar. Nothing is selected or created for you.
-- *Paper Trading* -> *Create profile* (registered strategy, instrument, daily timeframe, risk, stop, costs) -> select it in *Run*.
+- *Paper Trading* -> choose strategy, paper account, instrument and timeframe -> *Run preflight* -> *Run one paper cycle* (enabled only after a passing preflight for exactly those selections). No account yet? Use *Create a new empty paper account*, then *Initialise paper account*.
 - Initialise the paper account (explicit, once per experiment), then **Run preflight** (read-only; makes one market-data request).
 - Only when preflight PASSES is **Run one paper cycle** enabled; tick the confirmation and run. Outcomes: NO_ACTION (a valid result: no signal), RISK_REJECTED,
   BLOCKED, ORDER_FILLED (a *simulated* paper fill), RECONCILIATION_REQUIRED, FAILED. Inspect any cycle in *Cycle history & trace*.

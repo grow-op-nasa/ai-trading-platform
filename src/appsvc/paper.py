@@ -158,7 +158,29 @@ class PaperService:
             raise PaperSetupError("a label is required to initialise a paper account")
         return self.runtime(cfg, monitoring=False).initialize_account(label)
 
-    def run_cycle(self, cfg: PaperRunConfig, *, request_token: str | None = None, monitoring: bool = True) -> RunOutcome:
+    def create_paper_account(self, *, strategy_name: str, symbol: str, starting_cash: float, label: str) -> int:
+        """EXPLICIT: create a NEW, empty paper account (an experiment record plus a cash-only portfolio) with the existing registry
+        APIs, for a user who has no portfolio to select. It never touches an existing experiment and is not a backtest: the
+        record's notes say so. Paper initialisation (the broker baseline) remains a separate explicit step."""
+        if strategy_name not in eligible_names(self.paths):
+            raise PaperConfigError(f"{strategy_name!r} is not a registered production strategy")
+        if not (symbol or "").strip():
+            raise PaperConfigError("an instrument symbol is required")
+        if isinstance(starting_cash, bool) or not isinstance(starting_cash, (int, float)) or not 100 <= starting_cash <= 1_000_000_000:
+            raise PaperConfigError("starting cash must be a number between 100 and 1,000,000,000")
+        if not (label or "").strip():
+            raise PaperConfigError("a label is required")
+        from src.experiments.registry import ExperimentRegistry
+        from src.portfolio.models import Portfolio
+        reg = ExperimentRegistry(self.paths.registry)
+        exp = reg.log_experiment(strategy_name=strategy_name, changed={}, metrics_before={}, metrics_after={}, decision="INCONCLUSIVE",
+                                 notes=f"PAPER ACCOUNT created from the app (not a backtest): {label.strip()[:80]}; "
+                                       f"symbol {symbol.strip().upper()}; starting cash {float(starting_cash):.2f}")
+        reg.save_portfolio(exp, Portfolio.reconstruct(cash=float(starting_cash), positions=[]))
+        return exp
+
+    def run_cycle(self, cfg: PaperRunConfig, *, request_token: str | None = None, monitoring: bool = True,
+                  approved_config_hash: str | None = None) -> RunOutcome:
         """Run exactly ONE bounded paper cycle through the authoritative runtime.
 
         The same hard-FAIL preflight gate as `paper run --once` applies (no data request). A repeated `request_token`
@@ -168,6 +190,8 @@ class PaperService:
             if request_token is not None and request_token in self._tokens:
                 prior = self._tokens[request_token]
                 return RunOutcome(prior.record, prior.refused, prior.refused_checks, prior.error, prior.locked, True)
+            if approved_config_hash is not None and approved_config_hash != cfg.identity_hash():
+                return RunOutcome(refused="the approved preflight does not match the configuration being run; run preflight again")
             outcome = self._run(cfg, monitoring)
             if request_token is not None:
                 self._tokens[request_token] = outcome

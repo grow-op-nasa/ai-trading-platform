@@ -330,3 +330,36 @@ def test_an_unevaluable_check_is_not_shown_as_a_healthy_open_finding_set(tmp_pat
     assert run.status.value != "HEALTHY"
     assert any(c.status.value == "NOT_EVALUABLE" for c in run.checks)
     assert mon.open_findings(paths) == {"CRITICAL": [], "WARNING": []}
+
+
+# ------------------------------------------------------------------ follow-up: usable paper workflow
+def test_run_cycle_refuses_a_mismatched_approval_before_touching_the_runtime(tmp_path):
+    from tests.test_paper_runtime import WED, World
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = service_for(w)
+    out = svc.run_cycle(w.config(), approved_config_hash="bad")
+    assert out.refused and "does not match" in out.refused and out.record is None
+    assert svc.store() is None or svc.store().list_cycles(w.exp) == []
+    ok = svc.run_cycle(w.config(), approved_config_hash=w.config().identity_hash())
+    assert ok.record is not None
+
+
+def test_create_paper_account_is_explicit_validated_and_creates_a_selectable_cash_only_portfolio(tmp_path):
+    from src.appsvc.paper import PaperConfigError
+    from src.appsvc.strategies import eligible_names
+    from src.experiments.registry import ExperimentRegistry
+    paths = AppPaths.under(tmp_path)
+    svc = PaperService(paths)
+    name = eligible_names(paths)[0]
+    for bad in (dict(strategy_name="nope", symbol="QQQ", starting_cash=1000.0, label="x"),
+                dict(strategy_name=name, symbol=" ", starting_cash=1000.0, label="x"),
+                dict(strategy_name=name, symbol="QQQ", starting_cash=5.0, label="x"),
+                dict(strategy_name=name, symbol="QQQ", starting_cash=1000.0, label="")):
+        with pytest.raises(PaperConfigError):
+            svc.create_paper_account(**bad)
+    assert not paths.registry_exists()                       # nothing created by rejected requests
+    exp = svc.create_paper_account(strategy_name=name, symbol="qqq", starting_cash=2500.0, label="acct")
+    pf = ExperimentRegistry(paths.registry).get_portfolio(exp)
+    assert pf.cash == 2500.0 and not pf.positions
+    assert svc.store() is None                               # no paper account initialised implicitly

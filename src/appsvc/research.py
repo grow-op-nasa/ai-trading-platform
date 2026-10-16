@@ -17,6 +17,7 @@ class ExperimentSummary:
     has_spec: bool
     has_portfolio: bool
     has_equity_curve: bool
+    symbol: str | None = None
 
 
 def experiments(paths: AppPaths) -> list[ExperimentSummary]:
@@ -26,7 +27,8 @@ def experiments(paths: AppPaths) -> list[ExperimentSummary]:
     reg = ExperimentRegistry(paths.registry)
     out = []
     for e in reg.list_experiments():
+        spec = reg.get_spec(e.id)
         out.append(ExperimentSummary(e.id, e.strategy_name or "unknown", e.created_at, e.decision, e.notes or "",
-                                     reg.get_spec(e.id) is not None, reg.get_portfolio(e.id) is not None,
-                                     not reg.get_equity_curve(e.id).empty))
+                                     spec is not None, reg.get_portfolio(e.id) is not None,
+                                     not reg.get_equity_curve(e.id).empty, getattr(spec, "symbol", None)))
     return out

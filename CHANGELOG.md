@@ -11,6 +11,14 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 19 follow-up -- 2026-10-16, Paper Trading controls made usable (correction)
+
+The Sprint 19 claim of a usable UI paper workflow was overstated (controls were hidden behind a profile). Rebuilt `src/dashboard/page_paper.py` as one
+visible flow: strategy / paper account / instrument / timeframe selectors, explicit Run preflight with per-check remediation, a run control gated on a
+matching recent PASS, and a persisted-cycle result view. Added `PaperService.create_paper_account` (explicit) and the `approved_config_hash` boundary
+check in `PaperService.run_cycle`; `ExperimentSummary.symbol`. Tests rewritten to drive the real selectors and callbacks. `scripts/app_validation.py`
+no longer pre-creates a profile. See ADR-0054 addendum.
+
 ## Sprint 19 -- 2026-10-16, Local MVP application, guided setup and launch
 
 See `DECISIONS.md`, ADR-0054. Added a seven-page local Streamlit application (Overview, Research & Experiments, Strategies, Paper Trading,

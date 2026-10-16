@@ -116,7 +116,6 @@ def part_b(work: Path, exp: int) -> None:
     t = 120
     paths = AppPaths()
     svc = PaperService(paths)
-    svc.save_profile("validation", svc.build_config(experiment_id=exp, strategy_name="ema_cross", symbol="QQQ"))
 
     def fresh() -> AppTest:
         at = AppTest.from_file(APP).run(timeout=t)
@@ -125,6 +124,11 @@ def part_b(work: Path, exp: int) -> None:
     def go(at, page):
         at.sidebar.radio[0].set_value(page).run(timeout=t)
         return at
+
+    def pick(a):
+        a.selectbox(key="paper_strategy").set_value("ema_cross").run(timeout=t)
+        a.selectbox(key="paper_account").set_value(exp).run(timeout=t)
+        a.text_input(key="paper_symbol_text").set_value("QQQ").run(timeout=t)
 
     at = fresh()
     check("app starts with no exception", not at.exception, str([e.message for e in at.exception]))
@@ -138,7 +142,8 @@ def part_b(work: Path, exp: int) -> None:
 
     at.sidebar.selectbox[0].set_value(exp).run(timeout=t)
     go(at, "Paper Trading")
-    at.selectbox(key="paper_profile").set_value("validation").run(timeout=t)
+    pick(at)
+    check("strategy selector offers ema_cross from the registry", "ema_cross" in at.selectbox(key="paper_strategy").options)
     run_btn = next(b for b in at.button if b.label == "Run one paper cycle")
     check("run control is disabled before account init and preflight", run_btn.disabled is True)
 
@@ -148,7 +153,7 @@ def part_b(work: Path, exp: int) -> None:
     check("explicit initialisation succeeded", any("Initialised" in s.value for s in at.success), str([e.value for e in at.error]))
     at.run(timeout=t)
     go(at, "Paper Trading")
-    at.selectbox(key="paper_profile").set_value("validation").run(timeout=t)
+    pick(at)
 
     at.button(key="btn_preflight").click().run(timeout=t)
     pre_text = " ".join(m.value for m in list(at.success) + list(at.warning) + list(at.error) + list(at.info))
@@ -187,7 +192,7 @@ def part_b(work: Path, exp: int) -> None:
     go(at2, "Overview")
     check("overview shows the latest cycle status", any(cyc.status.value in x.value for x in list(at2.success) + list(at2.warning) + list(at2.info)))
     go(at2, "Paper Trading")
-    at2.selectbox(key="paper_profile").set_value("validation").run(timeout=t)
+    pick(at2)
     at2.button(key="btn_preflight").click().run(timeout=t)
     fills_before = len(store.list_fills(exp))
     nxt = next((b for b in at2.button if b.label == "Run one paper cycle"), None)

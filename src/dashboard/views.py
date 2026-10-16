@@ -45,6 +45,7 @@ from src.experiments.registry import ExperimentRegistry
 # recent handful. Not pagination (real future work if this becomes a
 # problem in practice), just a guard against the obvious anti-pattern.
 _OVERVIEW_ROW_LIMIT = 20
+_SMALL_SAMPLE_TRADES = 30  # a presentation hint only; no analytics rule depends on it
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +154,7 @@ def render_overview(db_path: str) -> None:
             }
         )
     st.subheader(f"Recent experiments (most recent {len(rows)} of {len(summaries)})")
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
     st.subheader("Current paper portfolio")
     most_recent_id = summaries[-1]["id"]
@@ -266,7 +267,7 @@ def render_experiment_analysis(db_path: str, experiment_id: int) -> None:
         st.bar_chart(trades_frame["return_pct"])
 
         st.subheader("Trades")
-        st.dataframe(trades_frame, hide_index=True, use_container_width=True)
+        st.dataframe(trades_frame, hide_index=True, width="stretch")
 
     _render_research_report(db_path, experiment_id)
 
@@ -348,7 +349,15 @@ def render_comparison(db_path: str, experiment_ids: list[int]) -> None:
             for a in comparison.rows
         ]
     )
-    st.dataframe(table, hide_index=True, use_container_width=True)
+    st.dataframe(table, hide_index=True, width="stretch")
+    small = [a.experiment_id for a in comparison.rows if a.trade_count < _SMALL_SAMPLE_TRADES]
+    if small:
+        st.caption(
+            f"Small sample (fewer than {_SMALL_SAMPLE_TRADES} closed trades): experiments "
+            f"{', '.join('#' + str(i) for i in small)}. Their ratios are not statistically meaningful. "
+            "'N/A' means undefined, never zero. Execution-cost assumptions are not part of the comparison metadata "
+            "shown here; compare them in each experiment's own analysis."
+        )
 
     st.subheader("Equity comparison")
     st.caption(
@@ -412,7 +421,7 @@ def render_paper_portfolio(db_path: str, experiment_id: int) -> None:
                 for p in snapshot.positions
             ]
         )
-        st.dataframe(positions_frame, hide_index=True, use_container_width=True)
+        st.dataframe(positions_frame, hide_index=True, width="stretch")
     else:
         st.info("No open positions.")
 

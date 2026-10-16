@@ -2030,6 +2030,13 @@ execution, promotion or strategy code; the monitoring agent has no alert tool. G
 (lookup-first, ledger `paper_broker_fills`) -> portfolio applied once -> reconcile -> monitoring (injected, existing service) -> cycle audit
 record. The runtime imports no broker/AI/alert-transport code and nothing imports it; the CLI is `src/cli/paper.py`. Locking reuses `SchedulerLock`.
 
+### Local application (Sprint 19, ADR-0054)
+
+`src/dashboard/app.py` -> `shell.py` (navigation, PAPER MODE banner, readiness, account selection) -> `page_*.py` -> `src/appsvc/*` -> existing services
+(`PaperTradingRuntime`, strategy registry, `MonitoringStore`/alerts, `PortfolioValuationService`, `ExperimentRegistry`). `src/appsvc` is Streamlit-free,
+owns no state and returns plain data; pages never import `src.paper`, brokers, execution, risk or AI code. Launch path: `scripts/start_app.sh` ->
+`python -m src.dashboard.launch` -> Streamlit (loopback). Side effects exist only behind explicit buttons.
+
 ### Promotion (Sprint 15, ADR-0049)
 
 `src/promotion/` (human-CLI only) + `src/strategies/promoted/` (manifest

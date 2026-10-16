@@ -11,6 +11,15 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 19 -- 2026-10-16, Local MVP application, guided setup and launch
+
+See `DECISIONS.md`, ADR-0054. Added a seven-page local Streamlit application (Overview, Research & Experiments, Strategies, Paper Trading,
+Portfolio & Execution, Monitoring & Alerts, Setup & System Status) over a new Streamlit-free service layer `src/appsvc`; `scripts/setup_app.sh`,
+`scripts/start_app.sh`, `python -m src.dashboard.launch` (loopback by default), `.env.example`, `src/config/envfile.py`,
+`scripts/app_validation.py`, `tests/test_appsvc.py`, `tests/test_app_launch.py`, and a rewritten `tests/test_dashboard_smoke.py`.
+Paper-only; every state-changing action is an explicit button; viewing never trades, backtests, sends email, calls an AI provider or creates a file.
+Extension Cost: 4 existing file(s) changed: src/dashboard/app.py, src/dashboard/views.py, src/dashboard/__init__.py, tests/test_dashboard_smoke.py.
+
 ## Sprint 18 -- 2026-10-16, End-to-end paper trading runtime and reconciliation
 
 See `DECISIONS.md`, ADR-0053. Added `src/paper` (config, models, store, faults, gateway, reconcile, bars, runtime), `src/cli/paper.py`

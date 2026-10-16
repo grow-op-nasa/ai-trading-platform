@@ -5030,3 +5030,56 @@ forced provider `tool_choice` (not guaranteed across the LLM abstraction).
     `src.ai`; nothing imports `src.paper` (architecture tests). Strategy proposes, risk authorises, execution performs only approved intent.
 
 **Extension cost:** 3 existing files changed: `src/execution/engine.py` (`PaperBroker.from_state`, optional fee/reference/timestamp), `src/execution/portfolio_sync.py`, `src/cli/__main__.py`.
+
+
+## ADR-0054: Sprint 19 -- Local MVP application (Streamlit shell over `src/appsvc`), guided setup and launch
+
+**Status:** implemented; verified on the dev machine (full `pytest -q` 1714 passed; `scripts/app_validation.py` PASS 23/23; the real-data cycle was NO_ACTION, fills are fixture-only; no manual browser walkthrough recorded) -- see `PROJECT_STATE.md`.
+
+1. **Local-first browser architecture.** One single-user Streamlit app, `src/dashboard/app.py`, bound to `127.0.0.1` by default and reached at
+   `http://localhost:8501`. No new frontend framework, web server, database, or cloud component: the existing Sprint 9 dashboard
+   (`views.py`, `formatting.py`) is kept and reused; the shell and seven pages were added around it.
+2. **How the UI reaches the platform.** Pages (`src/dashboard/page_*.py`) import only `src.appsvc` and `src.analytics`. `src/appsvc` is a
+   Streamlit-free service layer that opens the SAME persisted files the CLI uses (experiment registry, paper DB, monitoring DB, candidate
+   store) and calls the existing services: `PaperTradingRuntime`, the production strategy registry, `MonitoringStore`/alert outbox,
+   `AlertDispatcher`, `PortfolioValuationService`. It adds no business logic, storage, risk, execution or accounting. Architecture tests
+   forbid the dashboard from importing `src.paper`, `src.broker`, `src.execution`, `src.risk`, `src.ai`, `anthropic` or `subprocess`,
+   forbid `src/appsvc` from importing Streamlit/broker/AI-agent code, and allow only `src.cli` and `src.appsvc` to import `src.paper`.
+3. **Commands.** `scripts/setup_app.sh` (creates `.venv`, installs the pinned `requirements.txt`, makes empty `data/` and `logs/`, copies
+   `.env.example` to `.env` only if absent; never touches data) and `scripts/start_app.sh` (runs `python -m src.dashboard.launch`, which checks
+   Python >= 3.12 and the required packages, loads `.env` without overriding the environment and without printing values, validates alert
+   configuration, refuses a non-loopback bind without `--allow-remote`, reports a busy port, then starts Streamlit in-process).
+   `--workdir` selects a data root (it must exist), `--check` validates without starting.
+4. **Configuration and secrets.** No shadow UI configuration. Paper-run settings are `PaperRunConfig` JSON files ("profiles", written by the
+   explicit Create-profile form to `data/app/paper_profiles/`, never overwriting); alerts stay `ATP_ALERT_*` environment variables; the AI key
+   stays `ANTHROPIC_API_KEY` and is not needed by the app. The UI shows only whether a key/credential is configured. `.env` is git-ignored;
+   the launcher loads it for the app only (CLI users run `set -a; source .env; set +a`).
+5. **Read-only vs explicit.** Read-only: every page view, filtering, refresh, status. Explicit (button or form submission only): paper
+   preflight (one market-data request), initialise paper account, run ONE paper cycle (confirmation checkbox, enabled only after a PASS
+   preflight and an initialised account), save profile, value positions (price request per open symbol), dispatch pending alerts (confirmation;
+   may send email through the configured server), requeue FAILED deliveries. A static test requires each mutating call to sit inside an
+   `if` branch. Rerun safety: the branch only runs on the click's rerun, a per-click token stops a second execution of the same submission,
+   and the runtime's own idempotency (cycle key, intent and ledger UNIQUE constraints) is the final guard.
+6. **Paper-only boundaries.** The app calls the Sprint 18 runtime, which is hard-bound to `PaperBroker`. No live adapter, broker selector,
+   shell/exec, candidate execution, promotion, risk override, portfolio mutation or AI call exists in the app. Strategy eligibility is
+   membership of the production registry; development candidates are shown for context with their lifecycle status and are never eligible.
+7. **No data configured.** Nothing is created or fabricated. Missing registry/paper DB/monitoring DB/portfolio/strategies/experiments each
+   show an explicit empty state with the supported next step; `AppPaths` readers never create files; the monitoring scheduler table is only
+   opened if it already exists.
+8. **Honesty rules.** Equity is shown only after an explicit valuation, and is UNDEFINED if any open position lacks a price (never a partial sum
+   or zero). Realised P&L is labelled gross of fees; fees are shown from fills. Stored portfolios are labelled stored snapshots. Unknown /
+   NOT_EVALUABLE is never rendered as healthy. Delivery status is shown separately from finding severity; DELIVERED means "a mail server
+   accepted it". A valid alert configuration is not reported as working delivery. A scheduler is reported RUNNING only if its lock is held.
+9. **What runs when the app starts.** Only the Streamlit server. No scheduler, paper cycle, monitoring run, email, AI call or migration. Closing
+   the app stops nothing else because nothing else was started. Paper trading is not continuous; market data is not live.
+10. **Evidence classes.** Fixture tests and the synthetic validation parts prove fills, fees, crash recovery and idempotency with simulated data.
+    A real-data cycle depends on the registered strategy's own signal and is reported as NO_ACTION when there is none. AppTest is a scripted
+    Streamlit session; it is not a manual browser walkthrough and is never reported as one.
+11. **Limitations and deferred.** No experiment/backtest launching from the UI (use `scripts/run_experiment.py`), no in-app configuration editing,
+    no scheduler start/stop, no strategy promotion, no authentication or multi-user access (hence loopback by default), no intraday or short
+    paper support (runtime limits), no comparison of execution-cost assumptions in the experiment comparison, no background service or login
+    item.
+
+**Extension cost:** existing files changed: `src/dashboard/app.py` (rewritten as the shell entry point), `src/dashboard/views.py` (small-sample
+caption), `src/dashboard/__init__.py` (docstring), `tests/test_dashboard_smoke.py` (rewritten for the new navigation). New: `src/appsvc/`,
+`src/config/envfile.py`, `src/dashboard/{shell,ui,launch,page_*}.py`, scripts, `.env.example`, tests.

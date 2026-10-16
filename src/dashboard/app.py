@@ -1,63 +1,42 @@
-"""The Streamlit dashboard entrypoint -- src/dashboard/app.py (Sprint 9,
-`DECISIONS.md` ADR-0042).
+"""The local application entry point -- src/dashboard/app.py (Sprint 9 dashboard; Sprint 19 MVP shell, ADR-0054).
 
-    streamlit run src/dashboard/app.py
+    ./scripts/start_app.sh          (or: python -m src.dashboard.launch)
 
-A read-only Streamlit research and paper-portfolio analytics interface
-over the platform's existing backtesting, experiment, strategy,
-market-data, and portfolio capabilities -- **not** a production trading
-terminal. Opening it, selecting an experiment, comparing experiments,
-or refreshing the paper portfolio never submits an order, changes a
-risk limit, or mutates any `Portfolio`/`Experiment`/`Strategy` state;
-there is no button anywhere in this package that does any of those
-things.
-
-This file is deliberately thin: it owns page selection and the
-experiment/comparison selectors, and delegates every actual
-computation and render to `src.dashboard.views`, which in turn never
-computes a metric itself -- that's `src.analytics`'s job. See that
-package's module docstring for the full architecture.
+A local-first, single-user Streamlit application over the platform's existing services. Pages read the same persisted
+files the CLI uses (through `src.appsvc`) and never reimplement business logic. Opening or refreshing a page never
+trades, backtests, sends email, calls an AI provider or mutates a portfolio; the only side effects are the explicit
+buttons on Paper Trading, Portfolio & Execution (valuation = price request) and Monitoring & Alerts. Paper only.
 """
 
 from __future__ import annotations
 
 import streamlit as st
 
-from src.dashboard import views
-from src.experiments.registry import DEFAULT_DB_PATH
-
-st.set_page_config(page_title="AI Trading Platform -- Research Dashboard", layout="wide")
-
-DB_PATH = str(DEFAULT_DB_PATH)
-
-st.sidebar.title("AI Trading Platform")
-st.sidebar.caption(
-    "Read-only research & paper-portfolio dashboard over backtests, "
-    "experiments, and paper-traded strategies. Not connected to any live "
-    "broker and cannot place orders."
+from src.appsvc.paths import AppPaths
+from src.dashboard import (
+    page_monitoring,
+    page_overview,
+    page_paper,
+    page_portfolio,
+    page_research,
+    page_setup,
+    page_strategies,
+    shell,
 )
 
-PAGES = ("Overview", "Backtest / Experiment Analysis", "Strategy Comparison", "Paper Portfolio")
-page = st.sidebar.radio("View", PAGES)
+st.set_page_config(page_title="AI Trading Platform (paper mode)", layout="wide")
 
-experiment_ids = views.list_experiment_ids(DB_PATH)
+_PAGES = {
+    "Overview": page_overview.render,
+    "Research & Experiments": page_research.render,
+    "Strategies": page_strategies.render,
+    "Paper Trading": page_paper.render,
+    "Portfolio & Execution": page_portfolio.render,
+    "Monitoring & Alerts": page_monitoring.render,
+    "Setup & System Status": page_setup.render,
+}
 
-if not experiment_ids:
-    st.info("No experiments found yet -- run `python scripts/run_experiment.py` to create one.")
-elif page == "Overview":
-    views.render_overview(DB_PATH)
-elif page == "Backtest / Experiment Analysis":
-    experiment_id = st.sidebar.selectbox(
-        "Experiment", experiment_ids, format_func=lambda i: f"#{i}"
-    )
-    views.render_experiment_analysis(DB_PATH, experiment_id)
-elif page == "Strategy Comparison":
-    selected = st.sidebar.multiselect(
-        "Experiments to compare", experiment_ids, format_func=lambda i: f"#{i}"
-    )
-    views.render_comparison(DB_PATH, selected)
-elif page == "Paper Portfolio":
-    experiment_id = st.sidebar.selectbox(
-        "Experiment", experiment_ids, format_func=lambda i: f"#{i}", key="paper_portfolio_experiment"
-    )
-    views.render_paper_portfolio(DB_PATH, experiment_id)
+paths = AppPaths()
+service = shell.paper_service(paths)
+page, account = shell.sidebar(paths)
+_PAGES[page](paths, service, account)

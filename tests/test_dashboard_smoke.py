@@ -1,5 +1,5 @@
-"""Smoke tests for `src.dashboard` -- Sprint 9 (`DECISIONS.md`,
-ADR-0042).
+"""Smoke tests for `src.dashboard` -- Sprint 9 (`DECISIONS.md`, ADR-0042), extended in Sprint 19 (ADR-0054) for the
+seven-page local application shell.
 
 Uses Streamlit's own supported testing facility
 (`streamlit.testing.v1.AppTest`) rather than a brittle, pixel-level UI
@@ -34,6 +34,10 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 from scripts.run_experiment import run_experiment  # noqa: E402
 from src.data.exceptions import NoDataError  # noqa: E402
 from src.data.service import MarketDataService  # noqa: E402
+from src.appsvc.paper import PaperService  # noqa: E402
+from src.appsvc.paths import AppPaths  # noqa: E402
+from src.dashboard.shell import PAGES  # noqa: E402
+from tests.test_paper_runtime import _reset_script  # noqa: E402,F401  (autouse: clears scripted-strategy state)
 from src.experiments.registry import ExperimentRegistry  # noqa: E402
 
 APP_PATH = str(Path(__file__).resolve().parent.parent / "src" / "dashboard" / "app.py")
@@ -137,161 +141,256 @@ def _assert_no_exception(at: AppTest) -> None:
 _RUN_TIMEOUT = 15
 
 
-def test_app_runs_with_no_experiments(workdir):
+
+def _go(at: AppTest, page: str) -> AppTest:
+    at.sidebar.radio[0].set_value(page).run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    return at
+
+
+def _button(at: AppTest, label: str):
+    return next(b for b in at.button if b.label == label)
+
+
+def _checkbox(at: AppTest, label: str):
+    return next(c for c in at.checkbox if c.label == label)
+
+
+# ---------------------------------------------------------------------------
+# Empty state: every page renders, nothing is created or fabricated
+# ---------------------------------------------------------------------------
+
+
+def test_every_page_renders_with_no_data_and_creates_nothing(workdir):
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
-    assert any("No experiments found" in info.value for info in at.info)
+    for page in PAGES:
+        _go(at, page)
+    assert not (workdir / "data").exists(), "browsing must never create a database, directory, portfolio or profile"
+    assert any("PAPER MODE" in w.value for w in at.sidebar.warning)
 
 
-def test_app_runs_overview_page_by_default(workdir):
-    _populate_one_experiment()
+def test_overview_with_no_registry_explains_the_next_step(workdir):
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
-    assert any("Overview" in h.value for h in at.header)
+    assert any("No experiment registry exists yet" in i.value for i in at.info)
 
 
-def test_app_runs_experiment_analysis_page(workdir):
+def test_research_page_with_no_experiments_says_so(workdir):
+    at = _go(AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT), "Research & Experiments")
+    assert any("No experiments found" in i.value for i in at.info)
+
+
+# ---------------------------------------------------------------------------
+# Research, strategies, setup
+# ---------------------------------------------------------------------------
+
+
+def test_research_page_shows_analysis_metrics_and_historical_label(workdir):
     run_result = _populate_one_experiment()
-    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
-    at.sidebar.radio[0].set_value("Backtest / Experiment Analysis").run(timeout=_RUN_TIMEOUT)
-    _assert_no_exception(at)
+    at = _go(AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT), "Research & Experiments")
     assert any(str(run_result.experiment_id) in h.value for h in at.header)
-    # Metrics rendered as st.metric widgets -- at least the core four.
-    metric_labels = {m.label for m in at.metric}
-    assert {"Total return", "Sharpe ratio", "Max drawdown", "Win rate"} <= metric_labels
+    assert {"Total return", "Sharpe ratio", "Max drawdown", "Win rate"} <= {m.label for m in at.metric}
+    assert any("HISTORICAL BACKTEST" in c.value for c in at.caption)
 
 
-def test_app_runs_comparison_page_with_two_experiments(workdir):
-    run_a = _populate_one_experiment(symbol="SPY", strategy="ema_cross")
-    run_b = _populate_one_experiment(
-        symbol="QQQ", strategy="rsi_mean_reversion", params={"period": 5}, closes=RSI_CLOSES
-    )
-    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
-    at.sidebar.radio[0].set_value("Strategy Comparison").run(timeout=_RUN_TIMEOUT)
-    at.sidebar.multiselect[0].set_value(
-        [run_a.experiment_id, run_b.experiment_id]
-    ).run(timeout=_RUN_TIMEOUT)
+def test_research_comparison_tab_flags_differences(workdir):
+    a = _populate_one_experiment(symbol="SPY", strategy="ema_cross")
+    b = _populate_one_experiment(symbol="QQQ", strategy="rsi_mean_reversion", params={"period": 5}, closes=RSI_CLOSES)
+    at = _go(AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT), "Research & Experiments")
+    at.multiselect(key="research_compare").set_value([a.experiment_id, b.experiment_id]).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
-    assert any("Comparison" in h.value for h in at.header)
-    # Differing symbol/strategy should surface at least one warning.
     assert len(at.warning) >= 1
 
 
-def test_app_runs_comparison_page_with_fewer_than_two_selected(workdir):
-    _populate_one_experiment()
+def test_strategies_page_lists_registry_and_marks_candidates_ineligible(workdir):
+    at = _go(AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT), "Strategies")
+    text = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "ema_cross" in text and "rsi_mean_reversion" in text
+    assert any("never be selected for a paper run" in c.value for c in at.caption)
+
+
+def test_setup_page_reports_state_without_secrets(workdir, monkeypatch):
+    secret = "sk-ant-" + "NEVER-SHOW-THIS"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    at = _go(AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT), "Setup & System Status")
+    rendered = " ".join(x.value for x in list(at.success) + list(at.warning) + list(at.error) + list(at.info) + list(at.markdown))
+    assert "AI provider" in rendered and secret not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Portfolio: stored snapshot; valuation only on an explicit click
+# ---------------------------------------------------------------------------
+
+
+def _open_position_experiment():
+    return _populate_one_experiment(symbol="QQQ", strategy="rsi_mean_reversion", params={"period": 5},
+                                    closes=OPEN_POSITION_CLOSES)
+
+
+def test_portfolio_page_shows_stored_positions_and_requests_no_price_on_view(workdir, monkeypatch):
+    calls = []
+    monkeypatch.setattr(MarketDataService, "get_history", lambda self, *a, **k: calls.append(a) or pd.DataFrame({"close": [1.0]}))
+    run_result = _open_position_experiment()
+    assert len(ExperimentRegistry().get_portfolio(run_result.experiment_id).positions) == 1
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
-    at.sidebar.radio[0].set_value("Strategy Comparison").run(timeout=_RUN_TIMEOUT)
-    _assert_no_exception(at)
-    assert any("two or more" in i.value for i in at.info)
-
-
-def test_app_runs_paper_portfolio_page_with_an_open_position(workdir):
-    # rsi_mean_reversion against OPEN_POSITION_CLOSES leaves a genuinely
-    # open position at the end of the run (see that constant's own
-    # comment) -- a real exercise of the priced-position rendering path,
-    # not just the always-rendered top-level metrics.
-    run_result = _populate_one_experiment(
-        symbol="QQQ",
-        strategy="rsi_mean_reversion",
-        params={"period": 5},
-        closes=OPEN_POSITION_CLOSES,
-    )
-    registry = ExperimentRegistry()
-    assert len(registry.get_portfolio(run_result.experiment_id).positions) == 1  # sanity check
-
-    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
-    at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)
-    _assert_no_exception(at)
-    assert any(str(run_result.experiment_id) in h.value for h in at.header)
-    metric_labels = {m.label for m in at.metric}
-    assert {"Cash", "Equity", "Unrealized P&L", "Realized P&L"} <= metric_labels
-    # The per-position dataframe (`render_paper_portfolio`'s
-    # `if snapshot.positions:` branch) -- previously never exercised by
-    # this file, since every "open position" fixture before this fix
-    # was actually closed out by the end of its own run.
+    at.sidebar.selectbox[0].set_value(run_result.experiment_id).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Portfolio & Execution")
     assert any("QQQ" in df.value.to_string() for df in at.dataframe)
+    assert any("Not valued" in i.value for i in at.info)         # equity is unknown, not zero
+    assert calls == []
 
 
-def test_paper_portfolio_page_degrades_gracefully_when_price_unavailable(workdir, monkeypatch):
-    run_result = _populate_one_experiment(
-        symbol="QQQ",
-        strategy="rsi_mean_reversion",
-        params={"period": 5},
-        closes=OPEN_POSITION_CLOSES,
-    )
-    registry = ExperimentRegistry()
-    assert len(registry.get_portfolio(run_result.experiment_id).positions) == 1  # sanity check
-
+def test_valuation_runs_only_on_click_and_unpriced_equity_is_undefined(workdir, monkeypatch):
     def _raise_no_data(self, symbol, period="5d", interval="1d"):
         raise NoDataError("no data available")
-
     monkeypatch.setattr(MarketDataService, "get_history", _raise_no_data)
-    # Defensive, not load-bearing: the 60s TTL on `_cached_latest_price`/
-    # `_value_portfolio` is correct production behavior (a real outage's
-    # UI reflection can lag up to a minute), but clearing again here
-    # means this test's outcome never depends on cache timing either way.
-    st.cache_data.clear()
-
+    run_result = _open_position_experiment()
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
-    at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)
-    # A missing market price must degrade to a warning + "N/A", never a
-    # raw traceback shown to the user (Sprint 9 spec's error-handling
-    # requirement).
+    at.sidebar.selectbox[0].set_value(run_result.experiment_id).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Portfolio & Execution")
+    _button(at, "Value open positions now (requests one price per open symbol)").click().run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
-    assert len(at.warning) >= 1, (
-        f"expected at least one st.warning; got none. "
-        f"errors={[e.value for e in at.error]!r} "
-        f"info={[i.value for i in at.info]!r} "
-        f"metrics={[(m.label, m.value) for m in at.metric]!r}"
-    )
+    equity = next(m for m in at.metric if m.label == "Equity")
+    assert "$" not in equity.value                 # undefined, never a partial or zero dollar figure
+    assert len(at.warning) >= 1
 
 
-# ---------------------------------------------------------------------------
-# Read-only: rendering never mutates the underlying Portfolio/Experiment
-# ---------------------------------------------------------------------------
-
-
-def test_rendering_the_dashboard_never_mutates_the_saved_portfolio(workdir):
-    run_result = _populate_one_experiment(
-        symbol="QQQ",
-        strategy="rsi_mean_reversion",
-        params={"period": 5},
-        closes=OPEN_POSITION_CLOSES,
-    )
+def test_rendering_never_mutates_the_saved_portfolio(workdir):
+    run_result = _open_position_experiment()
     registry = ExperimentRegistry()
     before = registry.get_portfolio(run_result.experiment_id)
-    before_cash = before.cash
-    before_open = {p.symbol: p.quantity for p in before.positions.values()}
-    assert before_open  # this test is only meaningful with a genuinely open position
-
+    before_cash, before_open = before.cash, {p.symbol: p.quantity for p in before.positions.values()}
+    assert before_open
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
-    at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)
-    at.sidebar.radio[0].set_value("Overview").run(timeout=_RUN_TIMEOUT)
-
+    at.sidebar.selectbox[0].set_value(run_result.experiment_id).run(timeout=_RUN_TIMEOUT)
+    for page in PAGES:
+        _go(at, page)
     after = registry.get_portfolio(run_result.experiment_id)
-    assert after.cash == before_cash
-    assert {p.symbol: p.quantity for p in after.positions.values()} == before_open
+    assert after.cash == before_cash and {p.symbol: p.quantity for p in after.positions.values()} == before_open
+    assert not (workdir / "data" / "paper").exists() and not (workdir / "data" / "monitoring").exists()
 
 
-def test_rendering_the_dashboard_makes_no_network_call_when_no_positions_are_open(workdir, monkeypatch):
-    # ema_cross against EMA_CLOSES closes every position it opens
-    # before the run ends (proven by test_run_experiment_script.py) --
-    # in that case PortfolioValuationService never calls price_lookup
-    # at all, so MarketDataService.get_history must never be invoked.
-    calls = []
+# ---------------------------------------------------------------------------
+# Paper trading through the real runtime (synthetic fixture world; fills are SIMULATED fixture fills)
+# ---------------------------------------------------------------------------
 
-    def _tracking_get_history(self, symbol, period="5d", interval="1d"):
-        calls.append(symbol)
-        return pd.DataFrame({"close": [1.0]})
 
-    monkeypatch.setattr(MarketDataService, "get_history", _tracking_get_history)
-
-    run_result = _populate_one_experiment()  # ema_cross / EMA_CLOSES
-    registry = ExperimentRegistry()
-    saved_portfolio = registry.get_portfolio(run_result.experiment_id)
-    assert len(saved_portfolio.positions) == 0  # sanity check on the fixture
-
-    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
-    at.sidebar.radio[0].set_value("Paper Portfolio").run(timeout=_RUN_TIMEOUT)
+@pytest.fixture
+def paper_world(workdir):
+    from tests.test_appsvc import service_for
+    from tests.test_paper_runtime import STRAT, WED, World
+    w = World(workdir / "data")
+    w.script(WED, "LONG")
+    svc = service_for(w)
+    svc.paths = AppPaths()                       # the app's own (relative) paths; same files, as cwd is the workdir
+    svc.save_profile("fixture", svc.build_config(experiment_id=w.exp, strategy_name=STRAT, symbol="QQQ"))
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["_paper_service"] = svc
+    at.run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
-    assert calls == []
+    return w, svc, at
+
+
+def test_paper_run_is_disabled_until_a_preflight_passes(paper_world):
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    at.selectbox(key="paper_profile").set_value("fixture").run(timeout=_RUN_TIMEOUT)
+    assert _button(at, "Run one paper cycle").disabled is True
+    assert w.store().list_cycles(w.exp) == []
+
+
+def test_one_explicit_run_executes_one_cycle_and_reruns_never_repeat_it(paper_world):
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    at.selectbox(key="paper_profile").set_value("fixture").run(timeout=_RUN_TIMEOUT)
+    at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    run_btn = _button(at, "Run one paper cycle")
+    assert run_btn.disabled is False
+    _checkbox(at, "I confirm: run one paper-only cycle now").check()
+    run_btn.click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert len(w.store().list_cycles(w.exp)) == 1 and len(w.store().list_fills(w.exp)) == 1
+    assert any("ORDER_FILLED" in s.value for s in at.success)
+    at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)
+    assert len(w.store().list_cycles(w.exp)) == 1 and len(w.store().list_fills(w.exp)) == 1 and len(w.monitor_calls) == 1
+
+
+def test_a_click_without_confirmation_runs_nothing(paper_world):
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    at.selectbox(key="paper_profile").set_value("fixture").run(timeout=_RUN_TIMEOUT)
+    at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
+    _button(at, "Run one paper cycle").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert w.store().list_cycles(w.exp) == [] and any("Tick the confirmation" in x.value for x in at.warning)
+
+
+def test_no_signal_is_shown_as_a_valid_outcome_not_a_failure(paper_world):
+    from tests.test_paper_runtime import WED
+    w, svc, at = paper_world
+    from tests.test_paper_runtime import ScriptedStrategy
+    ScriptedStrategy.SCRIPT.clear()                # no actionable signal on the decision bar
+    _go(at, "Paper Trading")
+    at.selectbox(key="paper_profile").set_value("fixture").run(timeout=_RUN_TIMEOUT)
+    at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
+    _checkbox(at, "I confirm: run one paper-only cycle now").check()
+    _button(at, "Run one paper cycle").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert any("NO_ACTION" in i.value for i in at.info) and not at.error
+    assert w.store().list_fills(w.exp) == []
+
+
+def test_history_tab_traces_a_recorded_cycle(paper_world):
+    w, svc, at = paper_world
+    svc.run_cycle(w.config(), request_token="seed")
+    at.sidebar.selectbox[0].set_value(w.exp).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Paper Trading")
+    at.selectbox(key="trace_cycle").set_value(svc.inspect(w.exp)["cycles"][0].cycle_id).run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert any("Paper fill (simulated)" in e.label for e in at.expander)
+
+
+def test_profile_form_cannot_offer_a_live_mode_or_an_unregistered_strategy(workdir):
+    _populate_one_experiment()
+    at = _go(AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT), "Paper Trading")
+    labels = " ".join(str(getattr(w, "label", "")) for w in list(at.selectbox) + list(at.text_input))
+    assert "live" not in labels.lower() and "broker" not in labels.lower()
+    strategy_options = next(s for s in at.selectbox if s.label == "Registered strategy").options
+    assert "ema_cross" in strategy_options and "candidate" not in " ".join(strategy_options).lower()
+
+
+# ---------------------------------------------------------------------------
+# Monitoring & alerts: viewing sends nothing and runs nothing
+# ---------------------------------------------------------------------------
+
+
+def test_monitoring_page_shows_persisted_findings_and_alert_queue(workdir):
+    from tests.test_appsvc import _monitoring_world
+    _monitoring_world(workdir / "data")
+    at = _go(AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT), "Monitoring & Alerts")
+    assert any("Scripted problem" in df.value.to_string() for df in at.dataframe)
+    assert {"Pending", "Failed", "Delivered"} <= {m.label for m in at.metric}
+    counts = __import__("src.appsvc.monitoring", fromlist=["x"]).alert_counts(AppPaths())
+    assert counts["PENDING"] == 1 and counts["DELIVERED"] == 0
+
+
+def test_dispatch_without_confirmation_sends_nothing(workdir):
+    from tests.test_appsvc import _monitoring_world
+    _monitoring_world(workdir / "data")
+    at = _go(AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT), "Monitoring & Alerts")
+    _button(at, "Dispatch pending alerts now").click().run(timeout=_RUN_TIMEOUT)
+    assert any("Tick the confirmation" in w.value for w in at.warning)
+    assert __import__("src.appsvc.monitoring", fromlist=["x"]).alert_counts(AppPaths())["DELIVERED"] == 0
+
+
+def test_opening_the_app_never_calls_the_llm_or_a_live_broker(workdir, monkeypatch):
+    import sys
+    before = {m for m in sys.modules if m.split(".")[0] in {"anthropic"} or m.startswith("src.broker")}
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    for page in PAGES:
+        _go(at, page)
+    after = {m for m in sys.modules if m.split(".")[0] in {"anthropic"} or m.startswith("src.broker")}
+    assert after == before

@@ -15,4 +15,8 @@ See `src.dashboard.app` for the entrypoint, `src.dashboard.views` for
 the four pages (Overview, Backtest/Experiment Analysis, Strategy
 Comparison, Paper Portfolio), and `src.dashboard.formatting` for the
 presentation-only number formatting shared across them.
+
+Sprint 19 (ADR-0054) turned this into the local application: `app.py` is the entry point, `shell.py` the navigation shell, and
+`page_*.py` the seven pages. Pages reach the paper runtime, strategy registry, monitoring and alerts only through `src.appsvc`.
+Launch with `./scripts/start_app.sh` (see README).
 """

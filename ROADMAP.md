@@ -1190,6 +1190,13 @@ environment-only failures, 17 skipped. **Confirmed via real `pytest` on
 the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 `origin/main` (`1b43a93..0c19c69`).
 
+## Sprint 19 -- Local MVP UI, Guided Setup & Operational Hardening (implemented; verified on the dev machine, see PROJECT_STATE.md)
+
+- Done: seven-page local app over `src/appsvc`, explicit paper preflight/one-cycle controls, stored-vs-valued portfolio views, monitoring and alert
+  views with explicit dispatch/requeue, setup/status page, `setup_app.sh`/`start_app.sh`/launcher (ADR-0054).
+- Deliberately not built: live execution, experiment launching from the UI, in-app config editing, scheduler control, authentication/multi-user,
+  strategy promotion from the UI, a background service.
+
 ## Sprint 18 -- End-to-End Paper Trading Runtime & Reconciliation (implemented; verified on the dev machine, see PROJECT_STATE.md)
 
 - Done: bounded paper decision cycle (registered strategy -> risk -> durable intent -> PaperBroker ledger -> portfolio -> reconciliation -> monitoring), preflight, CLI, fault-injection coverage, validation script (ADR-0053).

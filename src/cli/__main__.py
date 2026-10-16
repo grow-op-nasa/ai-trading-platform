@@ -81,6 +81,13 @@ def _run_monitor(argv: list[str]) -> int:
 # `strategy-promote` (Sprint 14, ADR-0047) is deliberately listed here
 # and nowhere in `src.ai.agents.strategy_dev` -- it is a human-only
 # command, never an agent tool.
+def _run_paper(argv: list[str]) -> int:
+    # Lazy and explicit: importing this module (or running any other command) never starts paper trading.
+    from src.cli.paper import run_paper
+
+    return run_paper(argv)
+
+
 ARGV_COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "research-agent": run_research_agent,
     "strategy-dev": _run_strategy_dev_agent,
@@ -89,6 +96,7 @@ ARGV_COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "market-monitor-agent": _run_market_monitor_agent,
     "monitor-scheduler": _run_monitor_scheduler,
     "alerts": _run_alerts,
+    "paper": _run_paper,
 }
 
 

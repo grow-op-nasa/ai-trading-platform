@@ -282,3 +282,62 @@ def test_positions_property_returns_defensive_copy():
     del positions["SPY"]
 
     assert "SPY" in broker.positions  # internal state untouched
+
+
+# ---------------------------------------------------------------------------
+# Sprint 18 (ADR-0053): additive fee/reference provenance and `from_state`
+# ---------------------------------------------------------------------------
+
+
+def test_submit_signal_without_cost_arguments_is_unchanged():
+    broker = PaperBroker(starting_cash=100_000)
+    fill = broker.submit_signal(make_signal(SignalDirection.LONG), "SPY", fill_price=100.0,
+                                sizing_decision=make_sizing_decision(position_size=10.0))
+    assert fill.fee == 0.0 and fill.reference_price is None and fill.slippage_amount == 0.0
+    assert fill.cash_delta == -1000.0 and broker.cash == 99_000.0
+
+
+def test_fee_is_debited_exactly_once_and_recorded_on_the_fill_for_buy_and_sell():
+    broker = PaperBroker(starting_cash=100_000)
+    buy = broker.submit_signal(make_signal(SignalDirection.LONG), "SPY", fill_price=100.0,
+                               sizing_decision=make_sizing_decision(position_size=10.0), fee=2.5,
+                               reference_price=99.9, fill_timestamp=pd.Timestamp("2026-01-02", tz="UTC"))
+    assert buy.fee == 2.5 and buy.cash_delta == pytest.approx(-1002.5) and buy.reference_price == 99.9
+    assert buy.slippage_amount == pytest.approx(0.1) and broker.cash == pytest.approx(98_997.5)
+    sell = broker.submit_signal(make_signal(SignalDirection.FLAT), "SPY", fill_price=110.0, fee=2.5)
+    assert sell.cash_delta == pytest.approx(1100.0 - 2.5) and broker.cash == pytest.approx(98_997.5 + 1097.5)
+
+
+def test_negative_fee_is_rejected():
+    broker = PaperBroker(starting_cash=100_000)
+    with pytest.raises(ValueError, match="fee"):
+        broker.submit_signal(make_signal(SignalDirection.LONG), "SPY", fill_price=100.0,
+                             sizing_decision=make_sizing_decision(position_size=1.0), fee=-1.0)
+
+
+def test_from_state_restores_cash_and_positions_without_simulating_a_fill():
+    sig = make_signal(SignalDirection.LONG)
+    pos = Position(symbol="SPY", quantity=5.0, entry_price=100.0, entry_signal_id=sig.id)
+    broker = PaperBroker.from_state(9_500.0, [pos])
+    assert broker.cash == 9_500.0 and broker.positions["SPY"].quantity == 5.0
+    with pytest.raises(ValueError):
+        PaperBroker.from_state(-1.0)
+    with pytest.raises(ValueError, match="more than once"):
+        PaperBroker.from_state(1.0, [pos, pos])
+    flat = broker.submit_signal(make_signal(SignalDirection.FLAT), "SPY", fill_price=102.0)
+    assert flat.order.side is OrderSide.SELL and broker.cash == pytest.approx(9_500.0 + 510.0)
+
+
+def test_apply_fill_to_portfolio_now_carries_the_fill_fee_into_cash():
+    from src.execution.portfolio_sync import apply_fill_to_portfolio
+    from src.portfolio.models import Portfolio
+
+    broker = PaperBroker(starting_cash=10_000)
+    portfolio = Portfolio(cash=10_000)
+    opened = broker.submit_signal(make_signal(SignalDirection.LONG), "SPY", fill_price=100.0,
+                                  sizing_decision=make_sizing_decision(position_size=10.0), fee=3.0)
+    apply_fill_to_portfolio(portfolio, opened)
+    assert portfolio.cash == pytest.approx(broker.cash)                       # both include the fee once
+    closed = broker.submit_signal(make_signal(SignalDirection.FLAT), "SPY", fill_price=105.0, fee=3.0)
+    apply_fill_to_portfolio(portfolio, closed)
+    assert portfolio.cash == pytest.approx(broker.cash) and portfolio.closed_positions[0].realized_pnl == 50.0

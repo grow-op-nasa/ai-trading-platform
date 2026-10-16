@@ -46,6 +46,23 @@ class PaperBroker:
         self._cash = starting_cash
         self._positions: dict[str, Position] = {}
 
+    @classmethod
+    def from_state(cls, cash: float, positions: list[Position] | None = None) -> "PaperBroker":
+        """Rebuild a broker from an already-known state (Sprint 18, ADR-0053) -- the paper runtime
+        reconstructs its broker from a persisted baseline plus recorded fills, because `PaperBroker`
+        itself has no persistence. Trusts `cash`/`positions` as given (like `Portfolio.reconstruct`);
+        it simulates no fill and is never a way to mark a position to a new price."""
+        if cash < 0:
+            raise ValueError(f"cash cannot be negative, got {cash}")
+        broker = cls.__new__(cls)
+        broker._cash = cash
+        broker._positions = {}
+        for position in positions or []:
+            if position.symbol in broker._positions:
+                raise ValueError(f"{position.symbol!r} appears more than once in positions")
+            broker._positions[position.symbol] = position
+        return broker
+
     @property
     def cash(self) -> float:
         return self._cash
@@ -92,6 +109,10 @@ class PaperBroker:
         symbol: str,
         fill_price: float,
         sizing_decision: SizingDecision | None = None,
+        *,
+        fee: float = 0.0,
+        reference_price: float | None = None,
+        fill_timestamp=None,
     ) -> Fill:
         """Translate `signal` into an `Order` for `symbol` and fill it
         immediately at `fill_price`.
@@ -103,6 +124,11 @@ class PaperBroker:
             symbol: which instrument this signal applies to.
             fill_price: the price to fill at -- like `PositionSizer`,
                 this broker has no price feed of its own.
+            fee / reference_price / fill_timestamp: optional execution-cost provenance (Sprint 18,
+                ADR-0053): `fill_price` is already the (possibly slipped) price the caller decided on,
+                `fee` is debited from cash exactly once and recorded on the `Fill`, and
+                `reference_price` is the frictionless price it was priced from. Defaults (0.0/None)
+                reproduce every earlier fill exactly.
             sizing_decision: required (and must be `approved`) for
                 `LONG`/`SHORT`; ignored for `FLAT`, since `PositionSizer`
                 never sizes a `FLAT` signal in the first place.
@@ -129,9 +155,13 @@ class PaperBroker:
             )
         if fill_price <= 0:
             raise ValueError(f"fill_price must be positive, got {fill_price}")
+        if fee < 0:
+            raise ValueError(f"fee cannot be negative, got {fee}")
 
         order = self._build_order(signal, symbol, sizing_decision)
-        return self._fill(order, fill_price)
+        return self._fill(
+            order, fill_price, fee=fee, reference_price=reference_price, fill_timestamp=fill_timestamp
+        )
 
     def _build_order(
         self, signal: Signal, symbol: str, sizing_decision: SizingDecision | None
@@ -168,11 +198,19 @@ class PaperBroker:
             timestamp=signal.timestamp,
         )
 
-    def _fill(self, order: Order, fill_price: float) -> Fill:
+    def _fill(
+        self,
+        order: Order,
+        fill_price: float,
+        *,
+        fee: float = 0.0,
+        reference_price: float | None = None,
+        fill_timestamp=None,
+    ) -> Fill:
         cash_delta = (
-            -order.quantity * fill_price
+            -order.quantity * fill_price - fee
             if order.side is OrderSide.BUY
-            else order.quantity * fill_price
+            else order.quantity * fill_price - fee
         )
         self._cash += cash_delta
 
@@ -190,4 +228,12 @@ class PaperBroker:
         else:
             del self._positions[order.symbol]
 
-        return Fill(order=order, fill_price=fill_price, cash_delta=cash_delta)
+        return Fill(
+            order=order,
+            fill_price=fill_price,
+            cash_delta=cash_delta,
+            reference_price=reference_price,
+            fill_timestamp=fill_timestamp,
+            slippage_amount=0.0 if reference_price is None else fill_price - reference_price,
+            fee=fee,
+        )

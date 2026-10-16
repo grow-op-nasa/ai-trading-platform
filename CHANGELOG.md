@@ -11,6 +11,13 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 18 -- 2026-10-16, End-to-end paper trading runtime and reconciliation
+
+See `DECISIONS.md`, ADR-0053. Added `src/paper` (config, models, store, faults, gateway, reconcile, bars, runtime), `src/cli/paper.py`
+(`paper init|preflight|run --once|reconcile|status`), `tests/test_paper_runtime.py`, `tests/test_paper_cli.py`, extra execution tests and
+`scripts/paper_runtime_validation.py`. Paper-only, fail closed; durable intent before execution; idempotent recovery; reconciliation never auto-corrects.
+Extension Cost: 3 existing file(s) changed: src/execution/engine.py, src/execution/portfolio_sync.py, src/cli/__main__.py.
+
 ## Sprint 17 -- 2026-10-13, Reliable finding alerts and scheduler fixture validation
 
 See `DECISIONS.md`, ADR-0052. Added: durable alert events (NEW / ESCALATED / RESOLVED) recorded atomically with finding

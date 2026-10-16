@@ -2023,6 +2023,13 @@ separate step: `AlertDispatcher` claims deliveries (lease, per-fingerprint order
 depends on delivery. Entry points: `alerts` CLI, `monitor-scheduler --dispatch-alerts`. The package imports no LLM, broker,
 execution, promotion or strategy code; the monitoring agent has no alert tool. Guarantee: at-least-once.
 
+### Paper runtime (Sprint 18, ADR-0053)
+
+`src/paper` runs one explicit paper target through: gate (recover unresolved intents, fresh reconciliation) -> validated closed daily bar
+(no cache fallback) -> registered strategy -> risk (`decide`/`decide_close`) -> durable intent -> ExecutionModel fill -> `PaperBrokerGateway`
+(lookup-first, ledger `paper_broker_fills`) -> portfolio applied once -> reconcile -> monitoring (injected, existing service) -> cycle audit
+record. The runtime imports no broker/AI/alert-transport code and nothing imports it; the CLI is `src/cli/paper.py`. Locking reuses `SchedulerLock`.
+
 ### Promotion (Sprint 15, ADR-0049)
 
 `src/promotion/` (human-CLI only) + `src/strategies/promoted/` (manifest

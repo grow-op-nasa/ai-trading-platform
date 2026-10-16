@@ -4986,3 +4986,47 @@ forced provider `tool_choice` (not guaranteed across the LLM abstraction).
    text, exactly-once semantics, jitter, a dashboard, a workflow engine, any trading/recovery action from an alert, a daemon.
 15. **Known limitations.** Single-host SQLite outbox; SMTP only; crash-boundary duplicates; no alert for findings that changed
    while alerting was disabled; the plaintext-loopback mode exists solely for the local sink.
+
+
+## ADR-0053: Sprint 18 -- End-to-end paper trading runtime and reconciliation (`src/paper`)
+
+**Status:** implemented; verified on the dev machine (full `pytest -q` 1656 passed; validation script PASS 28/28; real-data cycle was NO_ACTION, fills are fixture-only) -- see `PROJECT_STATE.md`.
+
+1. **Scope and configuration.** `src/paper` runs one explicit paper target: `python -m src.cli paper {init,preflight,run --once,reconcile,status} --config FILE`.
+   The JSON config names `execution_mode: "paper"` (the only accepted literal), experiment id (the paper account/portfolio), registered
+   strategy + params, symbol, daily interval, lookback, risk limits, ATR stop and execution costs. Unknown keys are rejected; a missing
+   experiment, portfolio or paper DB is an error, never created implicitly (`init` is the explicit baseline step). Nothing starts on import.
+2. **Strategy and portfolio selection.** Only strategies registered from `src.strategies*` modules (never candidates or generated code).
+   The portfolio is the experiment registry's saved portfolio; the paper baseline is recorded once by `init`.
+3. **Preflight (read-only).** Checks return PASS / FAIL / BLOCKED / NOT_EVALUABLE (config, mode, strategy, account, baseline, data, lock,
+   unresolved intents, reconciliation). Unknown is never reported healthy. Exit code non-zero unless all pass.
+4. **Idempotency key.** `sha256(strategy_name|strategy_hash|config_hash|experiment_id|symbol|interval|decision_bar)`;
+   the data hash (`complete_bars_hash`) is recorded as provenance but is NOT part of the key: a real-data validation run showed yfinance returning
+   different bytes for the same 276 bars on consecutive fetches, which with the hash in the key created a second cycle for one bar. Intent id and broker client order id (`atp-paper-...`) derive from it. UNIQUE constraints on cycle key, intent cycle/client order id,
+   (experiment, symbol, decision bar) and the broker ledger client order id enforce it at DB level.
+5. **Persisted before submission.** The intent (INTENT_RECORDED) and the cycle (AWAITING_EXECUTION) are written in one transaction before the
+   broker is touched. The broker "side" is the `paper_broker_fills` ledger.
+6. **Duplicate / interrupted recovery.** Re-running a terminal cycle replays its record without mutation. Unresolved intents are recovered
+   at the start of every cycle: look up the ledger by client order id first (never blind resubmission), then apply the portfolio side
+   exactly once by comparing portfolio state with broker before/after state. No exactly-once claim: the guarantee is idempotent
+   convergence, proven by fault injection at six points (after intent, broker before/after commit, before/after portfolio save, before monitoring).
+7. **Risk, shorts, closes.** Every exposure-increasing action goes through the risk engine (`decide`); closes follow `decide_close`;
+   executed quantity never exceeds the approved quantity. Shorts and NOT_MODELED margin fail closed (SHORT_NOT_MODELED).
+8. **Fills to portfolio.** Cash, positions, fees and realised P&L change only from an authoritative broker-ledger fill, applied once, with
+   fee carried through `portfolio_sync`. No zero-price valuations.
+9. **Reconciliation.** Broker replay vs registry portfolio (cash, positions, quantities) and intent/ledger agreement: MATCH / PENDING / MISMATCH.
+   Discrepancies are persisted, never auto-corrected, and an unexplained MISMATCH blocks new risk (RECONCILIATION_REQUIRED).
+10. **Monitoring and alerts.** After a cycle the runtime calls the injected existing `MonitoringService`; findings reach the existing alert
+    outbox. The runtime imports no alert code; a monitoring or alert failure never changes execution truth. No AI is involved anywhere.
+11. **Inspection.** `paper status [--cycles --blocked --intents --discrepancies --fills]`; every cycle has an audit record with bounded, redacted errors.
+12. **What PaperBroker simulates.** Instant full fills at ExecutionModel(SIGNAL_BAR_CLOSE) price with the configured slippage/fee. It does not
+    simulate latency, queues, partial fills, rejects by venue, market impact, or accepted-but-unfilled orders. Backtest uses the same
+    ExecutionModel conventions; real execution would differ in all of the above.
+13. **Fixture vs real data.** Fixture runs (`scripts/paper_runtime_validation.py` Part 2, tests) prove plumbing with scripted signals. Part 1 uses
+    real provider data and the real registered strategy; if the strategy gives no signal, no fill is reported.
+14. **Not modelled.** Partial fills, intraday bars, NEXT_BAR_OPEN timing, shorts, margin, corporate actions, multi-node runs, a daemon/loop
+    (bounded `--once` only; the existing scheduler is reused only explicitly).
+15. **Why live and autonomous AI stay disabled.** No live adapter or broker factory exists; `src.paper` imports no `src.broker`, anthropic or
+    `src.ai`; nothing imports `src.paper` (architecture tests). Strategy proposes, risk authorises, execution performs only approved intent.
+
+**Extension cost:** 3 existing files changed: `src/execution/engine.py` (`PaperBroker.from_state`, optional fee/reference/timestamp), `src/execution/portfolio_sync.py`, `src/cli/__main__.py`.

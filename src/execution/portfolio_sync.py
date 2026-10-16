@@ -51,7 +51,7 @@ def apply_fill_to_portfolio(
     """
     order = fill.order
     if portfolio.has_open_position(order.symbol):
-        return portfolio.close_position(order.symbol, exit_price=fill.fill_price)
+        return portfolio.close_position(order.symbol, exit_price=fill.fill_price, fee=fill.fee)
 
     side = PositionSide.LONG if order.side is OrderSide.BUY else PositionSide.SHORT
     signed_quantity = order.quantity if side is PositionSide.LONG else -order.quantity
@@ -63,4 +63,5 @@ def apply_fill_to_portfolio(
         entry_timestamp=order.timestamp,
         entry_signal_id=order.signal_id,
         stop_price=stop_price,
+        fee=fill.fee,
     )

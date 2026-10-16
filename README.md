@@ -125,3 +125,23 @@ Failure-state check (synthetic injected fault, not a real outage; `--skip-agent`
 python scripts/monitoring_failure_live_integration.py --skip-agent
 python scripts/monitoring_failure_live_integration.py     # genuine Anthropic run; needs ANTHROPIC_API_KEY
 ```
+
+## Paper trading (Sprint 18)
+
+Paper-only, bounded, explicit target. Config is a JSON file with `"execution_mode": "paper"`, `experiment_id`, `strategy_name`, `symbol`,
+`risk`, `stop`, `execution` (see `src/paper/config.py`). Nothing is created implicitly; `init` records the baseline.
+
+```bash
+python -m src.cli paper init --config paper.json --label baseline
+python -m src.cli paper preflight --config paper.json
+python -m src.cli paper run --once --config paper.json
+python -m src.cli paper reconcile --config paper.json
+python -m src.cli paper status --config paper.json --cycles --intents --discrepancies --fills
+python scripts/paper_runtime_validation.py
+```
+
+Preflight prints PASS / FAIL / BLOCKED / NOT_EVALUABLE per check. One cycle per closed daily bar is idempotent (re-running replays the record);
+an interrupted cycle is recovered at the next run by ledger lookup, never blind resubmission. Reconciliation mismatches are recorded and block
+new risk; they are never auto-corrected. PaperBroker fills instantly and fully at the signal-bar close with configured slippage/fee: no partial
+fills, intraday bars, NEXT_BAR_OPEN or shorts. Fixture validation proves plumbing; real-data runs may produce no signal (and then no fill).
+There is no live adapter and no AI in this path.

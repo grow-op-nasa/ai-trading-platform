@@ -1190,6 +1190,11 @@ environment-only failures, 17 skipped. **Confirmed via real `pytest` on
 the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 `origin/main` (`1b43a93..0c19c69`).
 
+## Sprint 18 -- End-to-End Paper Trading Runtime & Reconciliation (implemented; verified on the dev machine, see PROJECT_STATE.md)
+
+- Done: bounded paper decision cycle (registered strategy -> risk -> durable intent -> PaperBroker ledger -> portfolio -> reconciliation -> monitoring), preflight, CLI, fault-injection coverage, validation script (ADR-0053).
+- Deliberately not built: live adapter, AI trading, auto-correction, intraday/partial fills/shorts, daemon loop.
+
 ## Sprint 17 -- Operational Monitoring Validation & Reliable Alert Delivery (implemented; verified on the dev machine, see PROJECT_STATE.md)
 
 - Done: scheduler fixture validation script; durable, idempotent alert events; retrying SMTP/console outbox; `alerts` CLI;

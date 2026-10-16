@@ -363,3 +363,36 @@ def test_create_paper_account_is_explicit_validated_and_creates_a_selectable_cas
     pf = ExperimentRegistry(paths.registry).get_portfolio(exp)
     assert pf.cash == 2500.0 and not pf.positions
     assert svc.store() is None                               # no paper account initialised implicitly
+
+
+# ------------------------------------------------------------------ follow-up: monitoring state in the trace
+def test_monitoring_state_covers_every_stored_shape_without_inventing_a_link():
+    from src.appsvc.paper import monitoring_state as ms
+    assert ms(None)["state"] == "NOT_RECORDED" and ms(None)["can_run"] and ms(None)["run_id"] is None
+    assert ms({"outcome": "COMPLETED", "run_id": "r1"}, run_found=True)["state"] == "COMPLETED"
+    assert ms({"outcome": "COMPLETED", "run_id": "r1"}, run_found=False, run_missing="gone")["state"] == "LINKED_RUN_MISSING"
+    failed = ms({"outcome": "FAILED", "status": "ERROR", "error": "locked"})
+    assert failed["state"] == "FAILED" and "locked" in failed["message"] and failed["can_run"]
+    assert ms({"outcome": "PENDING"})["state"] == "PENDING" and ms({"outcome": "PENDING"})["can_run"]
+    assert ms({"outcome": "SKIPPED", "reason": "policy: x"})["can_run"] is False
+    assert ms({"outcome": "NOT_CONFIGURED", "reason": "none"})["state"] == "NOT_CONFIGURED"
+    assert ms({"run_id": "r9", "status": "HEALTHY", "persisted": True}, run_found=True)["state"] == "COMPLETED"    # legacy shape
+    assert ms({"status": "ERROR", "error": "e"})["state"] == "FAILED"                                           # legacy shape
+
+
+def test_trace_resolves_the_monitoring_state_from_stored_data_and_monitor_cycle_is_explicit_and_idempotent(tmp_path):
+    from tests.test_paper_runtime import ScriptedStrategy, World
+    w = World(tmp_path)
+    ScriptedStrategy.SCRIPT.clear()
+    svc = service_for(w)
+    out = svc.run_cycle(w.config())
+    cid = out.record.cycle_id
+    tr = svc.trace(cid)
+    assert tr["monitoring_state"]["state"] == "LINKED_RUN_MISSING"      # the fixture monitor writes no monitoring DB: honest, not 'completed'
+    assert tr["cycle"].monitoring["run_id"] == "mon-1" and any("not in the monitoring database" in x or "no monitoring database" in x for x in tr["limitations"])
+    calls = len(w.monitor_calls)
+    again = svc.monitor_cycle(w.config(), cid)                          # already COMPLETED: no new monitoring work
+    assert again.record is not None and len(w.monitor_calls) == calls
+    bad = svc.monitor_cycle(w.config(), "nope")
+    assert bad.refused and "not found" in bad.refused
+    assert len(svc.store().list_cycles(w.exp)) == 1 and svc.store().list_fills(w.exp) == []

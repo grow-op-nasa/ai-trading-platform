@@ -266,13 +266,60 @@ def _show_outcome(svc: PaperService, out) -> None:
         ("Cycle id", rec.cycle_id), ("Status", status), ("Started", ui.ts(rec.started_at)), ("Finished", ui.ts(rec.finished_at)),
         ("Decision bar", ui.ts(rec.decision_bar)), ("Reconciliation", rec.reconciliation_status or "not run"),
         ("Intent / client order", f"{rec.intent_id} / {rec.client_order_id}" if rec.client_order_id else "none (no order was proposed)")]], empty="")
-    for title, value in (("Signal at the decision bar", rec.signal), ("Risk decision", rec.risk_decision), ("Paper fill (simulated)", rec.fill),
-                         ("Monitoring", rec.monitoring)):
+    for title, value in (("Signal at the decision bar", rec.signal), ("Risk decision", rec.risk_decision), ("Paper fill (simulated)", rec.fill)):
         with st.expander(title):
             if value:
                 ui.json_block(value)
             else:
                 st.info("None for this cycle (for example, no signal means no risk decision and no order).")
+    if tr.get("available"):
+        _monitoring_section(svc, tr, key="result")
+
+
+_MON_BOX = {"COMPLETED": "OK", "FAILED": "FAIL", "PENDING": "WARN", "SKIPPED": "INFO", "NOT_CONFIGURED": "INFO",
+            "NOT_RECORDED": "WARN", "LINKED_RUN_MISSING": "FAIL", "UNKNOWN": "WARN"}
+
+
+def _monitoring_section(svc: PaperService, tr: dict, *, key: str) -> None:
+    """Monitoring status from the PERSISTED cycle record; links the run and its findings; offers the explicit monitoring-only op."""
+    c, ms = tr["cycle"], tr["monitoring_state"]
+    with st.expander("Monitoring", expanded=True):
+        ui.box(_MON_BOX.get(ms["state"], "INFO"), f"{ms['state']}: {ms['message']}")
+        run = tr.get("monitoring_run")
+        if run is not None:
+            ui.table([{"Item": k, "Value": v} for k, v in [
+                ("Monitoring run id", run.run_id), ("Run status", getattr(run.status, "value", str(run.status))),
+                ("Run started", ui.ts(run.started_at)), ("Recorded on cycle", ui.ts((c.monitoring or {}).get("at"))),
+                ("Ran after the cycle finished (explicit monitoring-only run)", "yes" if (c.monitoring or {}).get("late") else "no"),
+                ("Findings in run", len(tr.get("findings") or [])), ("Alert events for run", len(tr.get("alert_events") or []))]], empty="")
+            for f in tr.get("findings") or []:
+                st.write(f"- {f.severity.value}: {f.title}")
+        if c.monitoring:
+            st.caption("Stored monitoring record on the cycle:")
+            ui.json_block(c.monitoring)
+        if ms["can_run"]:
+            st.caption("Run monitoring only for this cycle: evaluates the CURRENT persisted portfolio/operational state with the deterministic "
+                       "monitoring service. It generates no signal, submits no order, creates no cycle and changes no positions or cash. "
+                       "The result is recorded on this cycle and marked as run after the fact.")
+            with st.form(f"monitor_form_{key}"):
+                ok = st.checkbox("I confirm: run monitoring only for this cycle", key=f"monitor_ok_{key}")
+                go = st.form_submit_button("Run monitoring for this cycle")
+            if go:
+                if not ok:
+                    st.warning("Tick the confirmation to run. Nothing was executed.")
+                else:
+                    try:
+                        cfg = svc.build_config(experiment_id=c.experiment_id, strategy_name=c.strategy_name, symbol=c.symbol)
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Cannot build a configuration for this cycle: {exc}")
+                        return
+                    out = svc.monitor_cycle(cfg, c.cycle_id)
+                    if out.refused or out.error:
+                        st.error(f"Monitoring was not run: {out.refused or out.error}")
+                    else:
+                        st.cache_data.clear()
+                        st.success("Monitoring recorded. Reload the cycle (change the selection or refresh) to see it.")
+
 
 
 # --------------------------------------------------------------------------------------------- history
@@ -304,14 +351,12 @@ def _history_tab(paths: AppPaths, svc: PaperService, account: int | None) -> Non
                          ("Signal at the decision bar", c.signal), ("Risk decision", c.risk_decision),
                          ("Execution intent", tr["intent"].to_dict() if tr["intent"] else None),
                          ("Paper fill (simulated)", tr["fill"].to_dict() if tr["fill"] else None),
-                         ("Reconciliation", tr["reconciliation"].to_dict() if tr["reconciliation"] else None),
-                         ("Monitoring", c.monitoring)):
+                         ("Reconciliation", tr["reconciliation"].to_dict() if tr["reconciliation"] else None)):
         with st.expander(title):
             if value:
                 ui.json_block(value)
             else:
                 st.info("Not recorded for this cycle.")
-    if tr["findings"]:
-        st.write("Findings in the linked monitoring run: " + ", ".join(f"{f.severity.value}: {f.title}" for f in tr["findings"]))
+    _monitoring_section(svc, tr, key="hist")
     for lim in tr["limitations"]:
         st.caption("Limitation: " + lim)

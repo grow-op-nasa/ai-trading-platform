@@ -431,7 +431,10 @@ def test_no_signal_is_shown_as_a_valid_outcome_not_a_failure(paper_world):
     _select_all(at, w)
     at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
     _confirm_and_run(at)
-    assert any("NO_ACTION" in i.value for i in at.info) and not at.error
+    assert any("NO_ACTION" in i.value for i in at.info)
+    # the fixture's fake monitor writes no monitoring database, so the page truthfully reports the linked run as missing;
+    # that is the ONLY error allowed, and the cycle itself is shown as the valid outcome it is
+    assert all("monitoring database" in e.value for e in at.error), [e.value for e in at.error]
     assert w.store().list_fills(w.exp) == []
     assert len(w.store().list_cycles(w.exp)) == 1
 
@@ -470,6 +473,99 @@ def test_history_tab_traces_a_recorded_cycle(paper_world):
     at.selectbox(key="trace_cycle").set_value(svc.inspect(w.exp)["cycles"][0].cycle_id).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
     assert any("Paper fill (simulated)" in e.label for e in at.expander)
+
+
+def _open_trace(at, svc, w):
+    at.sidebar.selectbox[0].set_value(w.exp).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Paper Trading")
+    cid = svc.inspect(w.exp)["cycles"][0].cycle_id
+    at.selectbox(key="trace_cycle").set_value(cid).run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    return cid
+
+
+def _box_text(at):
+    return " ".join(x.value for x in list(at.success) + list(at.error) + list(at.warning) + list(at.info))
+
+
+def test_trace_shows_a_completed_linked_monitoring_run_with_its_findings(paper_world, workdir):
+    from tests.test_appsvc import _monitoring_world
+    from tests.test_paper_runtime import ScriptedStrategy
+    w, svc, at = paper_world
+    ScriptedStrategy.SCRIPT.clear()
+    svc.run_cycle(w.config(), request_token="seed", monitoring=False)
+    paths, mstore = _monitoring_world(workdir / "data")                # a REAL monitoring run in the app's monitoring store
+    run = mstore.list_runs()[0]
+    cyc = svc.store().list_cycles(w.exp)[0]
+    cyc.monitoring = {"outcome": "COMPLETED", "run_id": run.run_id, "status": "CRITICAL", "persisted": True}
+    svc.store().save_cycle(cyc)
+    _open_trace(at, svc, w)
+    assert any(run.run_id in m.value.to_string() for m in at.dataframe)
+    assert any("Monitoring completed" in x.value for x in at.success)
+    assert any("Scripted problem" in x.value for x in at.markdown)       # findings of the linked run are listed
+    assert not any("No monitoring" in x.value for x in at.markdown)
+
+
+def test_trace_distinguishes_failed_pending_skipped_not_configured_and_missing_monitoring(paper_world):
+    from tests.test_paper_runtime import ScriptedStrategy
+    w, svc, at = paper_world
+    ScriptedStrategy.SCRIPT.clear()
+    svc.run_cycle(w.config(), request_token="seed", monitoring=False)
+    cases = {
+        "FAILED": ({"outcome": "FAILED", "status": "ERROR", "error": "monitoring database is locked"}, "locked", True),
+        "PENDING": ({"outcome": "PENDING", "status": "PENDING"}, "pending", True),
+        "SKIPPED": ({"outcome": "SKIPPED", "reason": "policy: x"}, "skipped", False),
+        "NOT_CONFIGURED": ({"outcome": "NOT_CONFIGURED", "reason": "none"}, "not configured", True),
+        "NOT_RECORDED": (None, "No monitoring outcome was recorded", True),
+    }
+    for state, (mon, phrase, can_run) in cases.items():
+        cyc = svc.store().list_cycles(w.exp)[0]
+        cyc.monitoring = mon
+        svc.store().save_cycle(cyc)
+        at2 = AppTest.from_file(APP_PATH)
+        at2.session_state["_paper_service"] = svc
+        at2.run(timeout=_RUN_TIMEOUT)
+        _open_trace(at2, svc, w)
+        text = _box_text(at2)
+        assert f"{state}:" in text and phrase.lower() in text.lower(), (state, text[-400:])
+        assert any(b.label == "Run monitoring for this cycle" for b in at2.button) is can_run
+        assert "COMPLETED:" not in text
+
+
+def test_monitoring_only_button_runs_monitoring_once_without_a_new_cycle_order_or_fill(paper_world):
+    from tests.test_paper_runtime import ScriptedStrategy
+    w, svc, at = paper_world
+    ScriptedStrategy.SCRIPT.clear()
+    svc.run_cycle(w.config(), request_token="seed", monitoring=False)
+    cyc = svc.store().list_cycles(w.exp)[0]
+    cyc.monitoring = None                                                # the historical, unlinked shape
+    svc.store().save_cycle(cyc)
+    cid = _open_trace(at, svc, w)
+    assert w.monitor_calls == []
+    _button(at, "Run monitoring for this cycle").click().run(timeout=_RUN_TIMEOUT)      # unconfirmed
+    assert w.monitor_calls == [] and any("Tick the confirmation" in x.value for x in at.warning)
+    _checkbox(at, "I confirm: run monitoring only for this cycle").check()
+    _button(at, "Run monitoring for this cycle").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert len(w.monitor_calls) == 1
+    stored = svc.store().get_cycle(cid)
+    assert stored.monitoring["outcome"] == "COMPLETED" and stored.monitoring["late"] is True
+    assert len(svc.store().list_cycles(w.exp)) == 1 and svc.store().list_fills(w.exp) == [] and svc.store().list_intents(w.exp) == []
+    at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)
+    assert len(w.monitor_calls) == 1                                    # reruns never repeat it
+
+
+def test_run_result_view_shows_the_monitoring_outcome_of_a_no_action_cycle(paper_world):
+    from tests.test_paper_runtime import ScriptedStrategy
+    w, svc, at = paper_world
+    ScriptedStrategy.SCRIPT.clear()
+    _go(at, "Paper Trading")
+    _select_all(at, w)
+    at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
+    _confirm_and_run(at)
+    assert len(w.monitor_calls) == 1
+    assert any(e.label == "Monitoring" for e in at.expander)
+    assert "No monitoring run is linked" not in " ".join(x.value for x in at.markdown)
 
 
 def test_paper_page_cannot_offer_a_live_mode_or_an_unregistered_strategy(workdir):

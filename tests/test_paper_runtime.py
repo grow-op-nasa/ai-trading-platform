@@ -398,7 +398,8 @@ def test_end_to_end_entry_is_risk_sized_executed_applied_reconciled_monitored_an
     assert pf.positions["QQQ"].quantity == intent.quantity and pf.positions["QQQ"].entry_price == fill.fill_price
     assert pf.cash == pytest.approx(10_000.0 - intent.quantity * fill.fill_price)
     assert rec.reconciliation_status == "MATCH" and store.latest_reconciliation(world.exp).status is ReconStatus.MATCH
-    assert rec.monitoring == {"run_id": "mon-1", "status": "HEALTHY", "persisted": True}
+    assert rec.monitoring["outcome"] == "COMPLETED" and rec.monitoring["run_id"] == "mon-1"
+    assert rec.monitoring["status"] == "HEALTHY" and rec.monitoring["persisted"] is True
     # provenance
     assert rec.strategy_hash == strategy_version(ScriptedStrategy) and rec.config_hash == world.config().identity_hash()
     assert rec.dataset["complete_bars_hash"] and rec.idempotency_key and rec.signal["direction"] == "LONG"
@@ -416,7 +417,8 @@ def test_risk_rejection_prevents_any_order(tmp_path):
     assert rec.status is CycleStatus.RISK_REJECTED and rec.risk_decision["approved"] is False
     assert w.store().list_intents(w.exp) == [] and w.store().list_fills(w.exp) == []
     assert w.portfolio().cash == 10_000.0 and not w.portfolio().positions
-    assert w.monitor_calls == []                                      # nothing changed, nothing to monitor
+    assert len(w.monitor_calls) == 1                                  # a completed evaluation is monitored even with no trade
+    assert rec.monitoring["outcome"] == "COMPLETED"
 
 
 def test_unmodelled_short_exposure_fails_closed(world):
@@ -922,3 +924,113 @@ def test_the_monitoring_agent_gained_no_paper_trading_capability():
     for f in (REPO / "src" / "ai" / "agents" / "monitoring").glob("*.py"):
         body = f.read_text()
         assert "src.paper" not in body and "paper_run" not in body and "PaperTradingRuntime" not in body
+
+
+# =====================================================================================
+# Follow-up: post-cycle monitoring lifecycle (NO_ACTION cycles, persisted link, failure, retry, recovery)
+# =====================================================================================
+def _no_signal(world):
+    ScriptedStrategy.SCRIPT.clear()
+
+
+def test_a_no_action_cycle_runs_and_persists_post_cycle_monitoring(world):
+    _no_signal(world)
+    rec = world.runtime().run_cycle()
+    assert rec.status is CycleStatus.NO_ACTION and rec.reason_code == "NO_SIGNAL"
+    assert len(world.monitor_calls) == 1
+    stored = world.store().get_cycle(rec.cycle_id)                     # the persisted record, not the in-memory one
+    assert stored.monitoring["outcome"] == "COMPLETED" and stored.monitoring["run_id"] == "mon-1"
+    assert stored.intent_id is None and world.store().list_fills(world.exp) == [] and world.store().list_intents(world.exp) == []
+
+
+def test_a_cycle_with_a_fill_is_monitored_exactly_once(world):
+    world.script(WED, "LONG")
+    rec = world.runtime().run_cycle()
+    assert rec.status is CycleStatus.ORDER_FILLED and len(world.monitor_calls) == 1
+    assert world.store().get_cycle(rec.cycle_id).monitoring["run_id"] == "mon-1"
+
+
+def test_replay_and_restart_never_repeat_completed_monitoring(world):
+    _no_signal(world)
+    first = world.runtime().run_cycle()
+    again = world.runtime().run_cycle()                                # a brand-new runtime object = application restart
+    assert again.replayed and again.cycle_id == first.cycle_id
+    assert len(world.monitor_calls) == 1 and len(world.store().list_cycles(world.exp)) == 1
+    recovered = world.runtime().monitor_cycle(first.cycle_id)           # explicit op on a completed step: a no-op
+    assert recovered.monitoring["run_id"] == "mon-1" and len(world.monitor_calls) == 1
+
+
+def test_a_monitoring_failure_is_recorded_distinctly_and_the_execution_outcome_is_unchanged(world):
+    _no_signal(world)
+    world.monitor_error = RuntimeError("monitoring database is locked")
+    rec = world.runtime().run_cycle()
+    stored = world.store().get_cycle(rec.cycle_id)
+    assert stored.status is CycleStatus.NO_ACTION and stored.reason_code == "NO_SIGNAL"
+    assert stored.monitoring["outcome"] == "FAILED" and "locked" in stored.monitoring["error"] and "run_id" not in stored.monitoring
+    assert world.monitor_calls == []
+
+
+def test_retrying_monitoring_after_a_failure_changes_no_order_fill_fee_or_portfolio(world):
+    world.script(WED, "LONG")
+    world.monitor_error = RuntimeError("boom")
+    rec = world.runtime().run_cycle()
+    assert rec.status is CycleStatus.ORDER_FILLED and rec.monitoring["outcome"] == "FAILED"
+    before = (world.store().list_fills(world.exp), world.store().list_intents(world.exp), world.portfolio().cash,
+              dict(world.portfolio().positions), len(world.store().list_cycles(world.exp)))
+    world.monitor_error = None
+    done = world.runtime().monitor_cycle(rec.cycle_id)
+    assert done.monitoring["outcome"] == "COMPLETED" and done.monitoring["late"] is True and done.monitoring["attempts"] == 2
+    after = (world.store().list_fills(world.exp), world.store().list_intents(world.exp), world.portfolio().cash,
+             dict(world.portfolio().positions), len(world.store().list_cycles(world.exp)))
+    assert before == after
+    assert world.runtime().run_cycle().replayed                       # a later cycle run is still a pure replay
+    only_one_execution(world)
+    assert len(world.monitor_calls) == 1
+
+
+def test_a_crash_between_the_cycle_and_monitoring_leaves_a_recoverable_pending_state(world):
+    _no_signal(world)
+    world.faults.arm("before_monitoring", SimulatedCrash("x"))
+    with pytest.raises(SimulatedCrash):
+        world.runtime().run_cycle()
+    stored = world.store().list_cycles(world.exp)[0]
+    assert stored.status is CycleStatus.NO_ACTION and stored.monitoring["outcome"] == "PENDING"
+    assert world.monitor_calls == []
+    done = world.runtime().monitor_cycle(stored.cycle_id)               # bounded explicit recovery: no strategy, no order
+    assert done.monitoring["outcome"] == "COMPLETED" and len(world.monitor_calls) == 1
+    assert len(world.store().list_cycles(world.exp)) == 1 and world.store().list_fills(world.exp) == []
+
+
+def test_a_legacy_cycle_with_no_monitoring_record_is_truthful_and_can_be_monitored_only_explicitly(world):
+    _no_signal(world)
+    rt = world.runtime(with_monitor=False)
+    rec = rt.run_cycle()
+    assert rec.monitoring["outcome"] == "NOT_CONFIGURED"
+    store = world.store()
+    legacy = store.get_cycle(rec.cycle_id)
+    legacy.monitoring = None                                           # the shape written before this lifecycle existed
+    store.save_cycle(legacy)
+    assert world.runtime().run_cycle().replayed and world.monitor_calls == []      # a replay never fabricates monitoring
+    assert store.get_cycle(rec.cycle_id).monitoring is None
+    done = world.runtime().monitor_cycle(rec.cycle_id)
+    assert done.monitoring["outcome"] == "COMPLETED" and done.monitoring["late"] is True
+    assert len(store.list_cycles(world.exp)) == 1 and store.list_fills(world.exp) == []
+
+
+def test_monitoring_is_skipped_by_documented_policy_for_cycles_that_never_evaluated(world):
+    world.script(WED, "LONG")
+    world.provider.set_script([Fault(FaultKind.TIMEOUT)])
+    rec = world.runtime().run_cycle()
+    assert rec.status is CycleStatus.BLOCKED
+    assert rec.monitoring["outcome"] == "SKIPPED" and "policy" in rec.monitoring["reason"] and world.monitor_calls == []
+    with pytest.raises(PaperSetupError):
+        world.runtime().monitor_cycle(rec.cycle_id)                    # not applicable to a blocked cycle
+
+
+def test_monitor_cycle_rejects_unknown_cycles_and_unconfigured_runtimes(world):
+    _no_signal(world)
+    rec = world.runtime().run_cycle()
+    with pytest.raises(PaperSetupError):
+        world.runtime().monitor_cycle("does-not-exist")
+    with pytest.raises(PaperSetupError):
+        world.runtime(with_monitor=False).monitor_cycle(rec.cycle_id)

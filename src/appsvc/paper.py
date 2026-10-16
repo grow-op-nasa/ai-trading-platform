@@ -67,6 +67,34 @@ class RunOutcome:
         return self.record is not None
 
 
+def monitoring_state(mon: dict | None, *, run_found: bool = False, run_missing: str | None = None) -> dict[str, Any]:
+    """Interpret a cycle's persisted `monitoring` field into ONE explicit state for the UI (never a generic 'not recorded')."""
+    if mon is None:
+        return {"state": "NOT_RECORDED", "run_id": None, "can_run": True,
+                "message": "No monitoring outcome was recorded for this cycle. It was created before post-cycle monitoring covered "
+                           "cycles like this one (or monitoring never ran); no monitoring run is linked, and none is inferred from timestamps."}
+    outcome = mon.get("outcome")
+    if outcome is None:                       # legacy shape written before the explicit outcome existed
+        outcome = "COMPLETED" if mon.get("run_id") else ("FAILED" if mon.get("status") == "ERROR" else mon.get("status") or "UNKNOWN")
+    rid = mon.get("run_id")
+    if outcome == "COMPLETED" and rid:
+        if run_found:
+            return {"state": "COMPLETED", "run_id": rid, "can_run": False, "message": f"Monitoring completed: run {rid} is linked."}
+        return {"state": "LINKED_RUN_MISSING", "run_id": rid, "can_run": False, "message": run_missing or "The linked run cannot be loaded."}
+    if outcome == "FAILED":
+        return {"state": "FAILED", "run_id": None, "can_run": True,
+                "message": f"Post-cycle monitoring FAILED (the cycle's execution outcome is unaffected): {mon.get('error', 'unknown error')}"}
+    if outcome == "PENDING":
+        return {"state": "PENDING", "run_id": None, "can_run": True,
+                "message": "Monitoring is pending: it was started but no result was recorded (it may still be running, or the process stopped)."}
+    if outcome == "SKIPPED":
+        return {"state": "SKIPPED", "run_id": None, "can_run": False, "message": "Monitoring was skipped: " + str(mon.get("reason", "by policy"))}
+    if outcome == "NOT_CONFIGURED":
+        return {"state": "NOT_CONFIGURED", "run_id": None, "can_run": True,
+                "message": "Monitoring was not configured for this run: " + str(mon.get("reason", "no monitoring service"))}
+    return {"state": "UNKNOWN", "run_id": rid, "can_run": False, "message": f"Unrecognised monitoring state {outcome!r}; shown as stored."}
+
+
 class PaperService:
     def __init__(self, paths: AppPaths | None = None, *, market_data: Any = None,
                  monitor_factory_builder: Callable[[PaperRunConfig], Callable[[], Any]] | None = None,
@@ -211,6 +239,19 @@ class PaperService:
         except Exception as exc:  # noqa: BLE001 -- surfaced, never reported as success; the cycle record may exist
             return RunOutcome(error=f"{type(exc).__name__}: {str(exc)[:300]}")
 
+    def monitor_cycle(self, cfg: PaperRunConfig, cycle_id: str) -> RunOutcome:
+        """EXPLICIT monitoring-only operation (no strategy, no order, no cycle, no portfolio change). A completed monitoring
+        step is never repeated. The recorded result is flagged `late` and describes state as of now."""
+        with self._lock:
+            try:
+                return RunOutcome(record=self.runtime(cfg, monitoring=True).monitor_cycle(cycle_id))
+            except (PaperSetupError, PaperStoreError) as exc:
+                return RunOutcome(refused=str(exc)[:300])
+            except PaperLockedError as exc:
+                return RunOutcome(refused=str(exc)[:300], locked=True)
+            except Exception as exc:  # noqa: BLE001
+                return RunOutcome(error=f"{type(exc).__name__}: {str(exc)[:300]}")
+
     def reconcile(self, cfg: PaperRunConfig):
         """Explicit, observation-only: re-run reconciliation and record it. Never corrects anything."""
         return self.runtime(cfg, monitoring=False).reconcile_now()
@@ -249,8 +290,9 @@ class PaperService:
         recon = next((r for r in s.list_reconciliations(c.experiment_id, 200) if r.recon_id == c.reconciliation_id), None) \
             if c.reconciliation_id else None
         run = findings = events = None
-        mon = c.monitoring or {}
-        rid = mon.get("run_id")
+        mon = c.monitoring
+        rid = (mon or {}).get("run_id")
+        run_missing = None
         if rid and self.paths.monitoring_exists():
             from src.monitoring.store import MonitoringStore
             ms = MonitoringStore(self.paths.monitoring_db)
@@ -259,10 +301,12 @@ class PaperService:
                 findings = [f for f in (ms.get_finding(i) for i in run.finding_ids) if f is not None]
                 events = ms.alerts.events_for_run(rid)
             else:
-                limits.append("The monitoring run id is recorded but the run is not in the monitoring database.")
+                run_missing = "The monitoring run id is recorded on the cycle but that run is not in the monitoring database."
         elif rid:
-            limits.append("The monitoring run id is recorded but no monitoring database exists to look it up in.")
-        else:
-            limits.append("No monitoring run is linked to this cycle (monitoring was skipped, failed, or not yet run).")
+            run_missing = "The monitoring run id is recorded on the cycle but no monitoring database exists to look it up in."
+        mstate = monitoring_state(mon, run_found=run is not None, run_missing=run_missing)
+        if mstate["state"] != "COMPLETED":
+            limits.append(mstate["message"])
         return {"available": True, "cycle": c, "intent": intent, "fill": fill, "reconciliation": recon,
-                "monitoring_run": run, "findings": findings, "alert_events": events, "limitations": limits}
+                "monitoring_run": run, "findings": findings, "alert_events": events, "monitoring_state": mstate,
+                "limitations": limits}

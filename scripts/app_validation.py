@@ -177,6 +177,12 @@ def part_b(work: Path, exp: int) -> None:
     print(f"  REAL-DATA cycle {cyc.cycle_id}: status={cyc.status.value} reason={cyc.reason_code} bar={cyc.decision_bar}")
     print(f"  provenance: provider={(cyc.dataset or {}).get('provider')} bars={(cyc.dataset or {}).get('bars_used')} "
           f"strategy_hash={str(cyc.strategy_hash)[:16]} config_hash={str(cyc.config_hash)[:16]}")
+    mon = cyc.monitoring or {}
+    from src.monitoring.store import MonitoringStore
+    linked = mon.get("run_id") and paths.monitoring_exists() and MonitoringStore(paths.monitoring_db).get_run(mon["run_id"]) is not None
+    check("post-cycle monitoring was recorded on the cycle and its run exists in the monitoring store",
+          mon.get("outcome") == "COMPLETED" and bool(linked), str(mon)[:200])
+    print(f"  monitoring: outcome={mon.get('outcome')} run_id={mon.get('run_id')} status={mon.get('status')}")
     if cyc.fill:
         print(f"  (the real strategy signalled) intent={cyc.intent_id} order={cyc.client_order_id} fill={cyc.fill}")
     elif cyc.status.value in ("NO_ACTION", "NO_NEW_BAR", "RISK_REJECTED"):

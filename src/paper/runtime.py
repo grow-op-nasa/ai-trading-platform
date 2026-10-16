@@ -371,7 +371,14 @@ class PaperTradingRuntime:
         rec.status, rec.reason_code, rec.reason = status, code, (reason[:400] if reason else None)
         rec.finished_at = self._clock().isoformat()
         if persist:
+            if self._monitor_wanted(rec):
+                rec.monitoring = {"outcome": "PENDING", "status": "PENDING"}        # durable BEFORE the run: crash-recoverable
+            elif rec.monitoring is None:
+                rec.monitoring = self._monitor_skipped(rec)
             self._persist(store, rec)
+            if (rec.monitoring or {}).get("outcome") == "PENDING":
+                self._monitor(rec)
+                self._persist(store, rec)                                          # the real result, only after the run
         return rec
 
     def _run_locked(self, store: PaperStore, registry, instance, shash: str) -> CycleRecord:
@@ -590,7 +597,6 @@ class PaperTradingRuntime:
         portfolio = self._portfolio(registry)
         recon = reconcile(store, gateway, self._config.experiment_id, portfolio, self._clock(), rec.cycle_id)
         rec.reconciliation_id, rec.reconciliation_status = recon.recon_id, recon.status.value
-        self._monitor(rec)
         if state == "MISMATCH" or recon.status is not ReconStatus.MATCH:
             return self._finish(store, rec, CycleStatus.RECONCILIATION_REQUIRED, "RECONCILIATION_" + recon.status.value,
                                 "portfolio does not agree with the paper broker ledger after execution")
@@ -621,17 +627,66 @@ class PaperTradingRuntime:
             return "APPLIED"
         return "MISMATCH"                                    # neither before nor after: unexplained, never overwritten
 
-    def _monitor(self, rec: CycleRecord) -> None:
+    # Statuses after which post-cycle monitoring runs. Monitoring evaluates persisted portfolio/operational state, so it
+    # runs after a cycle that COMPLETED its evaluation even when nothing was traded (NO_ACTION). It is skipped, with the
+    # reason recorded, when the cycle never evaluated anything (BLOCKED/FAILED/AWAITING_EXECUTION).
+    MONITORED_STATUSES = frozenset({CycleStatus.NO_ACTION, CycleStatus.RISK_REJECTED, CycleStatus.ORDER_REJECTED,
+                                    CycleStatus.ORDER_FILLED, CycleStatus.RECONCILIATION_REQUIRED})
+
+    def _monitor_wanted(self, rec: CycleRecord) -> bool:
+        if self._monitor_factory is None or rec.status not in self.MONITORED_STATUSES:
+            return False
+        return (rec.monitoring or {}).get("outcome") not in ("COMPLETED",)      # a completed step is never repeated
+
+    def _monitor_skipped(self, rec: CycleRecord) -> dict[str, Any]:
         if self._monitor_factory is None:
-            rec.monitoring = {"status": "NOT_CONFIGURED"}
-            return
+            return {"outcome": "NOT_CONFIGURED", "status": "NOT_CONFIGURED",
+                    "reason": "no monitoring service was configured for this run"}
+        return {"outcome": "SKIPPED", "status": "SKIPPED",
+                "reason": f"policy: monitoring runs only after a cycle that completed evaluation; this cycle ended {rec.status.value}"}
+
+    def _monitor(self, rec: CycleRecord, *, late: bool = False) -> None:
+        """Run the deterministic monitoring service ONCE and record the real outcome. Never changes execution truth."""
+        attempts = int((rec.monitoring or {}).get("attempts", 0)) + 1
         try:
             self._faults.fire("before_monitoring")
             run = self._monitor_factory().run_once()
-            rec.monitoring = {"run_id": run.run_id, "status": getattr(run.status, "value", str(run.status)),
-                              "persisted": bool(run.persisted)}
+            rec.monitoring = {"outcome": "COMPLETED", "run_id": run.run_id,
+                              "status": getattr(run.status, "value", str(run.status)), "persisted": bool(run.persisted),
+                              "at": self._clock().isoformat(), "attempts": attempts}
+            if late:
+                rec.monitoring["late"] = True      # ran AFTER the cycle finished (explicit monitoring-only operation)
         except Exception as exc:  # noqa: BLE001 -- monitoring trouble never changes execution truth
-            rec.monitoring = {"status": "ERROR", "error": safe_error(exc)}
+            rec.monitoring = {"outcome": "FAILED", "status": "ERROR", "error": safe_error(exc),
+                              "at": self._clock().isoformat(), "attempts": attempts}
+
+    def monitor_cycle(self, cycle_id: str) -> CycleRecord:
+        """EXPLICIT monitoring-only operation for an already-recorded cycle.
+
+        Runs the monitoring service (read-only evaluation of persisted state) and records its real result on the cycle.
+        It generates no signal, submits no order, touches no portfolio/ledger/intent, and creates no cycle. A cycle whose
+        monitoring already COMPLETED is returned unchanged (no duplicate run). The result is flagged `late` because it
+        evaluates state as of NOW, not as of the cycle.
+        """
+        if self._monitor_factory is None:
+            raise PaperSetupError("no monitoring service is configured")
+        store = self._open_store()
+        with self._lock():
+            rec = store.get_cycle(cycle_id)
+            if rec is None:
+                raise PaperSetupError(f"cycle {cycle_id} not found")
+            if rec.experiment_id != self._config.experiment_id:
+                raise PaperSetupError("that cycle belongs to a different experiment")
+            if rec.status not in self.MONITORED_STATUSES:
+                raise PaperSetupError(f"monitoring is not applicable to a cycle that ended {rec.status.value}")
+            if (rec.monitoring or {}).get("outcome") == "COMPLETED" or (rec.monitoring or {}).get("run_id"):
+                rec.replayed = True
+                return rec
+            rec.monitoring = {**(rec.monitoring or {}), "outcome": "PENDING", "status": "PENDING"}
+            self._persist(store, rec)
+            self._monitor(rec, late=True)
+            self._persist(store, rec)
+            return rec
 
     # ================================================================== recovery
     def _recover_locked(self, store: PaperStore, registry) -> list[CycleRecord]:

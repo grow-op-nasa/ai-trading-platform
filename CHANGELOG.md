@@ -11,6 +11,14 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 19 follow-up 2 -- 2026-10-16, Post-cycle monitoring for every evaluated cycle; explicit monitoring state
+
+See ADR-0055. Root cause: monitoring ran only after a fill, so NO_ACTION cycles had `monitoring = null` and no linked run. `PaperTradingRuntime._finish` now
+persists `monitoring.outcome=PENDING`, runs monitoring, then persists COMPLETED(run_id)/FAILED(error); SKIPPED/NOT_CONFIGURED are explicit. New
+`PaperTradingRuntime.monitor_cycle` and `PaperService.monitor_cycle` (explicit monitoring-only operation, never repeats a completed step), `monitoring_state()`
+and `trace()["monitoring_state"]`; Paper Trading page shows the actual state, the linked run and findings, and an explicit "Run monitoring for this cycle" control.
+Tests updated (two Sprint 18 assertions encoded the old no-monitoring-on-NO_ACTION behaviour) and added.
+
 ## Sprint 19 follow-up -- 2026-10-16, Paper Trading controls made usable (correction)
 
 The Sprint 19 claim of a usable UI paper workflow was overstated (controls were hidden behind a profile). Rebuilt `src/dashboard/page_paper.py` as one

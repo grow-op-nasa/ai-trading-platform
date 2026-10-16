@@ -5096,3 +5096,22 @@ portfolio), instrument (saved-experiment symbols or typed) and timeframe (`1d` o
 approved_config_hash=)` refuses a mismatch and still applies the hard-FAIL preflight gate; the runtime's idempotency is untouched. With no portfolio, the page
 explains and offers an explicit `create_paper_account` form (a new experiment record with a cash-only portfolio, labelled as not a backtest); paper-account
 initialisation stays a separate explicit step. Nothing is created, reset or run by a rerun, refresh or navigation.
+
+
+## ADR-0055: Post-cycle monitoring covers every evaluated cycle and records an explicit outcome (2026-10-16)
+
+**Context.** Cycle `00492dbac0824ecc98ef28b52243837b` (NO_ACTION/NO_SIGNAL) showed "No monitoring run is linked". Inspection of the persisted record showed
+`monitoring = null` and no monitoring run near the cycle: the Sprint 18 runtime invoked monitoring only on the execution path, so no-trade cycles were never
+monitored. Monitoring evaluates persisted portfolio and operational state, so a trade is not a precondition.
+
+**Decision.** (1) `_finish` runs post-cycle monitoring for NO_ACTION, RISK_REJECTED, ORDER_REJECTED, ORDER_FILLED and RECONCILIATION_REQUIRED; BLOCKED, FAILED and
+AWAITING_EXECUTION cycles record `SKIPPED` with the policy reason (nothing was evaluated). (2) The cycle record carries `monitoring.outcome` in
+{PENDING, COMPLETED, FAILED, SKIPPED, NOT_CONFIGURED}; `PENDING` is persisted before the run and the result only after it, so a crash leaves a recoverable
+PENDING state. The cycle store and monitoring store have SEPARATE transactions; atomicity is not claimed. A crash after the run but before the result is
+recorded leaves PENDING and a retry creates a further run (never a further order). (3) A completed step is never repeated: replay/restart/recovery skip
+COMPLETED. (4) `monitor_cycle` is the only retry/backfill path: monitoring only, no strategy, order, intent, cycle, cash or position change; refuses
+BLOCKED/FAILED cycles; result flagged `late` (state as of now). (5) The UI interprets the stored record into one state and never infers a link from timestamps.
+Historical cycles with `monitoring = null` stay truthfully unlinked (state NOT_RECORDED) until `monitor_cycle` is run explicitly.
+
+**Consequence.** Two Sprint 18 test assertions (`NO_ACTION`/risk rejection did not call monitoring) encoded the defect and were changed. `rec.monitoring["status"]`
+keeps its old meaning (run status or ERROR) for compatibility; `outcome` is the new authority.

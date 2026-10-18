@@ -11,6 +11,14 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 21 follow-up 2 -- 2026-10-18, Hash reproducibility and audit layers
+
+Scans now also record `evaluated_hash` (fingerprint of only the COMPLETE bars the strategy saw) beside `content_hash` (everything the provider returned, including any still-forming bar), because a forming bar changes the latter without changing the strategy's input. `scripts/scanner_audit.py --refetch` now reports two explicit layers: LAYER 1 strategy decision only (no account), LAYER 2 end-to-end outcome with the stored scan's account (read-only registry); a FLAT is SIGNAL_FOUND/FLAT in layer 1 and NO_SIGNAL/ALREADY_FLAT in layer 2 when the account holds no position. New `scripts/data_hash_probe.py` measures whether re-fetched data really changed. New `tests/test_data_hash_reproducibility.py` (8 tests). No strategy, validation, hashing-algorithm or status-mapping change. Real-provider measurement: re-fetched adjusted prices for dividend payers differ ~1e-7 relative between fetches minutes apart (see ADR-0058 addendum); the probe's snapshot reader now uses exact float parsing (its first version falsely reported 1e-16 differences for AMD).
+
+## Sprint 21 follow-up -- 2026-10-18, Scanner data-to-decision audit
+
+Added a per-symbol **audit trace** persisted inside each result's existing JSON (`data.trace`: last three completed OHLCV bars, previous bar, validation outcome, required/available history, the strategy's signal count, last signal and the indicator columns its `prepare()` added for the last two bars, and the risk outcome) - no schema change; scans made earlier have no trace and it is never reconstructed. `evaluate_at_bar` gained observational evidence fields (no decision change). UI: an "Audit trace" expander; "none" is now "no new signal on this bar"; risk "not applicable" is shown as "nothing to assess" and explained as NOT a risk approval; ALREADY_FLAT explains that the strategy did emit FLAT but the account holds no position. New `tests/test_scanner_audit.py` (9 tests, real `ema_cross` on a deterministic oscillating path, scanner vs direct evaluation on every one of 60 decision days) and `scripts/scanner_audit.py`. No strategy, parameter, validation or status-classification change.
+
 ## Sprint 21 -- 2026-10-18, Strategy Opportunity Scanner & watchlists (ADR-0058)
 
 Added: `src/paper/evaluation.py` (shared side-effect-free evaluation, now also used by the paper runtime); `src/scanner/` (models, SQLite store, bounded-concurrency engine); `appsvc.scanner`;

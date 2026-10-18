@@ -19,7 +19,7 @@ from src.scanner.models import (DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WATCHL
 from src.scanner.store import DuplicateWatchlistName, ScannerStore, ScannerStoreError
 
 __all__ = ["ScannerService", "WatchlistError", "ScanSetupError", "ScanView", "MAX_WATCHLIST_SYMBOLS", "STATUS_MEANING",
-           "explain_result", "parse_symbols", "ResultStatus", "ScanStatus", "RiskState"]
+           "explain_result", "trace_of", "parse_symbols", "ResultStatus", "ScanStatus", "RiskState"]
 
 MAX_NAME = 60
 
@@ -58,11 +58,23 @@ class ScanView:
     results: list[ScanResult]
 
 
+def trace_of(r: ScanResult) -> dict[str, Any] | None:
+    """The audit trace recorded at scan time, or None for scans made before it existed (it is never reconstructed later)."""
+    t = (r.data or {}).get("trace")
+    return t if isinstance(t, dict) else None
+
+
 def explain_result(r: ScanResult) -> list[str]:
     """Plain-English lines built only from stored facts: no scores, no invented confidence."""
     lines = [STATUS_MEANING[r.status]]
     if r.reason and r.reason not in lines:
         lines.append(r.reason)
+    if r.status is ResultStatus.NO_SIGNAL and not r.decision:
+        lines.append("Strategies here emit a signal only when their state CHANGES. 'No signal' means nothing changed on the decision bar; "
+                     "it does not say the symbol is bullish, bearish or neutral.")
+    if r.reason_code == "ALREADY_FLAT" and r.decision:
+        lines.append(f"The strategy DID emit {r.decision.get('direction')} on the decision bar, but the selected account holds no position in {r.symbol}, "
+                     "so there is nothing to close and no action to review. It is shown as 'No signal' only for that reason.")
     if r.decision:
         lines.append(f"Strategy output: {r.decision.get('direction')} on bar {r.decision.get('timestamp')}.")
     if r.decision_bar:
@@ -72,6 +84,8 @@ def explain_result(r: ScanResult) -> list[str]:
     elif r.risk_state is RiskState.APPROVED:
         lines.append("Risk: the existing risk engine approved this candidate on its own against the saved portfolio. "
                      "That is not a promise: a fresh preflight and your approval still apply.")
+    elif r.risk_state is RiskState.NOT_APPLICABLE:
+        lines.append("Risk: nothing to assess (there is no tradeable action here). This is NOT a risk approval.")
     elif r.risk_state is RiskState.REJECTED:
         lines.append(f"Risk: rejected. {r.risk_detail}")
     d = r.data or {}

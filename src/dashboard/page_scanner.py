@@ -16,7 +16,7 @@ import streamlit as st
 from src.appsvc import instruments, strategies
 from src.appsvc.paper import PaperService
 from src.appsvc.paths import AppPaths
-from src.appsvc.scanner import (MAX_WATCHLIST_SYMBOLS, ResultStatus, ScanSetupError, ScanStatus, WatchlistError, explain_result)
+from src.appsvc.scanner import (MAX_WATCHLIST_SYMBOLS, ResultStatus, ScanSetupError, ScanStatus, WatchlistError, explain_result, trace_of)
 from src.dashboard import shell, ui
 
 _STATUS_LABEL = {
@@ -179,8 +179,8 @@ def _results(sc) -> None:
     pick = st.multiselect("Show statuses", [x.value for x in ResultStatus], default=[x.value for x in ResultStatus], key="scanner_filter",
                           format_func=lambda v: _STATUS_LABEL[ResultStatus(v)])
     shown = [r for r in view.results if r.status.value in pick]
-    ui.table([{"Symbol": r.symbol, "Status": _STATUS_LABEL[r.status], "Strategy output": (r.decision or {}).get("direction", "none"),
-               "Decision bar": (r.decision_bar or "n/a")[:10], "Risk": r.risk_state.value.replace("_", " ").lower(),
+    ui.table([{"Symbol": r.symbol, "Status": _STATUS_LABEL[r.status], "Strategy output": (r.decision or {}).get("direction", "no new signal on this bar"),
+               "Decision bar": (r.decision_bar or "n/a")[:10], "Risk": {"NOT_APPLICABLE": "nothing to assess", "NOT_ASSESSED": "not assessed"}.get(r.risk_state.value, r.risk_state.value.lower()),
                "Why": r.reason} for r in shown], empty="No results match the filter.")
     if not shown:
         return
@@ -199,6 +199,16 @@ def _results(sc) -> None:
                   help="Opens Paper Trading with this symbol and strategy selected. Nothing is created: a fresh preflight, risk check and your approval still apply.")
     elif r.status is ResultStatus.RISK_BLOCKED:
         st.caption("Blocked by the risk rules, so there is no review action.")
+    with st.expander("Audit trace (data to decision)"):
+        t = trace_of(r)
+        if t is None:
+            st.caption("No audit trace was recorded for this symbol (older scan, or evaluation stopped before the strategy ran). It is not reconstructed after the fact.")
+        else:
+            ui.json_block({"scan": {"id": s.scan_id, "strategy": s.strategy_name, "strategy_hash": s.strategy_hash, "params": s.strategy_params,
+                                    "config_hash": s.config_hash, "interval": s.interval, "evaluated_at": r.evaluated_at},
+                           "data": {k: v for k, v in (r.data or {}).items() if k != "trace"}, **t,
+                           "scanner": {"status": r.status.value, "reason_code": r.reason_code, "persisted_decision": r.decision,
+                                       "risk_state": r.risk_state.value}})
     with st.expander("Raw stored record"):
         ui.json_block({"status": r.status.value, "reason_code": r.reason_code, "decision": r.decision, "data": r.data,
                        "risk_state": r.risk_state.value, "evaluated_at": r.evaluated_at})

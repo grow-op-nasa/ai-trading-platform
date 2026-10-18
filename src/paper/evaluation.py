@@ -43,6 +43,25 @@ class SignalEval:
     signal: Signal | None = None
     detail: str = ""
     count: int = 0
+    # Audit evidence (Sprint 21 follow-up): purely observational, never used for a decision.
+    raw_count: int = 0                                  # signals the strategy returned over the WHOLE window
+    last_signal: dict[str, Any] | None = None           # the most recent signal the strategy returned, whenever it was
+    indicators: dict[str, dict[str, float | None]] | None = None   # columns prepare() ADDED, last two bars
+
+
+def _indicator_tail(prepared: pd.DataFrame, original: pd.DataFrame) -> dict[str, dict[str, float | None]]:
+    added = [c for c in prepared.columns if c not in original.columns]
+    out: dict[str, dict[str, float | None]] = {}
+    for ts in list(prepared.index[-2:]):
+        row = {}
+        for c in added:
+            try:
+                v = float(prepared.at[ts, c])
+                row[c] = None if v != v else v
+            except (TypeError, ValueError):
+                row[c] = None
+        out[pd.Timestamp(ts).isoformat()] = row
+    return out
 
 
 def evaluate_at_bar(instance, complete: pd.DataFrame, decision_bar: pd.Timestamp, symbol: str) -> SignalEval:
@@ -55,13 +74,18 @@ def evaluate_at_bar(instance, complete: pd.DataFrame, decision_bar: pd.Timestamp
     except Exception as exc:  # noqa: BLE001
         return SignalEval("STRATEGY_ERROR", detail=safe_error_text(exc))
     at_bar = [s for s in raw if pd.Timestamp(s.timestamp) == decision_bar]
+    try:
+        extra = {"raw_count": len(raw), "last_signal": signal_to_record(raw[-1]) if raw else None,
+                 "indicators": _indicator_tail(prepared, complete)}
+    except Exception:  # noqa: BLE001 - evidence only; never allowed to change an outcome
+        extra = {"raw_count": len(raw)}
     if any(s.symbol != symbol for s in at_bar):
-        return SignalEval("SYMBOL_MISMATCH", detail="strategy emitted a signal for a different instrument", count=len(at_bar))
+        return SignalEval("SYMBOL_MISMATCH", detail="strategy emitted a signal for a different instrument", count=len(at_bar), **extra)
     if not at_bar:
-        return SignalEval("NO_SIGNAL", detail="the strategy produced no signal at the decision bar")
+        return SignalEval("NO_SIGNAL", detail="the strategy produced no signal at the decision bar", **extra)
     if len(at_bar) > 1:
-        return SignalEval("AMBIGUOUS", detail=f"{len(at_bar)} signals at one decision bar; refusing to choose", count=len(at_bar))
-    return SignalEval("SIGNAL", signal=at_bar[0], count=1)
+        return SignalEval("AMBIGUOUS", detail=f"{len(at_bar)} signals at one decision bar; refusing to choose", count=len(at_bar), **extra)
+    return SignalEval("SIGNAL", signal=at_bar[0], count=1, **extra)
 
 
 @dataclass

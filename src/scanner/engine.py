@@ -20,12 +20,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+import pandas as pd
+
 from src.data.exceptions import DataProviderError, DataValidationError
 from src.paper.evaluation import (StrategyResolutionError, assess_risk, evaluate_at_bar, prepare_bars, resolve_strategy,
                                   safe_error_text, signal_to_record)
 from src.scanner.models import (DEFAULT_CONCURRENCY, MAX_CONCURRENCY, ResultStatus, RiskState, ScanRecord, ScanResult,
                                 ScanStatus, Watchlist)
 from src.scanner.store import ScannerStore
+from src.utils.hashing import dataframe_fingerprint
 
 STALE_HEARTBEAT_SECONDS = 180
 MIN_BARS_FLOOR = 60
@@ -246,12 +249,20 @@ class ScanEngine:
             return self._result(rec, sym, pos, status, prep.kind, f"{text} {prep.detail}".strip(), data=data,
                                 decision_bar=str(prep.decision_bar) if prep.decision_bar is not None else None)
         data["complete_bars"] = int(len(prep.complete))
+        # `content_hash` fingerprints EVERYTHING the provider returned (including any still-forming bar); `evaluated_hash`
+        # fingerprints only the COMPLETE bars the strategy actually saw, so a forming bar cannot masquerade as a data change.
+        data["evaluated_hash"] = dataframe_fingerprint(prep.complete)
+        data["trace"] = {"bars": _bars_evidence(prep.complete), "validation": _validation_evidence(ds),
+                         "history": {"required": rec.min_bars, "available": int(len(prep.complete)), "lookback_days": rec.lookback_days},
+                         "persisted": "recorded at scan time"}
         db = str(prep.decision_bar)
         if len(prep.complete) < rec.min_bars:
             return self._result(rec, sym, pos, R.NOT_EVALUABLE, "INSUFFICIENT_HISTORY",
                                 f"Only {len(prep.complete)} complete bars; the scanner requires {rec.min_bars} for these parameters.",
                                 data=data, decision_bar=db)
         ev = evaluate_at_bar(instance, prep.complete, prep.decision_bar, sym)
+        data["trace"]["strategy"] = {"outcome": ev.outcome, "signals_returned_over_window": ev.raw_count, "last_signal_in_window": ev.last_signal,
+                                     "signals_at_decision_bar": ev.count, "indicators_last_two_bars": ev.indicators}
         if ev.outcome == "STRATEGY_ERROR":
             return self._result(rec, sym, pos, R.ERROR, "STRATEGY_ERROR", "The strategy raised an error on this data.",
                                 data=data, decision_bar=db, error=ev.detail)
@@ -267,6 +278,7 @@ class ScanEngine:
                                 risk_detail="Risk was not assessed in this scan; the paper workflow's preflight decides.")
         price = float(prep.complete.loc[prep.decision_bar, "close"])
         re = assess_risk(risk.risk, risk.stop_policy, ev.signal, prep.complete, prep.decision_bar, copy.deepcopy(risk.portfolio), price)
+        data["trace"]["risk"] = {"kind": re.kind, "code": re.code, "reason": re.reason}
         detail_extra = "Assessed alone against the account's saved portfolio, not as a basket."
         if re.kind == "APPROVED":
             return self._result(rec, sym, pos, R.SIGNAL_FOUND, "SIGNAL_FOUND", "Signal found and the read-only risk check approved it.",
@@ -281,6 +293,26 @@ class ScanEngine:
         return self._result(rec, sym, pos, R.RISK_BLOCKED, re.code or re.kind, f"Signal found but blocked by risk: {re.reason}",
                             data=data, decision_bar=db, decision=record, risk_state=RiskState.REJECTED,
                             risk_detail=f"{re.reason} {detail_extra}")
+
+
+def _bars_evidence(complete) -> dict[str, Any]:
+    """Last three COMPLETED bars (OHLCV) and the previous bar's timestamp. Observational audit data."""
+    out = []
+    for ts in list(complete.index[-3:]):
+        row = complete.loc[ts]
+        out.append({"timestamp": pd.Timestamp(ts).isoformat(),
+                    **{c: float(row[c]) for c in ("open", "high", "low", "close", "volume") if c in complete.columns}})
+    return {"last_bars": out, "previous_bar": out[-2]["timestamp"] if len(out) >= 2 else None}
+
+
+def _validation_evidence(ds) -> dict[str, Any]:
+    rep = getattr(ds, "validation_report", None)
+    if rep is None:
+        return {"outcome": "unknown"}
+    gaps = getattr(rep, "gaps", None)
+    return {"outcome": "passed structural and financial-sanity validation (a failure raises and is never evaluated)",
+            "clean": bool(rep.is_clean), "has_gaps": bool(getattr(gaps, "has_gaps", False)),
+            "suspicious": list(getattr(rep, "suspicious", ()) or ())[:10]}
 
 
 def _interval(name: str):

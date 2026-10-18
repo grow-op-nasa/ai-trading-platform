@@ -214,6 +214,24 @@ preflight and one cycle in a single click. If the strategy finds a risk-approved
 *Approvals* tab (it expires after 30 minutes; rejecting or ignoring it places nothing). CLI equivalents: `paper proposals`, `paper approve --proposal ID`, `paper reject --proposal ID`.
 **Activity** shows a read-only timeline of cycles, proposals, orders, fills, reconciliations, monitoring and alerts. Paper only; fills are simulated.
 
+### Continuous integration and reproducible scans (Sprint 22)
+
+Every pull request to `main` and every push to `main` runs `.github/workflows/ci.yml` (Python 3.12): `pytest -q`, `python -m compileall -q src scripts tests`, `ruff check src scripts tests` and the two self-contained validations. To run the same gate locally:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q && python -m compileall -q src scripts tests && ruff check src scripts tests
+python scripts/paper_runtime_validation.py --skip-external && python scripts/alert_delivery_validation.py
+```
+
+Strategies now **declare** how much history they need (`history_requirement()`); a strategy that does not cannot be scanned, run in the paper runtime or promoted. Each scan stores the exact market data it used in `data/snapshots/` and can be re-evaluated offline (no provider call, nothing written):
+
+```bash
+python scripts/replay_scan.py --scan-id <SCAN_ID>          # or open a symbol's "Reproducibility" panel in the Opportunity Scanner
+```
+
+The replay reports data, strategy and risk-classification separately and says `NOT_REPLAYABLE` for scans made before snapshots existed. Details and limits: `DECISIONS.md` ADR-0059.
+
 ### Opportunity Scanner (Sprint 21)
 
 Open **Opportunity Scanner**: create a watchlist (or press *Create the US Liquid Starter watchlist* once: QQQ, SPY, IWM, DIA, AAPL, MSFT, NVDA, AMD; up to 50 symbols per list), choose a registered strategy and press

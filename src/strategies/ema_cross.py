@@ -23,6 +23,7 @@ import pandas as pd
 
 from src.signals.models import Signal, SignalDirection
 from src.strategies.registry import register_strategy
+from src.strategies.history import HistoryRequirement, combine, ema_component
 from src.strategies.sdk import BaseStrategy
 
 DEFAULT_FAST_PERIOD = 12
@@ -80,6 +81,10 @@ class EMACrossStrategy(BaseStrategy):
         besides `symbol` to reconstruct an equivalent instance. Read by
         `ExperimentSpec.capture()` (`DECISIONS.md`, ADR-0035)."""
         return {"fast": self._fast, "slow": self._slow, "confidence": self._confidence}
+
+    def history_requirement(self) -> HistoryRequirement:
+        """Both EMAs must have converged; the slow one dominates (`src.strategies.history`, ADR-0059)."""
+        return combine(ema_component(self._fast), ema_component(self._slow))
 
     def prepare(self, data: pd.DataFrame) -> pd.DataFrame:
         self.require_columns(data)

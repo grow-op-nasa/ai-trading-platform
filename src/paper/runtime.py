@@ -31,6 +31,7 @@ from src.execution.models import Order, OrderSide
 from src.execution.portfolio_sync import apply_fill_to_portfolio
 from src.paper import bars
 from src.paper.config import PaperRunConfig
+from src.strategies.history import assess_history, requirement_of
 from src.paper.evaluation import StrategyResolutionError, assess_risk, prepare_bars, resolve_strategy, safe_error_text, evaluate_at_bar, jsonable as _jsonable, signal_to_record
 from src.paper.faults import BrokerUncertain, NoFaults
 from src.paper.gateway import (
@@ -57,7 +58,6 @@ from src.paper.reconcile import portfolio_state, reconcile, states_match
 from src.paper.store import DEFAULT_DB_PATH, PaperStore, PaperStoreError
 from src.risk.portfolio_risk import PortfolioRiskEngine
 from src.signals.models import Signal, SignalDirection
-from src.strategies.identity import strategy_version
 from src.utils.hashing import dataframe_fingerprint
 
 _NO_RETRY = (CycleStatus.NO_ACTION, CycleStatus.RISK_REJECTED, CycleStatus.ORDER_REJECTED,
@@ -105,8 +105,10 @@ class PaperTradingRuntime:
         allowed_strategy_prefixes: tuple[str, ...] = ("src.strategies",),
         approval_required: bool = True,
         proposal_ttl_seconds: int = 1800,
+        snapshots: Any = None,
     ) -> None:
         config.validate()
+        self._snapshots = snapshots          # optional src.snapshots.SnapshotStore: when set, each cycle's dataset is preserved
         self._config = config
         self._registry_path = Path(registry_path)
         self._store_path = Path(store_path)
@@ -231,8 +233,18 @@ class PaperTradingRuntime:
                                                                 else "no saved paper portfolio"))
         # strategy
         try:
-            _, shash = self.resolve_strategy()
+            inst, shash = self.resolve_strategy()
             add("strategy", CheckStatus.PASS, f"{self._config.strategy_name} resolved via production registry; hash {shash[:16]}")
+            lookup = requirement_of(inst)
+            if not lookup.usable:
+                add("strategy_history_requirement", CheckStatus.FAIL, lookup.detail)
+            else:
+                need, cap = lookup.requirement.min_bars, (self._config.lookback_days * 5) // 7 + 1
+                if need > cap:
+                    add("strategy_history_requirement", CheckStatus.FAIL,
+                        f"needs {need} complete bars but lookback_days={self._config.lookback_days} holds at most {cap} sessions")
+                else:
+                    add("strategy_history_requirement", CheckStatus.PASS, lookup.requirement.explain())
         except PaperSetupError as exc:
             add("strategy", CheckStatus.FAIL, str(exc))
         add("instrument_and_timeframe", CheckStatus.PASS, f"{self._config.symbol} {self._config.interval} (daily bars)")
@@ -434,6 +446,16 @@ class PaperTradingRuntime:
                 return rec                                               # not persisted: nothing happened
             complete, dropped, decision_bar = prep.complete, prep.dropped, prep.decision_bar
             rec.decision_bar = decision_bar.isoformat()
+            history = assess_history(requirement_of(instance), int(len(complete)))
+            snapshot_ref = None
+            if self._snapshots is not None:
+                try:
+                    from src.snapshots.meta import snapshot_meta
+                    snap = self._snapshots.put(ds.candles, snapshot_meta(ds, cfg.symbol, cfg.interval))
+                except Exception as exc:  # noqa: BLE001 - an unpreserved decision input blocks the cycle before any intent
+                    return self._finish(store, rec, CycleStatus.BLOCKED, "SNAPSHOT_FAILED",
+                                        f"the market-data snapshot could not be stored and verified: {safe_error(exc)}")
+                snapshot_ref = {"status": "CAPTURED", "snapshot_id": snap.snapshot_id}
             rec.dataset = {
                 "provider": ds.provider, "dataset_hash": ds.content_hash,
                 "complete_bars_hash": dataframe_fingerprint(complete), "bars_used": int(len(complete)),
@@ -441,7 +463,12 @@ class PaperTradingRuntime:
                 "dropped_incomplete_bars": [pd.Timestamp(t).isoformat() for t in dropped],
                 "validation_clean": ds.validation_report.is_clean, "gap_count": ds.validation_report.gaps.count,
                 "session_policy": ds.session_policy.value, "session_timezone": ds.session_timezone,
-                "cache_used": False}
+                "cache_used": False, "history": history.to_dict(),
+                "snapshot": snapshot_ref or {"status": "NOT_CAPTURED"}}
+            if not history.satisfied:
+                code = "INSUFFICIENT_HISTORY" if history.status == "DECLARED" else "HISTORY_REQUIREMENT_UNKNOWN"
+                return self._finish(store, rec, CycleStatus.BLOCKED, code,
+                                    f"{history.available} complete bars available; {history.explanation}")
 
             # ---- identity / duplicate protection
             key = _sha(cfg.strategy_name, shash, rec.config_hash, str(cfg.experiment_id), cfg.symbol, cfg.interval,

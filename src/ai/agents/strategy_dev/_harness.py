@@ -88,6 +88,18 @@ def _json_safe(value) -> bool:
         return False
 
 
+def _declared_history(strategy) -> dict:
+    """What the candidate DECLARES (ADR-0059). Reported verbatim for the parent to validate; never defaulted."""
+    method = getattr(strategy, "history_requirement", None)
+    if not callable(method):
+        return {"declared": False, "error": "the candidate declares no history_requirement()"}
+    try:
+        value = method()
+        return {"declared": True, "requirement": value.to_dict()}
+    except Exception as exc:  # noqa: BLE001 -- untrusted code, report don't propagate
+        return {"declared": False, "error": f"history_requirement() failed: {type(exc).__name__}: {exc}"}
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 5:
         print(json.dumps({"signals": [], "error": "usage: harness.py <source> <candles> <symbol> <params>"}))
@@ -101,7 +113,8 @@ def main(argv: list[str]) -> int:
         candles = _load_candles(candles_path)
         prepared = strategy.prepare(candles)
         signals = strategy.generate_signals(prepared)
-        payload = {"signals": [_signal_to_dict(s) for s in signals], "error": None}
+        payload = {"signals": [_signal_to_dict(s) for s in signals], "error": None,
+                   "history": _declared_history(strategy)}
     except Exception as exc:  # noqa: BLE001 -- untrusted code, report don't propagate
         payload = {"signals": [], "error": f"{type(exc).__name__}: {exc}"}
 

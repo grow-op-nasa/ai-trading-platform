@@ -35,6 +35,16 @@ import pandas as pd
 from src.ai.features import FeatureBuilder, FeatureSpec
 from src.ai.registry import ModelRegistry
 from src.signals.models import Signal, SignalDirection
+from src.strategies.history import (
+    HistoryRequirement,
+    atr_component,
+    combine,
+    ema_component,
+    macd_component,
+    pct_change_component,
+    rolling_component,
+    rsi_component,
+)
 from src.strategies.registry import register_strategy
 from src.strategies.sdk import BaseStrategy
 
@@ -104,6 +114,20 @@ class AISignalStrategy(BaseStrategy):
         keyed by `model_id`, and are the model's provenance, not this
         strategy instance's own constructor arguments."""
         return {"model_id": self._model_id, "min_probability": self._min_probability}
+
+    def history_requirement(self) -> HistoryRequirement:
+        """The largest warm-up among the feature columns this model was trained on (`src.strategies.history`,
+        ADR-0059), derived from the model's own stored `FeatureSpec` -- so it follows the model, not a constant."""
+        spec = self._feature_builder.spec
+        return combine(
+            *(pct_change_component(n) for n in spec.return_periods),
+            ema_component(spec.ema_fast),
+            ema_component(spec.ema_slow),
+            rsi_component(spec.rsi_period),
+            atr_component(spec.atr_period),
+            macd_component(spec.macd_fast, spec.macd_slow, spec.macd_signal),
+            rolling_component("volume_avg", spec.volume_window),
+        )
 
     def prepare(self, data: pd.DataFrame) -> pd.DataFrame:
         """Enrich `data` with this model's exact feature columns.

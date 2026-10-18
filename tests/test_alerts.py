@@ -19,7 +19,6 @@ import sqlite3
 import ssl
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -48,7 +47,7 @@ from src.monitoring.alerts.models import (
     TransportResult,
 )
 from src.monitoring.alerts.sink import SmtpSink
-from src.monitoring.alerts.transports import ConsoleTransport, SmtpTransport, build_transport
+from src.monitoring.alerts.transports import SmtpTransport, build_transport
 from src.monitoring.models import CheckResult, CheckStatus, FindingCandidate
 
 REPO = Path(__file__).resolve().parent.parent

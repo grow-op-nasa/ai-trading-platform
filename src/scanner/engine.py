@@ -12,7 +12,6 @@ import copy
 import hashlib
 import json
 import os
-import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,10 +27,13 @@ from src.paper.evaluation import (StrategyResolutionError, assess_risk, evaluate
 from src.scanner.models import (DEFAULT_CONCURRENCY, MAX_CONCURRENCY, ResultStatus, RiskState, ScanRecord, ScanResult,
                                 ScanStatus, Watchlist)
 from src.scanner.store import ScannerStore
+from src.snapshots import FORMAT_VERSION, SnapshotError, SnapshotStore
+from src.scanner.replay_context import describe_risk_context
+from src.snapshots.meta import environment_fingerprint, snapshot_meta
+from src.strategies.history import assess_history, requirement_of
 from src.utils.hashing import dataframe_fingerprint
 
 STALE_HEARTBEAT_SECONDS = 180
-MIN_BARS_FLOOR = 60
 
 
 class ScanSetupError(RuntimeError):
@@ -49,21 +51,6 @@ class RiskContext:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-_PERIOD_NAME = re.compile(r"(^|_)(fast|slow|period|window|lookback|length|span|signal|bars|days)($|_)")
-MIN_BARS_CAP = 200      # a 400-calendar-day lookback yields ~275 sessions; a larger requirement could never be met
-
-
-def scanner_min_bars(params: dict[str, Any]) -> int:
-    """Scanner POLICY (strategies declare no lookback, so this is a heuristic): at least 60 complete bars, or 3x the largest
-    positive integer parameter whose NAME looks like a period/window (fast, slow, period, window, lookback, length, span,
-    signal, bars, days, e.g. `atr_period`), capped at 200 so it stays satisfiable within the default lookback. Integer
-    thresholds such as `overbought=70` are not periods and are ignored. A strategy needing more history than this must
-    declare it itself (not supported yet)."""
-    periods = [v for k, v in params.items()
-               if isinstance(v, int) and not isinstance(v, bool) and v > 0 and _PERIOD_NAME.search(str(k).lower())]
-    return min(MIN_BARS_CAP, max(MIN_BARS_FLOOR, 3 * max(periods, default=0)))
 
 
 def _pid_alive(pid: int) -> bool:
@@ -84,7 +71,9 @@ _ACTIVE_LOCK = threading.Lock()
 
 class ScanEngine:
     def __init__(self, store: ScannerStore, market_data: Any, *, calendar: Any = None, clock: Callable[[], datetime] = _utc_now,
-                 concurrency: int = DEFAULT_CONCURRENCY, allowed_strategy_prefixes: tuple[str, ...] = ("src.strategies",)) -> None:
+                 concurrency: int = DEFAULT_CONCURRENCY, allowed_strategy_prefixes: tuple[str, ...] = ("src.strategies",),
+                 snapshots: SnapshotStore | None = None) -> None:
+        self._snapshots = snapshots
         if calendar is None:
             from src.calendar.nyse import NYSECalendar
             calendar = NYSECalendar()
@@ -131,13 +120,22 @@ class ScanEngine:
         if not watchlist.symbols:
             raise ScanSetupError("the watchlist has no symbols")
         try:
-            _, shash = resolve_strategy(strategy_name, watchlist.symbols[0], params, self._prefixes)
+            probe, shash = resolve_strategy(strategy_name, watchlist.symbols[0], params, self._prefixes)
         except StrategyResolutionError as exc:
             raise ScanSetupError(str(exc)) from exc
-        min_bars = scanner_min_bars(params)
+        lookup = requirement_of(probe)
+        if not lookup.usable:
+            raise ScanSetupError(f"strategy {strategy_name!r} cannot be scanned: {lookup.detail}")
+        requirement = lookup.requirement
+        min_bars = requirement.min_bars
+        # Weekdays are an upper bound on daily sessions in the lookback; a larger requirement can never be met.
+        max_possible = (lookback_days * 5) // 7 + 1
+        if min_bars > max_possible:
+            raise ScanSetupError(f"{strategy_name!r} with these parameters needs {min_bars} complete bars, but a {lookback_days}-day "
+                                 f"lookback holds at most {max_possible} daily sessions. Increase the lookback or change the parameters.")
         risk_mode = "ASSESSED" if (risk_enabled and account is not None) else "NOT_ASSESSED"
         ident = {"symbols": list(watchlist.symbols), "strategy": strategy_name, "strategy_hash": shash, "params": params,
-                 "interval": interval, "lookback_days": lookback_days, "min_bars": min_bars, "account": account if risk_mode == "ASSESSED" else None,
+                 "interval": interval, "lookback_days": lookback_days, "min_bars": min_bars, "history": requirement.to_dict(), "account": account if risk_mode == "ASSESSED" else None,
                  "risk_mode": risk_mode}
         chash = hashlib.sha256(json.dumps(ident, sort_keys=True, default=str).encode()).hexdigest()[:16]
         self.recover_interrupted()
@@ -150,7 +148,8 @@ class ScanEngine:
                          strategy_hash=shash, strategy_params=params, config_hash=chash, interval=interval,
                          lookback_days=lookback_days, account=ident["account"], risk_mode=risk_mode, started_at=now,
                          counts={}, request_token=request_token, owner_pid=os.getpid(), heartbeat_at=now,
-                         min_bars=min_bars, concurrency=self._conc)
+                         min_bars=min_bars, concurrency=self._conc, history_requirement=requirement.to_dict(),
+                         history_status="DECLARED")
         rec, created = self._store.create_scan(rec)
         if created:
             with _ACTIVE_LOCK:
@@ -236,7 +235,21 @@ class ScanEngine:
             return self._result(rec, sym, pos, R.DATA_UNAVAILABLE, "DATA_UNAVAILABLE",
                                 "The data provider returned no usable data for this symbol.", error=safe_error_text(exc))
         data = {"provider": getattr(ds, "provider", None), "content_hash": getattr(ds, "content_hash", None),
-                "bars": int(len(ds.candles)), "dataset_end": str(getattr(ds, "dataset_end", ""))}
+                "bars": int(len(ds.candles)), "dataset_end": str(getattr(ds, "dataset_end", "")),
+                "as_of": now.isoformat(), "environment": environment_fingerprint()}
+        # The exact normalised dataset this decision is made on is stored BEFORE it is used, and read back and verified.
+        # If that cannot be done the symbol is an honest ERROR: a decision whose inputs were not preserved is not reported.
+        if self._snapshots is not None:
+            try:
+                snap = self._snapshots.put(ds.candles, snapshot_meta(ds, sym, rec.interval))
+            except (SnapshotError, OSError, ValueError, TypeError) as exc:
+                return self._result(rec, sym, pos, R.ERROR, "SNAPSHOT_FAILED",
+                                    "The market-data snapshot could not be stored and verified, so this symbol was not evaluated.",
+                                    data=data, error=safe_error_text(exc))
+            data["snapshot"] = {"status": "CAPTURED", "snapshot_id": snap.snapshot_id, "format_version": FORMAT_VERSION,
+                                "newly_stored": bool(snap.created)}
+        else:
+            data["snapshot"] = {"status": "NOT_CAPTURED", "detail": "no snapshot store was configured for this scan"}
         prep = prepare_bars(ds.candles, self._cal, now)
         data.update({"expected_session": str(prep.expected_session) if prep.expected_session is not None else None,
                      "dropped_incomplete": len(prep.dropped or [])})
@@ -252,14 +265,21 @@ class ScanEngine:
         # `content_hash` fingerprints EVERYTHING the provider returned (including any still-forming bar); `evaluated_hash`
         # fingerprints only the COMPLETE bars the strategy actually saw, so a forming bar cannot masquerade as a data change.
         data["evaluated_hash"] = dataframe_fingerprint(prep.complete)
+        data["evaluated_window"] = {"first_bar": pd.Timestamp(prep.complete.index[0]).isoformat(),
+                                    "last_bar": pd.Timestamp(prep.complete.index[-1]).isoformat(), "count": int(len(prep.complete))}
+        assessment = assess_history(requirement_of(instance), int(len(prep.complete)))
         data["trace"] = {"bars": _bars_evidence(prep.complete), "validation": _validation_evidence(ds),
-                         "history": {"required": rec.min_bars, "available": int(len(prep.complete)), "lookback_days": rec.lookback_days},
+                         "history": {**assessment.to_dict(), "lookback_days": rec.lookback_days},
                          "persisted": "recorded at scan time"}
         db = str(prep.decision_bar)
-        if len(prep.complete) < rec.min_bars:
+        if not assessment.satisfied:
+            if assessment.status != "DECLARED":
+                return self._result(rec, sym, pos, R.NOT_EVALUABLE, "HISTORY_REQUIREMENT_UNKNOWN",
+                                    f"The strategy's history requirement is {assessment.status.lower()}: {assessment.explanation}",
+                                    data=data, decision_bar=db)
             return self._result(rec, sym, pos, R.NOT_EVALUABLE, "INSUFFICIENT_HISTORY",
-                                f"Only {len(prep.complete)} complete bars; the scanner requires {rec.min_bars} for these parameters.",
-                                data=data, decision_bar=db)
+                                f"Only {assessment.available} complete bars; this strategy and its parameters require "
+                                f"{assessment.required} ({assessment.explanation})", data=data, decision_bar=db)
         ev = evaluate_at_bar(instance, prep.complete, prep.decision_bar, sym)
         data["trace"]["strategy"] = {"outcome": ev.outcome, "signals_returned_over_window": ev.raw_count, "last_signal_in_window": ev.last_signal,
                                      "signals_at_decision_bar": ev.count, "indicators_last_two_bars": ev.indicators}
@@ -277,6 +297,7 @@ class ScanEngine:
                                 data=data, decision_bar=db, decision=record, risk_state=RiskState.NOT_ASSESSED,
                                 risk_detail="Risk was not assessed in this scan; the paper workflow's preflight decides.")
         price = float(prep.complete.loc[prep.decision_bar, "close"])
+        data["trace"]["risk_context"] = describe_risk_context(risk, price)      # private inputs, so risk classification can be replayed
         re = assess_risk(risk.risk, risk.stop_policy, ev.signal, prep.complete, prep.decision_bar, copy.deepcopy(risk.portfolio), price)
         data["trace"]["risk"] = {"kind": re.kind, "code": re.code, "reason": re.reason}
         detail_extra = "Assessed alone against the account's saved portfolio, not as a basket."

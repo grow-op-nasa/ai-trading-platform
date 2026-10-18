@@ -10,7 +10,6 @@ isn't independently known.
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from src.indicators.engine import IndicatorEngine
 from src.regime.engine import REGIME_NAMES, MarketRegimeEngine

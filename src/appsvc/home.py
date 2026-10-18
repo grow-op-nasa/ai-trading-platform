@@ -17,7 +17,7 @@ from src.appsvc import portfolio as pf
 from src.appsvc import prefs, research, strategies
 from src.appsvc.paper import PaperService
 from src.appsvc.paths import AppPaths
-from src.appsvc.system import DISABLED, FAIL, OK, UNKNOWN, WARN, collect_status
+from src.appsvc.system import FAIL, OK, UNKNOWN, WARN, collect_status
 
 HOME, PAPER, PORTFOLIO, MONITORING, SETUP = ("Home", "Paper Trading", "Portfolio & Execution", "Monitoring & Alerts",
                                               "Setup & System Status")

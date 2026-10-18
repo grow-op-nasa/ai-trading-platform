@@ -13,7 +13,8 @@ from typing import Any, Callable
 
 from src.appsvc.instruments import normalize_symbol
 from src.appsvc.paths import AppPaths
-from src.scanner.engine import RiskContext, ScanEngine, ScanSetupError, scanner_min_bars
+from src.snapshots import SnapshotStore
+from src.scanner.engine import RiskContext, ScanEngine, ScanSetupError
 from src.scanner.models import (DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WATCHLIST_SYMBOLS, STARTER_NAME, STARTER_SYMBOLS,
                                 ResultStatus, RiskState, ScanRecord, ScanResult, ScanStatus, Watchlist)
 from src.scanner.store import DuplicateWatchlistName, ScannerStore, ScannerStoreError
@@ -64,6 +65,25 @@ def trace_of(r: ScanResult) -> dict[str, Any] | None:
     return t if isinstance(t, dict) else None
 
 
+def reproducibility_of(scan: ScanRecord, r: ScanResult) -> dict[str, Any]:
+    """STORED facts about how reproducible a result is (no replay is run here): the history assessment and snapshot reference
+    recorded at scan time, with an explicit label for results that predate them. Never reconstructed after the fact."""
+    d = r.data or {}
+    snap = d.get("snapshot")
+    hist = ((d.get("trace") or {}).get("history")) or None
+    legacy = scan.history_status == "LEGACY_HEURISTIC"
+    return {
+        "history": hist if (hist and hist.get("status")) else None,
+        "history_note": ("Recorded before strategies declared history requirements (the retired scanner heuristic was used)."
+                         if legacy else None),
+        "snapshot": snap if snap else None,
+        "replayable": bool(snap and snap.get("status") == "CAPTURED"),
+        "label": ("Stored snapshot available: an offline replay can be requested." if snap and snap.get("status") == "CAPTURED"
+                  else "Not replayable: the input data of this result was not preserved (legacy scan, no data obtained, or no snapshot store)."),
+        "environment": d.get("environment"),
+    }
+
+
 def explain_result(r: ScanResult) -> list[str]:
     """Plain-English lines built only from stored facts: no scores, no invented confidence."""
     lines = [STATUS_MEANING[r.status]]
@@ -103,6 +123,7 @@ class ScannerService:
         self._paper = paper_service
         self._clock, self._calendar, self._conc, self._prefixes = clock, calendar, concurrency, allowed_strategy_prefixes
         self.store = ScannerStore(self.paths.scanner_db)
+        self.snapshots = SnapshotStore(self.paths.snapshots_dir)
         self._run_lock = threading.Lock()
 
     # ------------------------------------------------------------------ watchlists
@@ -181,7 +202,7 @@ class ScannerService:
             kw["clock"] = self._clock
         if self._calendar is not None:
             kw["calendar"] = self._calendar
-        return ScanEngine(self.store, self._md(), **kw)
+        return ScanEngine(self.store, self._md(), snapshots=self.snapshots, **kw)
 
     def paper_service(self):
         if self._paper is None:
@@ -227,6 +248,15 @@ class ScannerService:
             return rec, False
         return self.run_scan(rec, progress), True
 
+    # ------------------------------------------------------------------ replay (read-only, offline)
+    def replay(self, scan_id: str, progress: Callable[[int, int, str], None] | None = None):
+        """Re-evaluate a stored scan from its stored snapshots. No provider call, no write, no order/intent/proposal."""
+        from src.scanner.replay import ReplayService
+        kw: dict[str, Any] = {"allowed_strategy_prefixes": self._prefixes}
+        if self._calendar is not None:
+            kw["calendar"] = self._calendar
+        return ReplayService(self.store, self.snapshots, **kw).replay_scan(scan_id, progress=progress)
+
     # ------------------------------------------------------------------ history
     def history(self, limit: int = 50) -> list[ScanView]:
         eng = self._engine()
@@ -249,4 +279,14 @@ class ScannerService:
                 "note": "A scan result is a snapshot. The paper workflow re-checks everything and needs your approval."}
 
 
-min_bars_for = scanner_min_bars
+def history_requirement_for(strategy_name: str, params: dict | None = None, symbol: str = "SPY") -> dict[str, Any]:
+    """What the strategy DECLARES for these parameters (display only; the scan itself re-checks per symbol)."""
+    from src.paper.evaluation import StrategyResolutionError, resolve_strategy
+    from src.strategies.history import requirement_of
+    try:
+        instance, _ = resolve_strategy(strategy_name, symbol, dict(params or {}))
+    except StrategyResolutionError as exc:
+        return {"status": "UNRESOLVED", "detail": str(exc)}
+    lk = requirement_of(instance)
+    return {"status": lk.status, "detail": lk.detail, "requirement": lk.requirement.to_dict() if lk.usable else None,
+            "explanation": lk.requirement.explain() if lk.usable else lk.detail}

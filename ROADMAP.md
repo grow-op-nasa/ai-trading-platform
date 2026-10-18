@@ -1190,7 +1190,13 @@ environment-only failures, 17 skipped. **Confirmed via real `pytest` on
 the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 `origin/main` (`1b43a93..0c19c69`).
 
-## Sprint 21 -- Strategy Opportunity Scanner & Watchlists (implemented; real-machine verification pending, see PROJECT_STATE.md)
+## Sprint 22 -- Reliability, Reproducible Research & Continuous Integration (implemented; sandbox-verified, real-machine/CI verification pending, see PROJECT_STATE.md)
+
+- Done: CI quality gate (pytest, compileall, pinned Ruff, self-contained validations), strategy-declared typed history requirements replacing the scanner heuristic, content-addressed integrity-verified market-data snapshots, scanner and paper-cycle snapshot capture, offline replay (data / strategy / risk-classification) with CLI and audit-UI panel (ADR-0059).
+- Reconciliation note: the instrument selector (ADR-0057) and the scanner (ADR-0058) were both labelled "Sprint 21" in earlier entries; the scanner is the Sprint 21 deliverable and Sprint 22 is this one. Sprint numbering after 22 is unchanged from "Sprint 16+ -- future work".
+- Deliberately not built: paper-cycle replay command, snapshots for backtests/experiments, snapshot garbage collection or format migration, provider-side data validation beyond the existing checks, branch-protection configuration (a GitHub setting: require the CI check on `main`).
+
+## Sprint 21 -- Strategy Opportunity Scanner & Watchlists (implemented; verified on the dev machine, see PROJECT_STATE.md)
 
 - Done: persistent watchlists (starter list, 50-symbol limit), read-only scan of one registered strategy over daily bars with typed statuses, bounded concurrency, durable provenance-rich history, optional read-only risk assessment, "Review in paper workflow" handoff, shared `paper.evaluation` module (ADR-0058).
 - Deliberately not built: scheduled/automatic scans, alerts on signals, multi-strategy scans, ranking/scoring, basket-level risk, intraday bars, auto-handoff to approval.

@@ -2099,3 +2099,24 @@ without the platform committing to that wiring as a stable interface.
   `Interval`, and inside `main()` for `MarketDataService`). Nothing in
   `src/` depends on `scripts/` -- dependency direction is strictly
   one-way, the same as `tests/`.
+
+
+### Reproducible research: history requirements, snapshots, replay (Sprint 22, ADR-0059)
+
+```
+strategy.history_requirement()  --(src.strategies.history)-->  HistoryRequirement  (declared, typed, parameter-aware)
+        |                                                              |
+        v                                                              v
+scanner.engine / paper.runtime / ExperimentSpec / promotion      assess_history(requirement, complete_bars)
+        |
+        v   dataset (normalised, validated)           put (atomic, verified read-back)
+MarketDataService.get_dataset  ------------------->  src.snapshots.SnapshotStore  (data/snapshots/<aa>/<sha256>.json.gz)
+        |                                                              ^
+        v                                                              | load (integrity-verified)
+scan result: snapshot id, as_of, environment, history, risk_context    |
+        |                                                              |
+        +-----------------------> scanner.replay.ReplayService  <------+   (read-only; no provider; no writes)
+                                    DATA -> STRATEGY -> RISK-classification
+```
+
+Dependency rules (enforced by tests): `src.snapshots` and `src.scanner.replay*` import no provider/broker/execution/AI/UI code; `src.paper` imports only `src.snapshots` (never `src.scanner`); only `src.appsvc` imports `src.scanner`; the replay button is behind an explicit `if st.button` branch. CI is described in `.github/workflows/ci.yml` and pinned by `tests/test_ci_workflow.py`.

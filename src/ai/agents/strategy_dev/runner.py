@@ -80,6 +80,8 @@ class RunnerResult:
     signals: tuple[Signal, ...] = ()
     error: str | None = None
     timed_out: bool = False
+    #: The candidate's own history declaration as reported by the harness (ADR-0059); `None` if the run failed first.
+    history: dict | None = None
 
     @property
     def ok(self) -> bool:
@@ -140,7 +142,7 @@ def run_candidate(
             return RunnerResult(error=str(payload["error"]))
 
         signals = tuple(_signal_from_dict(raw) for raw in payload.get("signals", []))
-        return RunnerResult(signals=signals)
+        return RunnerResult(signals=signals, history=payload.get("history"))
 
 
 def _write_candles(candles: pd.DataFrame, path: Path) -> None:

@@ -63,6 +63,7 @@ import pandas as pd
 from src.data.base import Interval
 from src.risk.models import RiskLimits
 from src.strategies.base import Strategy
+from src.strategies.history import assess_strategy
 from src.strategies.identity import strategy_version
 from src.strategies.registry import get_strategy_class
 from src.utils.hashing import dataframe_fingerprint
@@ -195,6 +196,10 @@ class ExperimentSpec:
             if strategy_params is not None
             else dict(getattr(strategy, "params", {}))
         )
+        # Sprint 22 (ADR-0059): record what the strategy DECLARES against the window it actually ran on. Provenance
+        # only -- a backtest is never refused here; `satisfied=False` simply says the run saw too little history.
+        config = dict(backtest_config) if backtest_config else {}
+        config["history"] = assess_strategy(strategy, int(len(candles))).to_dict()
         return cls(
             strategy_name=strategy.name,
             strategy_version=strategy_version(type(strategy)),
@@ -209,7 +214,7 @@ class ExperimentSpec:
                 "allocation_per_trade_pct": risk_limits.allocation_per_trade_pct,
                 "max_portfolio_exposure_pct": risk_limits.max_portfolio_exposure_pct,
             },
-            backtest_config=dict(backtest_config) if backtest_config else {},
+            backtest_config=config,
         )
 
     def reconstruct_strategy(self) -> Strategy:

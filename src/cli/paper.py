@@ -29,6 +29,7 @@ from src.paper.config import PaperConfigError, PaperRunConfig
 from src.paper.models import CheckStatus, CycleStatus
 from src.paper.runtime import PaperLockedError, PaperProposalError, PaperSetupError, PaperTradingRuntime
 from src.paper.store import DEFAULT_DB_PATH as DEFAULT_PAPER_DB
+from src.snapshots import SnapshotStore
 from src.paper.store import PaperStore, PaperStoreError
 
 EXIT_OK, EXIT_ATTENTION, EXIT_CONFIG, EXIT_BLOCKED, EXIT_FAILED = 0, 1, 2, 3, 4
@@ -121,8 +122,11 @@ def run_paper(argv: Sequence[str] | None = None, *, market_data: Any = None, mon
         kwargs["clock"] = clock
     if allowed_strategy_prefixes is not None:      # test seam only; there is no CLI flag or environment variable for it
         kwargs["allowed_strategy_prefixes"] = allowed_strategy_prefixes
+    # Each cycle's dataset is preserved (ADR-0059): the shared data/snapshots for the default database, otherwise a
+    # `snapshots` directory beside the chosen database (so a disposable --paper-db keeps its evidence with it).
+    snap_dir = Path("data/snapshots") if not args.paper_db else paper_db.parent / "snapshots"
     runtime = PaperTradingRuntime(cfg, registry_path=registry, store_path=paper_db, market_data=market_data,
-                                  monitor_factory=mon, **kwargs)
+                                  monitor_factory=mon, snapshots=SnapshotStore(snap_dir), **kwargs)
 
     try:
         if args.command == "init":

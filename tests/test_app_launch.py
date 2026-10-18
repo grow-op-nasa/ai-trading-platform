@@ -207,7 +207,7 @@ def test_all_state_changing_ui_calls_sit_behind_a_button_or_form_submission():
     """Every service mutation in the pages is lexically inside an `if <button/form flag>:` branch."""
     mutating = ("run_cycle(", "initialize_account(", "save_profile(", "dispatch_pending(", "retry_failed(", "value_now(", ".preflight(",
                "run_with_preflight(", "approve_proposal(", "reject_proposal(", "create_paper_account(", "monitor_cycle(",
-               ".scan(", "start_scan(", "run_scan(", "create_watchlist(", "update_watchlist(", "delete_watchlist(", "ensure_starter(")
+               ".scan(", "start_scan(", "run_scan(", ".replay(", "create_watchlist(", "update_watchlist(", "delete_watchlist(", "ensure_starter(")
     for f in [*(SRC / "dashboard").glob("page_*.py"), SRC / "dashboard" / "proposals_ui.py"]:
         lines = f.read_text().splitlines()
         for i, line in enumerate(lines):

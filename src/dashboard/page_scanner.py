@@ -16,7 +16,7 @@ import streamlit as st
 from src.appsvc import instruments, strategies
 from src.appsvc.paper import PaperService
 from src.appsvc.paths import AppPaths
-from src.appsvc.scanner import (MAX_WATCHLIST_SYMBOLS, ResultStatus, ScanSetupError, ScanStatus, WatchlistError, explain_result, trace_of)
+from src.appsvc.scanner import (MAX_WATCHLIST_SYMBOLS, ResultStatus, ScanSetupError, ScanStatus, WatchlistError, explain_result, reproducibility_of, trace_of)
 from src.dashboard import shell, ui
 
 _STATUS_LABEL = {
@@ -209,6 +209,37 @@ def _results(sc) -> None:
                            "data": {k: v for k, v in (r.data or {}).items() if k != "trace"}, **t,
                            "scanner": {"status": r.status.value, "reason_code": r.reason_code, "persisted_decision": r.decision,
                                        "risk_state": r.risk_state.value}})
+    with st.expander("Reproducibility (history requirement, stored data, offline replay)"):
+        rep = reproducibility_of(s, r)
+        h = rep["history"]
+        if h:
+            ok = "satisfied" if h.get("satisfied") else "NOT satisfied"
+            st.write(f"History requirement ({h.get('status')}): {h.get('required')} complete bars needed, "
+                     f"{h.get('available')} available -- {ok}.")
+            st.caption(h.get("explanation") or "")
+        elif rep["history_note"]:
+            st.caption(rep["history_note"])
+        else:
+            st.caption("No history assessment was recorded for this symbol (evaluation stopped before it).")
+        st.write(rep["label"])
+        if rep["snapshot"]:
+            ui.json_block(rep["snapshot"])
+        st.caption("Replay re-runs the stored data through the strategy offline: no provider is contacted and nothing is written or ordered. "
+                   "It never runs by itself; the result below is separate from the stored one above.")
+        if st.button("Replay this scan offline", key=f"scanner_replay_{s.scan_id}"):
+            rp = sc.replay(s.scan_id)
+            mine = next((x for x in rp.results if x.symbol == r.symbol), None)
+            if mine is None:
+                st.warning("This symbol is not in the scan.")
+            else:
+                kind = {"REPRODUCED": "OK", "DIFFERENT": "FAIL"}.get(mine.overall, "WARN")
+                ui.box(kind, f"**{mine.overall.replace('_', ' ').title()}** -- {mine.reason}")
+                ui.table([{"Layer": name, "Status": layer.status, "Detail": layer.detail,
+                           "Stored": json.dumps(layer.stored, default=str)[:160], "Replayed": json.dumps(layer.replayed, default=str)[:160]}
+                          for name, layer in (("Data", mine.data), ("Strategy", mine.strategy), ("Risk classification", mine.risk))],
+                         empty="")
+                for n in mine.notes:
+                    st.caption(n)
     with st.expander("Raw stored record"):
         ui.json_block({"status": r.status.value, "reason_code": r.reason_code, "decision": r.decision, "data": r.data,
                        "risk_state": r.risk_state.value, "evaluated_at": r.evaluated_at})

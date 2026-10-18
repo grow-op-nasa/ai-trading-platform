@@ -13,18 +13,17 @@ from uuid import uuid4
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from src.appsvc.paths import AppPaths
 from src.calendar.nyse import NYSECalendar
-from src.data.base import REQUIRED_COLUMNS, DataProvider
+from src.data.base import DataProvider
 from src.data.canonical import canonicalize_candles
 from src.data.fault_injection import SyntheticCandleProvider
 from src.data.service import MarketDataService
 from src.paper.evaluation import prepare_bars
 from src.scanner.models import ResultStatus, RiskState
 from src.utils.hashing import dataframe_fingerprint
-from tests.test_scanner_audit import _days, _first_day_with, _service, scan_of
+from tests.test_scanner_audit import _first_day_with, _service, scan_of
 from tests.test_scanner import _risk_world
 
 

@@ -34,7 +34,6 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 from scripts.run_experiment import run_experiment  # noqa: E402
 from src.data.exceptions import NoDataError  # noqa: E402
 from src.data.service import MarketDataService  # noqa: E402
-from src.appsvc.paper import PaperService  # noqa: E402
 from src.appsvc.paths import AppPaths  # noqa: E402
 from src.dashboard.shell import PAGES  # noqa: E402
 from tests.test_paper_runtime import _reset_script  # noqa: E402,F401  (autouse: clears scripted-strategy state)

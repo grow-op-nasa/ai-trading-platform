@@ -22,7 +22,8 @@ from src.data.base import DataProvider, Interval
 from src.data.exceptions import DataProviderError, NoDataError
 from src.data.fault_injection import SyntheticCandleProvider
 from src.data.service import MarketDataService
-from src.scanner.engine import ScanEngine, scanner_min_bars
+from src.scanner.engine import ScanEngine
+from src.strategies.history import HistoryRequirement, component
 from src.scanner.models import ResultStatus, RiskState, ScanStatus
 from src.signals.models import Signal, SignalDirection
 from src.strategies.registry import register_strategy
@@ -41,6 +42,12 @@ class ScriptedScan:
 
     def __init__(self, symbol: str, **params) -> None:
         self.symbol = symbol
+        self._params = params
+
+    def history_requirement(self) -> HistoryRequirement:
+        """Fixture strategy: declares exactly `history_bars` (default 60) -- the strategy states it, nothing infers it."""
+        return HistoryRequirement(int(self._params.get("history_bars", 60)),
+                                  (component("scripted", int(self._params.get("history_bars", 60)), "fixture declaration"),))
 
     @property
     def name(self) -> str:
@@ -257,14 +264,37 @@ def test_the_scanner_uses_daily_bars_only(tmp_path):
         eng.start(wl, "ema_cross", {}, interval="1h")
 
 
-def test_min_bars_policy_is_documented_and_scales_with_period_like_parameters_only():
-    assert scanner_min_bars({}) == 60 and scanner_min_bars({"slow": 50}) == 150 and scanner_min_bars({"x": 1.5, "b": True}) == 60
-    assert scanner_min_bars({"atr_period": 40, "fast": 8}) == 120
-    # integer THRESHOLDS are not lookbacks (registered rsi_mean_reversion has oversold/overbought) and must not inflate the rule
-    assert scanner_min_bars({"period": 14, "oversold": 30, "overbought": 100}) == 60
-    assert scanner_min_bars({"confidence": 1, "seed": 999}) == 60
-    assert scanner_min_bars({"slow": 500}) == 200                          # capped so it stays satisfiable
-    assert scanner_min_bars({"slow": 0, "fast": -5}) == 60
+def test_the_scanner_derives_its_requirement_from_the_strategy_declaration_only(tmp_path):
+    svc, _ = make(tmp_path)
+    wl = svc.create_watchlist("t", "QQQ")
+    r1, _ = svc.start_scan(wl.watchlist_id, "ema_cross", {"fast": 8, "slow": 21})
+    r2, _ = svc.start_scan(wl.watchlist_id, "ema_cross", {"fast": 12, "slow": 100})
+    assert r1.history_status == "DECLARED" and r2.min_bars > r1.min_bars
+    assert r1.history_requirement["min_bars"] == r1.min_bars
+    # a different NAME does not change anything: parameter names are never interpreted
+    r3, _ = svc.start_scan(wl.watchlist_id, STRAT, {"slow": 5000, "lookback": 9999})
+    assert r3.min_bars == 60
+
+
+def test_an_undeclared_strategy_is_not_scannable(tmp_path):
+    from src.strategies.registry import _unregister_strategy
+    class Undeclared(ScriptedScan):
+        history_requirement = None
+    register_strategy("scanner_undeclared_test")(Undeclared)
+    try:
+        svc, _ = make(tmp_path)
+        wl = svc.create_watchlist("t", "QQQ")
+        with pytest.raises(ScanSetupError, match="cannot be scanned"):
+            svc.start_scan(wl.watchlist_id, "scanner_undeclared_test", {})
+    finally:
+        _unregister_strategy("scanner_undeclared_test")
+
+
+def test_a_requirement_the_lookback_can_never_satisfy_is_rejected_at_setup(tmp_path):
+    svc, _ = make(tmp_path)
+    wl = svc.create_watchlist("t", "QQQ")
+    with pytest.raises(ScanSetupError, match="lookback"):
+        svc.start_scan(wl.watchlist_id, STRAT, {"history_bars": 400})
 
 
 def test_an_unrelated_integer_parameter_does_not_make_a_symbol_with_enough_history_not_evaluable(tmp_path):
@@ -280,7 +310,7 @@ def test_a_period_larger_than_the_history_is_reported_not_evaluable_never_no_sig
     prov.short.add("SHORT")
     svc, _ = make(tmp_path, prov)
     wl = svc.create_watchlist("t", "SHORT QQQ")
-    rec, _ = svc.scan(wl.watchlist_id, STRAT, {"slow": 40})
+    rec, _ = svc.scan(wl.watchlist_id, STRAT, {"history_bars": 120})
     r = by_symbol(svc.view(rec.scan_id))
     assert rec.min_bars == 120 and r["SHORT"].status is ResultStatus.NOT_EVALUABLE and r["SHORT"].reason_code == "INSUFFICIENT_HISTORY"
     assert r["QQQ"].status is ResultStatus.NO_SIGNAL

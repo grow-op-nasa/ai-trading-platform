@@ -11,3 +11,10 @@ pythonpath = ["."]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Ruff's default rule set (pyflakes F + the E4/E7/E9 pycodestyle subset: real bugs, unused/undefined
+# names, syntax errors). Deliberately not widened to style/import-order rules that cannot be
+# validated against the whole tree without running Ruff. No rule category is suppressed and no file
+# is excluded; add narrowly scoped, commented `per-file-ignores` only for justified cases.
+select = ["E4", "E7", "E9", "F"]

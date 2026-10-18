@@ -91,3 +91,7 @@ class ScanRecord:
     heartbeat_at: str | None = None
     min_bars: int = 0
     concurrency: int = 0
+    # Sprint 22: the strategy-declared requirement the scan used. Records written before it existed keep the default
+    # LEGACY_HEURISTIC (their `min_bars` came from the retired parameter-name heuristic, not from the strategy).
+    history_requirement: dict[str, Any] | None = None
+    history_status: str = "LEGACY_HEURISTIC"

@@ -9,7 +9,6 @@ deterministic and doesn't require a real strategy run to verify.
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from src.attribution.models import AttributionReport, RegimeStats
 from src.backtesting.models import BacktestResult

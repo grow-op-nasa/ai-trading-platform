@@ -40,7 +40,6 @@ from src.monitoring import (
     PlatformState,
 )
 from src.monitoring.checks import default_checks
-from src.monitoring.models import CheckResult
 from src.monitoring.state import MarketDataTarget
 from src.portfolio.models import Portfolio
 from src.portfolio.position import Position, PositionSide

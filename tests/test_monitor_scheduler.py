@@ -445,8 +445,6 @@ def test_cli_stops_with_error_when_attempts_cannot_be_recorded(tmp_path, monkeyp
 
 # ------------------------------------------------------------------ no auto-start, no AI, one-off monitor unchanged
 def test_monitor_once_does_not_touch_the_scheduler_table(tmp_path, capsys):
-    from tests.test_monitor_cli import _factory_for
-
     db = tmp_path / "m.db"
     store = MonitoringStore(db)
     rc = run_monitor(["--once", "--json"], service_factory=lambda e, d: __import__(

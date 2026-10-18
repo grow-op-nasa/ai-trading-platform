@@ -37,6 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 GOOD_SOURCE = '''\
 from src.strategies.sdk import BaseStrategy
+from src.strategies.history import combine, ema_component
 from src.signals.models import SignalDirection
 
 
@@ -47,6 +48,9 @@ class PromoDemo(BaseStrategy):
         super().__init__(name="promo_demo", symbol=symbol)
         self._fast = fast
         self._slow = slow
+
+    def history_requirement(self):
+        return combine(ema_component(self._fast), ema_component(self._slow))
 
     def prepare(self, data):
         self.require_columns(data, "close")
@@ -78,7 +82,18 @@ BAD_SOURCE = GOOD_SOURCE.replace(
 def _ok_runner(source_path, candles, symbol, params, timeout=60):
     """Fast stand-in for the isolated runner: emits one canonical signal."""
     sig = Signal(timestamp=candles.index[10], symbol=symbol, direction=SignalDirection.LONG, confidence=0.5)
-    return RunnerResult(signals=(sig,))
+    from src.strategies.history import combine, ema_component
+    return RunnerResult(signals=(sig,), history={"declared": True, "requirement": combine(ema_component(5), ema_component(12)).to_dict()})
+
+
+def _undeclared_runner(source_path, candles, symbol, params, timeout=60):
+    sig = Signal(timestamp=candles.index[10], symbol=symbol, direction=SignalDirection.LONG, confidence=0.5)
+    return RunnerResult(signals=(sig,), history={"declared": False, "error": "the candidate declares no history_requirement()"})
+
+
+def _invalid_history_runner(source_path, candles, symbol, params, timeout=60):
+    sig = Signal(timestamp=candles.index[10], symbol=symbol, direction=SignalDirection.LONG, confidence=0.5)
+    return RunnerResult(signals=(sig,), history={"declared": True, "requirement": {"min_bars": 0, "components": []}})
 
 
 def _bad_runner(source_path, candles, symbol, params, timeout=60):
@@ -298,6 +313,28 @@ def test_failed_contract_test_is_rejected(env):
     with pytest.raises(PromotionError, match="strategy_signal_contract"):
         env.service(runner=_bad_runner).promote("cand-1", human_approved=True)
     assert env.candidates.get("cand-1").status == S.REVIEW_REQUIRED
+
+
+def test_a_candidate_without_a_history_requirement_is_not_promotable(env):
+    _make_candidate(env.candidates, env.workspace)
+    with pytest.raises(PromotionError, match="history_requirement_declared"):
+        env.service(runner=_undeclared_runner).promote("cand-1", human_approved=True)
+    assert env.candidates.get("cand-1").status == S.REVIEW_REQUIRED
+    assert not read_manifest(env.dir)
+
+
+def test_a_candidate_with_an_invalid_history_requirement_is_not_promotable(env):
+    _make_candidate(env.candidates, env.workspace)
+    with pytest.raises(PromotionError, match="history_requirement_declared"):
+        env.service(runner=_invalid_history_runner).promote("cand-1", human_approved=True)
+    assert not read_manifest(env.dir)
+
+
+def test_the_preflight_report_shows_the_declared_requirement(env):
+    _make_candidate(env.candidates, env.workspace)
+    report = env.service().preflight("cand-1")
+    names = {n: (ok, d) for n, ok, d in report.checks}
+    assert names["history_requirement_declared"][0] and "complete bars required" in names["history_requirement_declared"][1]
 
 
 def test_explicit_human_approval_is_required(env):

@@ -61,6 +61,7 @@ import pandas as pd
 
 from src.signals.models import Signal, SignalDirection
 from src.strategies.registry import register_strategy
+from src.strategies.history import HistoryRequirement, atr_component, combine, ema_component
 from src.strategies.sdk import BaseStrategy
 
 DEFAULT_FAST = 8
@@ -130,6 +131,10 @@ class EMACrossVolFilterStrategy(BaseStrategy):
             "min_atr_pct": self._min_atr_pct,
             "confidence": self._confidence,
         }
+
+    def history_requirement(self) -> HistoryRequirement:
+        """Fast/slow EMAs plus the ATR window (`src.strategies.history`, ADR-0059)."""
+        return combine(ema_component(self._fast), ema_component(self._slow), atr_component(self._atr_period))
 
     def prepare(self, data: pd.DataFrame) -> pd.DataFrame:
         self.require_columns(data, "close")

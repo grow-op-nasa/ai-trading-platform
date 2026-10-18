@@ -39,14 +39,18 @@ left out while you refine the spec fields, and not something you write later. If
 the same arguments -- add the source before calling again. Your candidate source \
 may only import from these platform modules (any other import is statically \
 rejected before it ever runs): `src.strategies.sdk` (BaseStrategy), \
-`src.strategies.base`, `src.signals.models` (Signal, SignalDirection), \
-`src.indicators.engine`, `src.regime.engine`. Exactly one class, subclassing \
-BaseStrategy, implementing `prepare(self, data)` and `generate_signals(self, data)`. \
+`src.strategies.base`, `src.strategies.history` (HistoryRequirement and the \
+ema_component/rsi_component/atr_component/... helpers), `src.signals.models` (Signal, \
+SignalDirection), `src.indicators.engine`, `src.regime.engine`. Exactly one class, subclassing \
+BaseStrategy, implementing `prepare(self, data)`, `generate_signals(self, data)` and \
+`history_requirement(self)` (returns a HistoryRequirement: the minimum complete bars your \
+indicators need, derived with the helpers -- a candidate without one cannot be promoted). \
 A minimal, valid shape looks like this -- follow this pattern, filling in your own \
 indicator/entry/exit logic in `prepare`/`generate_signals`:
 
 ```python
 from src.strategies.sdk import BaseStrategy
+from src.strategies.history import combine, ema_component
 from src.signals.models import SignalDirection
 
 
@@ -55,6 +59,9 @@ class MyCandidate(BaseStrategy):
         super().__init__(name="my_candidate", symbol=symbol)
         self._fast = fast
         self._slow = slow
+
+    def history_requirement(self):
+        return combine(ema_component(self._fast), ema_component(self._slow))
 
     def prepare(self, data):
         self.require_columns(data, "close")

@@ -25,7 +25,7 @@ from src.backtesting.execution_model import (
     PercentageFeeModel,
     PercentageSlippageModel,
 )
-from src.execution.models import Fill, Order, OrderSide
+from src.execution.models import Order, OrderSide
 
 
 def make_candles(rows: list[dict], freq: str = "D") -> pd.DataFrame:

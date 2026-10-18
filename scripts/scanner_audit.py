@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 import tempfile
 from datetime import timedelta
@@ -35,7 +34,6 @@ from src.appsvc.scanner import ScannerService  # noqa: E402
 from src.calendar.nyse import NYSECalendar  # noqa: E402
 from src.data.base import DataProvider  # noqa: E402
 from src.paper.evaluation import prepare_bars, resolve_strategy  # noqa: E402
-from src.scanner.models import ScanRecord  # noqa: E402
 
 CHECKS: list[tuple[str, bool]] = []
 

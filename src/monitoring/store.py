@@ -15,7 +15,6 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from src.monitoring.alerts.models import AlertEvent
 from src.monitoring.alerts.store import ALERT_SCHEMA, AlertStore, insert_events, mark_initialized

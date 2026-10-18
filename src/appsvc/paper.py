@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from src.snapshots import SnapshotStore
 from src.appsvc.paths import AppPaths
 from src.appsvc.strategies import eligible_names
 from src.paper.config import PaperConfigError, PaperRunConfig
@@ -240,7 +241,7 @@ class PaperService:
     def runtime(self, cfg: PaperRunConfig, *, monitoring: bool = True) -> PaperTradingRuntime:
         return PaperTradingRuntime(cfg, registry_path=self.paths.registry, store_path=self.paths.paper_db,
                                    market_data=self._md(), monitor_factory=self._monitor_factory(cfg) if monitoring else None,
-                                   **self._runtime_kwargs)
+                                   **{"snapshots": SnapshotStore(self.paths.snapshots_dir), **self._runtime_kwargs})
 
     # ------------------------------------------------------------------ operations
     def preflight(self, cfg: PaperRunConfig, *, check_data: bool = True) -> PreflightReport:

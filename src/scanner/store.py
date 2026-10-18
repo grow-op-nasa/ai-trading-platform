@@ -14,7 +14,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Iterator
 
 from src.scanner.models import ResultStatus, RiskState, ScanRecord, ScanResult, ScanStatus, Watchlist
 

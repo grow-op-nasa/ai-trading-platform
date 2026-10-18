@@ -289,6 +289,27 @@ def test_successful_execution_reports_signals_and_no_error(tmp_path, capsys):
     assert payload["signals"][0]["direction"] == "LONG"
 
 
+def test_harness_reports_the_candidates_own_history_declaration_verbatim(tmp_path, capsys):
+    declared = MINIMAL_CANDIDATE_SOURCE.replace(
+        "    def prepare(self, data):",
+        "    def history_requirement(self):\n"
+        "        from src.strategies.history import combine, ema_component\n"
+        "        return combine(ema_component(10))\n\n"
+        "    def prepare(self, data):", 1)
+    candles = _write_candles_json(tmp_path, [{"timestamp": "2024-01-01T00:00:00+00:00", "close": 0.1},
+                                             {"timestamp": "2024-01-02T00:00:00+00:00", "close": 0.9}])
+    _harness.main(["_harness.py", str(_write_candidate(tmp_path, declared)), str(candles), "QQQ", "{}"])
+    h = json.loads(capsys.readouterr().out.strip())["history"]
+    assert h["declared"] is True and h["requirement"]["min_bars"] == 24
+
+
+def test_harness_reports_an_undeclared_candidate_as_undeclared_never_a_default(tmp_path, capsys):
+    candles = _write_candles_json(tmp_path, [{"timestamp": "2024-01-01T00:00:00+00:00", "close": 0.1}])
+    _harness.main(["_harness.py", str(_write_candidate(tmp_path, MINIMAL_CANDIDATE_SOURCE)), str(candles), "QQQ", "{}"])
+    h = json.loads(capsys.readouterr().out.strip())["history"]
+    assert h["declared"] is False and "no history_requirement" in h["error"]
+
+
 def test_constructor_params_are_forwarded_from_params_json(tmp_path, capsys):
     source_path = _write_candidate(tmp_path, MINIMAL_CANDIDATE_SOURCE)
     candles_path = _write_candles_json(

@@ -131,6 +131,19 @@ def _find_class_name(source: str) -> str:
     return classes[0]
 
 
+def _history_check(history: dict | None) -> tuple[str, bool, str]:
+    """A candidate must DECLARE a valid history requirement (ADR-0059); a missing or malformed one is never defaulted."""
+    from src.strategies.history import HistoryRequirement, HistoryRequirementError
+
+    if not history or not history.get("declared"):
+        return "history_requirement_declared", False, (history or {}).get("error") or "the candidate declares no history requirement"
+    try:
+        req = HistoryRequirement.from_dict(history.get("requirement"))
+    except HistoryRequirementError as exc:
+        return "history_requirement_declared", False, f"invalid history requirement: {exc}"
+    return "history_requirement_declared", True, req.explain()
+
+
 class PromotionService:
     """Args:
         candidates / workspace: the candidate stores.
@@ -247,6 +260,8 @@ class PromotionService:
                 for s in result.signals
             )
             report.add("strategy_signal_contract", ok, result.error or "emitted a malformed Signal")
+            if result.ok:
+                report.add(*_history_check(result.history))
             if result.ok and not result.signals:
                 report.warnings.append("candidate emitted no signals on the contract candles")
 
@@ -411,6 +426,11 @@ class PromotionService:
                 f"strategy.name is {instance.name!r} but registered id is {name!r}; ExperimentSpec "
                 f"reconstruction needs them equal -- pass --strategy-name {instance.name!r}"
             )
+        from src.strategies.history import requirement_of
+
+        lookup = requirement_of(instance)
+        if not lookup.usable:
+            raise PromotionError(f"registered strategy has no valid history requirement: {lookup.detail}")
         candles = contract_candles()
         signals = instance.generate_signals(instance.prepare(candles))
         for s in signals:

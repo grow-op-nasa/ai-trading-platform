@@ -24,6 +24,7 @@ import pandas as pd
 
 from src.signals.models import Signal, SignalDirection
 from src.strategies.registry import register_strategy
+from src.strategies.history import HistoryRequirement, combine, rsi_component
 from src.strategies.sdk import BaseStrategy
 
 DEFAULT_PERIOD = 14
@@ -92,6 +93,10 @@ class RSIMeanReversionStrategy(BaseStrategy):
             "overbought": self._overbought,
             "confidence": self._confidence,
         }
+
+    def history_requirement(self) -> HistoryRequirement:
+        """RSI smoothing must have converged (`src.strategies.history`, ADR-0059). Thresholds are not periods."""
+        return combine(rsi_component(self._period))
 
     def prepare(self, data: pd.DataFrame) -> pd.DataFrame:
         self.require_columns(data)

@@ -91,6 +91,7 @@ ALLOWED_PLATFORM_MODULES = frozenset(
         "src.signals.models",
         "src.strategies.base",
         "src.strategies.sdk",
+        "src.strategies.history",
         "src.indicators.engine",
         "src.regime.engine",
     }

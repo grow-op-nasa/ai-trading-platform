@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from src.execution.engine import PaperBroker
-from src.execution.models import Fill, Order, OrderSide, Position
+from src.execution.models import Order, OrderSide, Position
 from src.risk.models import SizingDecision
 from src.signals.models import Signal, SignalDirection
 

@@ -37,6 +37,7 @@ from src.portfolio.models import Portfolio
 from src.portfolio.position import Position, PositionSide
 from src.signals.models import Signal, SignalDirection
 from src.strategies.identity import strategy_version
+from src.strategies.history import HistoryRequirement, component
 from src.strategies.registry import _unregister_strategy, register_strategy
 
 REPO = Path(__file__).resolve().parent.parent
@@ -56,6 +57,11 @@ class ScriptedStrategy:
 
     def __init__(self, symbol: str, **params) -> None:
         self.symbol = symbol
+        self._params = params
+
+    def history_requirement(self) -> HistoryRequirement:
+        n = int(self._params.get("history_bars", 30))
+        return HistoryRequirement(n, (component("scripted", n, "fixture declaration"),))
 
     @property
     def name(self) -> str:
@@ -75,6 +81,11 @@ class ScriptedStrategy:
                 out.append(Signal(timestamp=pd.Timestamp(ts), symbol=self.symbol,
                                   direction=SignalDirection(direction), confidence=0.9))
         return out
+
+
+class UndeclaredStrategy(ScriptedStrategy):
+    """Declares no history requirement (registered ad hoc by tests/test_paper_history.py)."""
+    history_requirement = None
 
 
 @pytest.fixture(autouse=True)

@@ -1,6 +1,6 @@
 # Project State
 
-_Sprint 21b (2026-10-18): **Strategy Opportunity Scanner & watchlists implemented (ADR-0058).** Sandbox only so far: `tests/test_scanner.py` 34 passed, `test_app_launch` 28, `test_paper_runtime` 99, `test_appsvc` 39, `test_sprint20_services` 20, stub page smoke OK. PENDING on the dev machine: scanner AppTests, full `pytest -q`, `compileall`, `scripts/scanner_validation.py` (real QQQ/SPY provider smoke), `app_validation.py`, manual UI walkthrough._
+_Sprint 21b (2026-10-18): **Strategy Opportunity Scanner & watchlists implemented and verified on the dev machine (ADR-0058); manual UI walkthrough NOT yet performed.** Real-machine results: `tests/test_scanner.py` + `test_dashboard_smoke.py` + `test_app_launch.py` 112 passed; **full `pytest -q`: 1839 passed, 0 failed (25.09s)**; `compileall` clean; `scripts/scanner_validation.py` PASS 9/9 (real yfinance QQQ and SPY with `ema_cross`: both NO_SIGNAL at decision bar 2026-10-16, 275 bars each; no paper DB, registry byte-identical, scanner tables only). `scripts/app_validation.py` was 31/32: the one failure was a stale `len(PAGES) == 8` assertion in the script (now 9, fixed in a follow-up; re-run pending)._
 
 _Sprint 21 (2026-10-18): instrument selector implemented (ADR-0057). Sandbox only so far (service tests 20 passed, stub page smoke); AppTest, full `pytest -q` and `app_validation.py` PENDING on the dev machine._
 

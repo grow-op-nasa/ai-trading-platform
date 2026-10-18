@@ -16,7 +16,7 @@ warning sign that the architecture's been violated.
 Added: `src/paper/evaluation.py` (shared side-effect-free evaluation, now also used by the paper runtime); `src/scanner/` (models, SQLite store, bounded-concurrency engine); `appsvc.scanner`;
 `Opportunity Scanner` page (9 pages total) with watchlist create/rename/edit/delete, starter list, strategy selector, progress, summary counts, filterable results, per-symbol explanations, history and
 "Review in paper workflow" handoff; Home entry point; `AppPaths.scanner_db`; `scripts/scanner_validation.py`. Read-only: no orders, intents, cycles, proposals, fills or portfolio changes.
-Tests: new `tests/test_scanner.py` (34), scanner AppTests in `tests/test_dashboard_smoke.py`, architecture tests extended. Real-machine verification: see PROJECT_STATE.md.
+Release-gate fix: the minimum-history heuristic now counts only period-like integer parameters (capped at 200) so integer thresholds cannot cause false NOT_EVALUABLE. Tests: new `tests/test_scanner.py` (40), scanner AppTests in `tests/test_dashboard_smoke.py`, architecture tests extended. Real-machine verification: see PROJECT_STATE.md.
 
 ## Sprint 21 -- 2026-10-18, Paper Trading instrument selector (ADR-0057)
 

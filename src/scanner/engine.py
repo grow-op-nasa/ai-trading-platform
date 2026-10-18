@@ -12,6 +12,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -47,10 +48,19 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_PERIOD_NAME = re.compile(r"(^|_)(fast|slow|period|window|lookback|length|span|signal|bars|days)($|_)")
+MIN_BARS_CAP = 200      # a 400-calendar-day lookback yields ~275 sessions; a larger requirement could never be met
+
+
 def scanner_min_bars(params: dict[str, Any]) -> int:
-    """Scanner POLICY (strategies declare no lookback): at least 60 complete bars, or 3x the largest integer parameter."""
-    ints = [v for v in params.values() if isinstance(v, int) and not isinstance(v, bool) and v > 0]
-    return max(MIN_BARS_FLOOR, 3 * max(ints, default=0))
+    """Scanner POLICY (strategies declare no lookback, so this is a heuristic): at least 60 complete bars, or 3x the largest
+    positive integer parameter whose NAME looks like a period/window (fast, slow, period, window, lookback, length, span,
+    signal, bars, days, e.g. `atr_period`), capped at 200 so it stays satisfiable within the default lookback. Integer
+    thresholds such as `overbought=70` are not periods and are ignored. A strategy needing more history than this must
+    declare it itself (not supported yet)."""
+    periods = [v for k, v in params.items()
+               if isinstance(v, int) and not isinstance(v, bool) and v > 0 and _PERIOD_NAME.search(str(k).lower())]
+    return min(MIN_BARS_CAP, max(MIN_BARS_FLOOR, 3 * max(periods, default=0)))
 
 
 def _pid_alive(pid: int) -> bool:

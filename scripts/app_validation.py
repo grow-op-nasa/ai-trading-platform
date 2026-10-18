@@ -138,7 +138,7 @@ def part_b(work: Path, exp: int) -> None:
     for page in PAGES:
         go(at, page)
         ok = ok and not at.exception
-    check("all eight pages render", ok and len(PAGES) == 8)
+    check("all nine pages render", ok and len(PAGES) == 9)
     check("Home is the default landing page", fresh().sidebar.radio(key="page").value == "Home")
     check("PAPER MODE indicator is visible", any("PAPER MODE" in w.value for w in at.sidebar.warning))
     check("browsing created no paper or monitoring database", not (work / "data" / "paper").exists() and not (work / "data" / "monitoring").exists())

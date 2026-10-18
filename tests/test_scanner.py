@@ -257,8 +257,33 @@ def test_the_scanner_uses_daily_bars_only(tmp_path):
         eng.start(wl, "ema_cross", {}, interval="1h")
 
 
-def test_min_bars_policy_is_documented_and_scales_with_parameters():
+def test_min_bars_policy_is_documented_and_scales_with_period_like_parameters_only():
     assert scanner_min_bars({}) == 60 and scanner_min_bars({"slow": 50}) == 150 and scanner_min_bars({"x": 1.5, "b": True}) == 60
+    assert scanner_min_bars({"atr_period": 40, "fast": 8}) == 120
+    # integer THRESHOLDS are not lookbacks (registered rsi_mean_reversion has oversold/overbought) and must not inflate the rule
+    assert scanner_min_bars({"period": 14, "oversold": 30, "overbought": 100}) == 60
+    assert scanner_min_bars({"confidence": 1, "seed": 999}) == 60
+    assert scanner_min_bars({"slow": 500}) == 200                          # capped so it stays satisfiable
+    assert scanner_min_bars({"slow": 0, "fast": -5}) == 60
+
+
+def test_an_unrelated_integer_parameter_does_not_make_a_symbol_with_enough_history_not_evaluable(tmp_path):
+    svc, _ = make(tmp_path)
+    wl = svc.create_watchlist("t", "QQQ")
+    rec, _ = svc.scan(wl.watchlist_id, STRAT, {"overbought": 100, "threshold": 5000})
+    r = svc.view(rec.scan_id).results[0]
+    assert r.status is ResultStatus.NO_SIGNAL and rec.min_bars == 60 and rec.strategy_params == {"overbought": 100, "threshold": 5000}
+
+
+def test_a_period_larger_than_the_history_is_reported_not_evaluable_never_no_signal(tmp_path):
+    prov = ScanProvider()
+    prov.short.add("SHORT")
+    svc, _ = make(tmp_path, prov)
+    wl = svc.create_watchlist("t", "SHORT QQQ")
+    rec, _ = svc.scan(wl.watchlist_id, STRAT, {"slow": 40})
+    r = by_symbol(svc.view(rec.scan_id))
+    assert rec.min_bars == 120 and r["SHORT"].status is ResultStatus.NOT_EVALUABLE and r["SHORT"].reason_code == "INSUFFICIENT_HISTORY"
+    assert r["QQQ"].status is ResultStatus.NO_SIGNAL
 
 
 # ===================================================================== concurrency
@@ -477,3 +502,58 @@ def test_scanner_code_never_calls_mutating_paper_apis():
     for needle in ("run_cycle(", "run_with_preflight(", "approve_proposal(", "submit_order(", ".submit(", "create_paper_account(",
                    "initialize_account(", "save_portfolio(", "log_experiment("):
         assert needle not in text.replace("pool.submit", ""), needle
+
+
+# ===================================================================== release-gate additions
+def test_an_invalid_strategy_configuration_is_refused_before_any_scan_is_recorded(tmp_path):
+    svc, _ = make(tmp_path)
+    from src.strategies.registry import register_strategy as _r  # noqa: F401
+    wl = svc.create_watchlist("t", "QQQ")
+    with pytest.raises(ScanSetupError, match="could not be constructed|not registered"):
+        svc.scan(wl.watchlist_id, "ema_cross", {"no_such_parameter": 1})
+    assert svc.history() == []
+
+
+def test_a_hard_interruption_keeps_finished_symbols_and_never_reads_as_completed(tmp_path):
+    prov = ScanProvider()
+    prov.fail["BOOM"] = KeyboardInterrupt()
+    svc, _ = make(tmp_path, prov, concurrency=1)
+    wl = svc.create_watchlist("t", "AAA BBB BOOM CCC")
+    rec, _ = svc.start_scan(wl.watchlist_id, STRAT, {})
+    with pytest.raises(BaseException):
+        svc.run_scan(rec)
+    again, _ = make(tmp_path)                                              # "restart"
+    v = again.view(rec.scan_id)
+    assert v.status in (ScanStatus.FAILED, ScanStatus.INTERRUPTED) and v.status is not ScanStatus.COMPLETED
+    assert {"AAA", "BBB"} <= {r.symbol for r in v.results}                 # finished symbols survived and are readable
+    assert all(r.scan_id == rec.scan_id for r in v.results)
+
+
+def test_a_new_scan_never_reuses_another_scans_results(tmp_path):
+    svc, _ = make(tmp_path)
+    wl = svc.create_watchlist("t", "QQQ SPY")
+    a, _ = svc.scan(wl.watchlist_id, STRAT, {})
+    ScriptedScan.SIGNAL_ON = {"QQQ"}
+    b, _ = svc.scan(wl.watchlist_id, STRAT, {"again": 1})
+    va, vb = svc.view(a.scan_id), svc.view(b.scan_id)
+    assert by_symbol(va)["QQQ"].status is ResultStatus.NO_SIGNAL and by_symbol(vb)["QQQ"].status is ResultStatus.SIGNAL_FOUND
+    assert {r.scan_id for r in va.results} == {a.scan_id} and {r.scan_id for r in vb.results} == {b.scan_id}
+
+
+def test_a_scan_full_of_failures_still_leaves_paper_state_and_the_portfolio_untouched(tmp_path, monkeypatch):
+    exp = _risk_world(tmp_path)
+    paths = AppPaths.under(tmp_path)
+    prov = ScanProvider()
+    prov.fail.update({"DOWN": DataProviderError("t/o"), "BAD": RuntimeError("provider bug")})
+    prov.short.add("SHORT")
+    svc, _ = make(tmp_path, prov)
+    monkeypatch.setattr("src.appsvc.paper.eligible_names", lambda paths=None: [STRAT])
+    ScriptedScan.SIGNAL_ON = {"QQQ"}
+    ScriptedScan.RAISE_ON = {"BOOM"}
+    before = paths.registry.read_bytes()
+    view, _ = scan_of(svc, "QQQ DOWN BAD SHORT BOOM", account=exp, assess_risk=True)
+    assert view.status is ScanStatus.PARTIAL
+    assert paths.registry.read_bytes() == before and not paths.paper_db.exists() and not paths.monitoring_db.exists()
+    from src.experiments.registry import ExperimentRegistry
+    pf = ExperimentRegistry(paths.registry).get_portfolio(exp)
+    assert pf.cash == 10_000.0 and not pf.positions

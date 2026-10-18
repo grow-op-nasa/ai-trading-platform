@@ -11,6 +11,13 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 21 -- 2026-10-18, Strategy Opportunity Scanner & watchlists (ADR-0058)
+
+Added: `src/paper/evaluation.py` (shared side-effect-free evaluation, now also used by the paper runtime); `src/scanner/` (models, SQLite store, bounded-concurrency engine); `appsvc.scanner`;
+`Opportunity Scanner` page (9 pages total) with watchlist create/rename/edit/delete, starter list, strategy selector, progress, summary counts, filterable results, per-symbol explanations, history and
+"Review in paper workflow" handoff; Home entry point; `AppPaths.scanner_db`; `scripts/scanner_validation.py`. Read-only: no orders, intents, cycles, proposals, fills or portfolio changes.
+Tests: new `tests/test_scanner.py` (34), scanner AppTests in `tests/test_dashboard_smoke.py`, architecture tests extended. Real-machine verification: see PROJECT_STATE.md.
+
 ## Sprint 21 -- 2026-10-18, Paper Trading instrument selector (ADR-0057)
 
 Added `appsvc.instruments` (shared catalogue, `Custom…`, symbol normalisation), instrument dropdown with a revealed custom field on Paper Trading, remembered `last_symbol` in `preferences.json` (independent of the account), Run disabled while a pending proposal for another symbol exists. Validation of a custom symbol stays with the existing preflight (`market_data`). Tests: service tests in `tests/test_sprint20_services.py`, AppTest cases in `tests/test_dashboard_smoke.py`. Verification: see PROJECT_STATE.md.

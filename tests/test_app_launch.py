@@ -179,11 +179,21 @@ def test_only_the_cli_and_appsvc_import_the_paper_runtime_and_nothing_imports_ap
     for f in SRC.rglob("*.py"):
         rel = f.relative_to(SRC).parts[0]
         mods = _imports(f)
+        if rel == "scanner":        # Sprint 21: the scanner may import ONLY the side-effect-free shared evaluation module
+            assert {m for m in mods if m.startswith("src.paper")} <= {"src.paper.evaluation"}, f
+            continue
         if rel not in ("paper", "cli", "appsvc") and any(m.startswith("src.paper") for m in mods):
             paper_importers.add(str(f.relative_to(REPO)))
         if rel not in ("appsvc", "dashboard") and any(m.startswith("src.appsvc") for m in mods):
             appsvc_importers.add(str(f.relative_to(REPO)))
     assert paper_importers == set() and appsvc_importers == set()
+
+
+def test_only_appsvc_imports_the_scanner_and_the_dashboard_never_does():
+    for f in SRC.rglob("*.py"):
+        rel = f.relative_to(SRC).parts[0]
+        if rel not in ("scanner", "appsvc") and any(m.startswith("src.scanner") for m in _imports(f)):
+            raise AssertionError(f"{f.relative_to(REPO)} imports src.scanner; only src.appsvc may")
 
 
 def test_no_ui_widget_offers_a_live_or_broker_choice_and_there_is_no_shell_or_exec():
@@ -196,7 +206,8 @@ def test_no_ui_widget_offers_a_live_or_broker_choice_and_there_is_no_shell_or_ex
 def test_all_state_changing_ui_calls_sit_behind_a_button_or_form_submission():
     """Every service mutation in the pages is lexically inside an `if <button/form flag>:` branch."""
     mutating = ("run_cycle(", "initialize_account(", "save_profile(", "dispatch_pending(", "retry_failed(", "value_now(", ".preflight(",
-               "run_with_preflight(", "approve_proposal(", "reject_proposal(", "create_paper_account(", "monitor_cycle(")
+               "run_with_preflight(", "approve_proposal(", "reject_proposal(", "create_paper_account(", "monitor_cycle(",
+               ".scan(", "start_scan(", "run_scan(", "create_watchlist(", "update_watchlist(", "delete_watchlist(", "ensure_starter(")
     for f in [*(SRC / "dashboard").glob("page_*.py"), SRC / "dashboard" / "proposals_ui.py"]:
         lines = f.read_text().splitlines()
         for i, line in enumerate(lines):
@@ -218,7 +229,8 @@ def test_all_state_changing_ui_calls_sit_behind_a_button_or_form_submission():
 
 # ------------------------------------------------------------------ Sprint 20 (ADR-0056)
 _MUTATORS = ("run_cycle", "run_with_preflight", "approve_proposal", "reject_proposal", "preflight", "initialize_account",
-             "create_paper_account", "monitor_cycle", "value_now", "dispatch_pending", "retry_failed", "save_account")
+             "create_paper_account", "monitor_cycle", "value_now", "dispatch_pending", "retry_failed", "save_account",
+             "scan", "start_scan", "run_scan", "create_watchlist", "update_watchlist", "delete_watchlist", "ensure_starter")
 
 
 def _call_names(path: Path) -> set[str]:

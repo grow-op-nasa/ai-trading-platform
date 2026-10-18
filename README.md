@@ -213,3 +213,11 @@ account is remembered (`data/app/preferences.json`) and restored after a refresh
 preflight and one cycle in a single click. If the strategy finds a risk-approved trade, it becomes a **proposal** -- no order exists until you approve that exact proposal on the
 *Approvals* tab (it expires after 30 minutes; rejecting or ignoring it places nothing). CLI equivalents: `paper proposals`, `paper approve --proposal ID`, `paper reject --proposal ID`.
 **Activity** shows a read-only timeline of cycles, proposals, orders, fills, reconciliations, monitoring and alerts. Paper only; fills are simulated.
+
+### Opportunity Scanner (Sprint 21)
+
+Open **Opportunity Scanner**: create a watchlist (or press *Create the US Liquid Starter watchlist* once: QQQ, SPY, IWM, DIA, AAPL, MSFT, NVDA, AMD; up to 50 symbols per list), choose a registered strategy and press
+**Scan**. Each symbol is evaluated on completed daily bars with the same rules the paper runtime uses and shown as *Signal found*, *No signal*, *Blocked by risk*, *Data unavailable*, *Not evaluable* or *Error*
+(missing or stale data is never reported as "no signal"). Tick the risk option with a paper account selected to also run the read-only risk check (each candidate alone, not as a basket); otherwise risk shows "not assessed".
+Past scans are kept in `data/scanner/scanner.db` as faithful snapshots. A scan never places an order or creates paper records; **Review in paper workflow** only prefills Paper Trading, where a fresh preflight,
+the risk check and your approval still apply. Real-provider smoke: `python scripts/scanner_validation.py`.

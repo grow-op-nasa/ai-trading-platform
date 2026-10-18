@@ -11,10 +11,11 @@ from src.appsvc.paper import PaperService
 from src.appsvc.paths import AppPaths
 from src.appsvc.system import FAIL, OK, WARN, collect_status, overall
 
-PAGES = ("Home", "Research & Experiments", "Strategies", "Paper Trading", "Portfolio & Execution",
+PAGES = ("Home", "Opportunity Scanner", "Research & Experiments", "Strategies", "Paper Trading", "Portfolio & Execution",
          "Activity", "Monitoring & Alerts", "Setup & System Status")
 DESCRIPTIONS = {
     "Home": "Your paper account, what needs attention, and the next safe step. Read-only: opening it runs nothing.",
+    "Opportunity Scanner": "Run one registered strategy over a watchlist (daily bars) and see which symbols have a signal. Read-only: it never places orders or creates paper records.",
     "Activity": "One chronological view of stored cycles, proposals, orders, fills, reconciliations, monitoring and alerts. Read-only.",
     "Research & Experiments": "Saved historical backtests: identity, metrics, equity and comparison. Not paper trading, not live state.",
     "Strategies": "Strategies registered in the production registry (the only ones usable for paper runs) and development candidates for context.",
@@ -30,6 +31,15 @@ def paper_service(paths: AppPaths) -> PaperService:
     if svc is None or svc.paths != paths:
         svc = PaperService(paths)
         st.session_state["_paper_service"] = svc
+    return svc
+
+
+def scanner_service(paths: AppPaths):
+    from src.appsvc.scanner import ScannerService
+    svc = st.session_state.get("_scanner_service")
+    if svc is None or svc.paths != paths:
+        svc = ScannerService(paths, paper_service=paper_service(paths))
+        st.session_state["_scanner_service"] = svc
     return svc
 
 

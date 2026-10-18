@@ -2037,6 +2037,12 @@ record. The runtime imports no broker/AI/alert-transport code and nothing import
 owns no state and returns plain data; pages never import `src.paper`, brokers, execution, risk or AI code. Launch path: `scripts/start_app.sh` ->
 `python -m src.dashboard.launch` -> Streamlit (loopback). Side effects exist only behind explicit buttons.
 
+### Opportunity Scanner (Sprint 21, ADR-0058)
+
+`dashboard/page_scanner.py` -> `appsvc.scanner.ScannerService` -> `scanner.engine.ScanEngine` -> `paper.evaluation` (`resolve_strategy`, `prepare_bars`, `evaluate_at_bar`, `assess_risk`; the same functions the
+paper runtime uses) over the existing `MarketDataService`. State: `data/scanner/scanner.db` (`watchlists`, `scans`, `scan_results`), written only by explicit actions. The scanner is read-only with respect to
+everything else: it imports no broker/execution/AI/UI code (static tests) and creates no intent, cycle, proposal, fill or portfolio change. The only bridge to trading is session-state prefill of the Paper Trading page.
+
 ### Guided paper trading (Sprint 20, ADR-0056)
 
 `Home`/`Activity`/`Paper Trading` sit on new Streamlit-free services: `appsvc.home` (read-only state + checklist + primary action), `appsvc.prefs` (atomic last-account file),

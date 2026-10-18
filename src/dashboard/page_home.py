@@ -38,6 +38,9 @@ def render(paths: AppPaths, svc: PaperService, account: int | None) -> None:
         proposals_ui.pending_summary(list(h.pending_proposals))
         if h.pending_proposals:
             st.button("Review in Paper Trading", key="home_review", on_click=shell.goto, args=("Paper Trading",))
+    st.subheader("Opportunity scanner")
+    st.caption("Run a registered strategy over a watchlist to see which symbols have a signal. Read-only: no orders, no paper records.")
+    st.button("Open the Opportunity Scanner", key="home_scanner", on_click=shell.goto, args=("Opportunity Scanner",))
     st.subheader("Monitoring and alerts")
     _monitoring(h)
     st.subheader("Setup checklist")

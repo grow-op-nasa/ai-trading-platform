@@ -1190,6 +1190,11 @@ environment-only failures, 17 skipped. **Confirmed via real `pytest` on
 the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 `origin/main` (`1b43a93..0c19c69`).
 
+## Sprint 21 -- Strategy Opportunity Scanner & Watchlists (implemented; real-machine verification pending, see PROJECT_STATE.md)
+
+- Done: persistent watchlists (starter list, 50-symbol limit), read-only scan of one registered strategy over daily bars with typed statuses, bounded concurrency, durable provenance-rich history, optional read-only risk assessment, "Review in paper workflow" handoff, shared `paper.evaluation` module (ADR-0058).
+- Deliberately not built: scheduled/automatic scans, alerts on signals, multi-strategy scans, ranking/scoring, basket-level risk, intraday bars, auto-handoff to approval.
+
 ## Sprint 20 -- Guided Paper Trading, Integrated Preflight & UX Refinement (implemented; real-machine verification pending, see PROJECT_STATE.md)
 
 - Done: Home landing page and setup checklist, persisted last-used account, one-click Run with a fresh preflight, persisted human trade approval (proposals), activity timeline,

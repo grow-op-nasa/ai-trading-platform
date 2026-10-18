@@ -821,7 +821,9 @@ def test_paper_modules_name_no_live_adapter_and_have_no_dynamic_broker_selection
 def test_the_runtime_uses_the_authoritative_risk_engine_execution_model_and_paper_broker():
     text = (REPO / "src" / "paper" / "runtime.py").read_text()
     assert "PortfolioRiskEngine" in text and "ExecutionModel" in text and "to_trade_intent" in text
-    assert "decide_close" in text and "get_strategy_class" in text
+    shared = (REPO / "src" / "paper" / "evaluation.py").read_text()       # Sprint 21: strategy/risk steps are shared with the scanner
+    assert "assess_risk" in text and "evaluate_at_bar" in text and "resolve_strategy" in text
+    assert "decide_close" in shared and "get_strategy_class" in shared
     gw = (REPO / "src" / "paper" / "gateway.py").read_text()
     assert "PaperBroker.from_state" in gw or "PaperBroker" in gw
     # no second accounting / risk arithmetic in the runtime

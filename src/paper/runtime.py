@@ -31,6 +31,7 @@ from src.execution.models import Order, OrderSide
 from src.execution.portfolio_sync import apply_fill_to_portfolio
 from src.paper import bars
 from src.paper.config import PaperRunConfig
+from src.paper.evaluation import StrategyResolutionError, assess_risk, prepare_bars, resolve_strategy, safe_error_text, evaluate_at_bar, jsonable as _jsonable, signal_to_record
 from src.paper.faults import BrokerUncertain, NoFaults
 from src.paper.gateway import (
     ADAPTER_NAME,
@@ -62,9 +63,6 @@ from src.utils.hashing import dataframe_fingerprint
 _NO_RETRY = (CycleStatus.NO_ACTION, CycleStatus.RISK_REJECTED, CycleStatus.ORDER_REJECTED,
              CycleStatus.ORDER_FILLED, CycleStatus.RECONCILIATION_REQUIRED,
              CycleStatus.AWAITING_APPROVAL, CycleStatus.PROPOSAL_REJECTED)     # EXPIRED/INVALIDATED may be re-evaluated
-_SECRET = re.compile(r"(sk-ant-[A-Za-z0-9_\-]+|(?i:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*\S+)")
-
-
 class PaperSetupError(RuntimeError):
     """The target cannot be run at all (missing registry/account/strategy); nothing was recorded."""
 
@@ -81,27 +79,15 @@ class PaperProposalError(RuntimeError):
         self.code = code
 
 
-def safe_error(exc: BaseException, limit: int = 300) -> str:
-    text = f"{type(exc).__name__}: {exc}"
-    return _SECRET.sub("[redacted]", text)[:limit]
+safe_error = safe_error_text
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _jsonable(obj: Any) -> Any:
-    return json.loads(json.dumps(obj, default=str))
-
-
 def _sha(*parts: str) -> str:
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
-
-
-def signal_to_record(signal: Signal) -> dict[str, Any]:
-    return {"id": str(signal.id), "timestamp": pd.Timestamp(signal.timestamp).isoformat(), "symbol": signal.symbol,
-            "direction": signal.direction.value, "confidence": signal.confidence,
-            "metadata": _jsonable(signal.metadata)}
 
 
 class PaperTradingRuntime:
@@ -172,25 +158,11 @@ class PaperTradingRuntime:
                                   "run `python -m src.cli paper init` explicitly")
 
     def resolve_strategy(self):
-        """(instance, strategy_hash) via the ordinary production registry only."""
-        import src.strategies  # noqa: F401  registers built-in + promoted strategies (the production path)
-        from src.strategies.registry import get_strategy_class
-
-        name = self._config.strategy_name
+        """(instance, strategy_hash) via the ordinary production registry only (shared with the scanner)."""
         try:
-            cls = get_strategy_class(name)
-        except KeyError as exc:
-            raise PaperSetupError(f"strategy {name!r} is not registered in the production registry") from exc
-        module = getattr(cls, "__module__", "")
-        if not any(module == p or module.startswith(p + ".") for p in self._prefixes):
-            raise PaperSetupError(f"strategy {name!r} comes from {module!r}, which is not an approved production "
-                                  "strategy module")
-        try:
-            instance = cls(symbol=self._config.symbol, **self._config.strategy_params)
-            shash = strategy_version(cls)
-        except Exception as exc:  # noqa: BLE001
-            raise PaperSetupError(f"strategy {name!r} could not be constructed: {safe_error(exc)}") from exc
-        return instance, shash
+            return resolve_strategy(self._config.strategy_name, self._config.symbol, self._config.strategy_params, self._prefixes)
+        except StrategyResolutionError as exc:
+            raise PaperSetupError(str(exc)) from exc
 
     @contextmanager
     def _lock(self):
@@ -448,24 +420,19 @@ class PaperTradingRuntime:
             except (DataProviderError, DataValidationError) as exc:
                 code = "DATA_INVALID" if isinstance(exc, DataValidationError) else "DATA_UNAVAILABLE"
                 return self._finish(store, rec, CycleStatus.BLOCKED, code, safe_error(exc))
-            complete, dropped = bars.split_complete(ds.candles, self._cal, self._clock())
-            if complete.empty:
-                return self._finish(store, rec, CycleStatus.BLOCKED, "NO_COMPLETE_BAR",
-                                    "the dataset contains no complete daily bar")
-            try:
-                expected = bars.expected_completed_session(self._cal, self._clock())
-            except ValueError as exc:
-                return self._finish(store, rec, CycleStatus.BLOCKED, "CALENDAR_UNSUPPORTED", safe_error(exc))
-            decision_bar = pd.Timestamp(complete.index[-1])
-            latest_session = bars.bar_session(decision_bar)
-            if latest_session < expected:
-                if bars.past_grace(self._cal, expected, self._clock()):
-                    return self._finish(store, rec, CycleStatus.BLOCKED, "DATA_STALE",
-                                        f"latest complete bar is {latest_session}, expected {expected}")
+            prep = prepare_bars(ds.candles, self._cal, self._clock())
+            if prep.kind == "NO_COMPLETE_BAR":
+                return self._finish(store, rec, CycleStatus.BLOCKED, "NO_COMPLETE_BAR", prep.detail)
+            if prep.kind == "CALENDAR_UNSUPPORTED":
+                return self._finish(store, rec, CycleStatus.BLOCKED, "CALENDAR_UNSUPPORTED", prep.detail)
+            if prep.kind == "DATA_STALE":
+                return self._finish(store, rec, CycleStatus.BLOCKED, "DATA_STALE", prep.detail)
+            if prep.kind == "AWAITING_PROVIDER_BAR":
                 rec.status, rec.reason_code = CycleStatus.NO_NEW_BAR, "AWAITING_PROVIDER_BAR"
-                rec.reason = f"session {expected} closed but its bar is not yet published (within grace)"
+                rec.reason = prep.detail
                 rec.finished_at = self._clock().isoformat()
                 return rec                                               # not persisted: nothing happened
+            complete, dropped, decision_bar = prep.complete, prep.dropped, prep.decision_bar
             rec.decision_bar = decision_bar.isoformat()
             rec.dataset = {
                 "provider": ds.provider, "dataset_hash": ds.content_hash,
@@ -498,57 +465,36 @@ class PaperTradingRuntime:
             rec.status = CycleStatus.STARTED
             self._persist(store, rec)
 
-            # ---- strategy (complete bars only, nothing after the decision bar)
-            try:
-                prepared = instance.prepare(complete.copy())
-                raw = instance.generate_signals(prepared)
-                if not isinstance(raw, list) or not all(isinstance(s, Signal) for s in raw):
-                    raise ValueError("generate_signals() must return list[Signal]")
-            except Exception as exc:  # noqa: BLE001
-                return self._finish(store, rec, CycleStatus.FAILED, "STRATEGY_ERROR", safe_error(exc))
-            at_bar = [s for s in raw if pd.Timestamp(s.timestamp) == decision_bar]
-            if any(s.symbol != cfg.symbol for s in at_bar):
-                return self._finish(store, rec, CycleStatus.FAILED, "SIGNAL_SYMBOL_MISMATCH",
-                                    "strategy emitted a signal for a different instrument")
-            if not at_bar:
-                return self._finish(store, rec, CycleStatus.NO_ACTION, "NO_SIGNAL",
-                                    "the strategy produced no signal at the decision bar")
-            if len(at_bar) > 1:
-                return self._finish(store, rec, CycleStatus.BLOCKED, "AMBIGUOUS_SIGNALS",
-                                    f"{len(at_bar)} signals at one decision bar; refusing to choose")
-            signal = at_bar[0]
+            # ---- strategy (complete bars only, nothing after the decision bar) -- shared with the scanner (src.paper.evaluation)
+            ev = evaluate_at_bar(instance, complete, decision_bar, cfg.symbol)
+            if ev.outcome == "STRATEGY_ERROR":
+                return self._finish(store, rec, CycleStatus.FAILED, "STRATEGY_ERROR", ev.detail)
+            if ev.outcome == "SYMBOL_MISMATCH":
+                return self._finish(store, rec, CycleStatus.FAILED, "SIGNAL_SYMBOL_MISMATCH", ev.detail)
+            if ev.outcome == "NO_SIGNAL":
+                return self._finish(store, rec, CycleStatus.NO_ACTION, "NO_SIGNAL", ev.detail)
+            if ev.outcome == "AMBIGUOUS":
+                return self._finish(store, rec, CycleStatus.BLOCKED, "AMBIGUOUS_SIGNALS", ev.detail)
+            signal = ev.signal
             rec.signal = signal_to_record(signal)
 
-            # ---- risk
+            # ---- risk (shared, read-only assessment)
             price = float(complete.loc[decision_bar, "close"])
             portfolio = self._portfolio(registry)
-            stop_price: float | None = None
-            try:
-                if signal.direction is SignalDirection.FLAT:
-                    decision = self._risk.decide_close(signal, portfolio)
-                else:
-                    history = complete.loc[:decision_bar]
-                    stop = self._stop.stop_price(signal, history, entry_price=price)
-                    if not stop.available:
-                        rec.risk_decision = {"approved": False, "stop_unavailable": stop.reason}
-                        return self._finish(store, rec, CycleStatus.RISK_REJECTED, "STOP_UNAVAILABLE", str(stop.reason))
-                    stop_price = float(stop.stop_price)
-                    decision = self._risk.decide(signal, portfolio, entry_price=price, stop_price=stop_price)
-            except Exception as exc:  # noqa: BLE001
-                return self._finish(store, rec, CycleStatus.FAILED, "RISK_ENGINE_ERROR", safe_error(exc))
-            rec.risk_decision = _jsonable(asdict(decision))
-            if signal.direction is SignalDirection.FLAT and not decision.approved and \
-                    getattr(decision.rejection_reason, "value", None) == "NO_POSITION_TO_CLOSE":
-                return self._finish(store, rec, CycleStatus.NO_ACTION, "ALREADY_FLAT",
-                                    "desired state FLAT is already satisfied")
-            if not decision.approved:
-                return self._finish(store, rec, CycleStatus.RISK_REJECTED,
-                                    str(getattr(decision.rejection_reason, "value", decision.rejection_reason)),
-                                    decision.explanation)
-            if getattr(decision.capital_model, "value", None) == "NOT_MODELED":
-                rec.risk_decision["runtime_policy_block"] = "SHORT_EXPOSURE_NOT_MODELED"
-                return self._finish(store, rec, CycleStatus.RISK_REJECTED, "SHORT_NOT_MODELED",
-                                    "short exposure has no modelled capital/margin/borrow; the paper runtime fails closed")
+            rk = assess_risk(self._risk, self._stop, signal, complete, decision_bar, portfolio, price)
+            if rk.kind == "STOP_UNAVAILABLE":
+                rec.risk_decision = rk.record
+                return self._finish(store, rec, CycleStatus.RISK_REJECTED, "STOP_UNAVAILABLE", rk.reason)
+            if rk.kind == "ENGINE_ERROR":
+                return self._finish(store, rec, CycleStatus.FAILED, "RISK_ENGINE_ERROR", rk.reason)
+            decision, stop_price = rk.decision, rk.stop_price
+            rec.risk_decision = rk.record
+            if rk.kind == "ALREADY_FLAT":
+                return self._finish(store, rec, CycleStatus.NO_ACTION, "ALREADY_FLAT", rk.reason)
+            if rk.kind == "REJECTED":
+                return self._finish(store, rec, CycleStatus.RISK_REJECTED, rk.code, rk.reason)
+            if rk.kind == "SHORT_NOT_MODELED":
+                return self._finish(store, rec, CycleStatus.RISK_REJECTED, "SHORT_NOT_MODELED", rk.reason)
 
             # ---- durable intent BEFORE any execution side effect
             try:

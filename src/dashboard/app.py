@@ -20,6 +20,7 @@ from src.dashboard import (
     page_paper,
     page_portfolio,
     page_research,
+    page_scanner,
     page_setup,
     page_strategies,
     shell,
@@ -29,6 +30,7 @@ st.set_page_config(page_title="AI Trading Platform (paper mode)", layout="wide")
 
 _PAGES = {
     "Home": page_home.render,
+    "Opportunity Scanner": page_scanner.render,
     "Research & Experiments": page_research.render,
     "Strategies": page_strategies.render,
     "Paper Trading": page_paper.render,

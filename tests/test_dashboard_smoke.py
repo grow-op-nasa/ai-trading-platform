@@ -173,7 +173,7 @@ def test_every_page_renders_with_no_data_and_creates_nothing(workdir):
 def test_home_is_the_default_landing_page_and_explains_the_next_step(workdir):
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
-    assert at.sidebar.radio(key="page").value == "Home" and PAGES[0] == "Home" and len(PAGES) == 8
+    assert at.sidebar.radio(key="page").value == "Home" and PAGES[0] == "Home" and len(PAGES) == 9
     assert any("Next step" in x.value and "Review setup" in x.value for x in list(at.warning) + list(at.error) + list(at.info))
     assert any(b.label == "Review setup" for b in at.button)
     assert not (workdir / "data").exists()
@@ -850,3 +850,64 @@ def test_a_pending_proposal_for_another_symbol_blocks_run_and_keeps_its_identity
     assert _button(at, "Run paper cycle").disabled is True
     assert any("pending proposal exists for QQQ" in x.value for x in at.warning)
     assert _pending(svc, w)[0]["proposal"].proposal_id == pid and _pending(svc, w)[0]["proposal"].symbol == "QQQ"
+
+
+# ---------------------------------------------------------------------------
+# Sprint 21 (ADR-0058): Opportunity Scanner page. Network-free: the scanner service is injected with a synthetic provider and
+# a fixed clock. These AppTests need the real Streamlit runtime.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def scanner_world(workdir, monkeypatch):
+    from datetime import datetime as _dt, timezone as _tz
+    from src.appsvc.scanner import ScannerService
+    from tests.test_scanner import ScanProvider
+    md = MarketDataService(provider=ScanProvider(), cache_dir=workdir / "cache", use_cache=False)
+
+    def _service(paths):
+        return ScannerService(paths, market_data=md, clock=lambda: _dt(2026, 10, 7, 22, 0, tzinfo=_tz.utc))
+
+    monkeypatch.setattr("src.dashboard.shell.scanner_service", _service)
+    return workdir
+
+
+def test_scanner_page_is_read_only_on_open_and_offers_the_starter_list(scanner_world):
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Opportunity Scanner")
+    assert any(b.label == "Create the US Liquid Starter watchlist" for b in at.button)
+    assert any("READ-ONLY" in w.value for w in at.warning)
+    assert not (scanner_world / "data" / "scanner").exists()
+
+
+def test_home_links_to_the_scanner_without_running_anything(scanner_world):
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    _button(at, "Open the Opportunity Scanner").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert at.sidebar.radio(key="page").value == "Opportunity Scanner"
+    assert not (scanner_world / "data" / "scanner").exists()
+
+
+def test_scanner_page_seeds_scans_and_creates_no_paper_records(scanner_world):
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Opportunity Scanner")
+    _button(at, "Create the US Liquid Starter watchlist").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    at.selectbox(key="scanner_wl").select_index(0).run(timeout=_RUN_TIMEOUT)
+    at.selectbox(key="scanner_strategy").select("ema_cross").run(timeout=_RUN_TIMEOUT)
+    _button(at, "Scan 8 symbols").click().run(timeout=_RUN_TIMEOUT * 4)
+    _assert_no_exception(at)
+    assert any("Completed" in x.value for x in list(at.success) + list(at.warning) + list(at.info) + list(at.error))
+    assert (scanner_world / "data" / "scanner" / "scanner.db").exists()
+    assert not (scanner_world / "data" / "paper").exists() and not (scanner_world / "data" / "monitoring").exists()
+
+
+def test_scanner_rejects_an_invalid_watchlist_without_saving(scanner_world):
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Opportunity Scanner")
+    at.text_input(key="scanner_new_name").set_value("bad")
+    at.text_area(key="scanner_new_syms").set_value("AAPL bad$sym")
+    next(b for b in at.button if b.label == "Create watchlist").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert any("not accepted" in e.value for e in at.error)
+    assert not (scanner_world / "data" / "scanner" / "scanner.db").exists()

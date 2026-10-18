@@ -14,8 +14,9 @@ import streamlit as st
 
 from src.appsvc.paths import AppPaths
 from src.dashboard import (
+    page_activity,
+    page_home,
     page_monitoring,
-    page_overview,
     page_paper,
     page_portfolio,
     page_research,
@@ -27,11 +28,12 @@ from src.dashboard import (
 st.set_page_config(page_title="AI Trading Platform (paper mode)", layout="wide")
 
 _PAGES = {
-    "Overview": page_overview.render,
+    "Home": page_home.render,
     "Research & Experiments": page_research.render,
     "Strategies": page_strategies.render,
     "Paper Trading": page_paper.render,
     "Portfolio & Execution": page_portfolio.render,
+    "Activity": page_activity.render,
     "Monitoring & Alerts": page_monitoring.render,
     "Setup & System Status": page_setup.render,
 }

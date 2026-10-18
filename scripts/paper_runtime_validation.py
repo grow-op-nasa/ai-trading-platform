@@ -136,13 +136,31 @@ def part1(root: Path) -> None:
           f"bar={rec.get('decision_bar')} exit={r.returncode}")
     print(f"  data provenance: {json.dumps({k: (rec.get('dataset') or {}).get(k) for k in ('provider', 'complete_bars_hash', 'bars_used', 'dropped_incomplete_bars')})}")
     print(f"  strategy hash {str(rec.get('strategy_hash'))[:16]}  config hash {str(rec.get('config_hash'))[:16]}")
-    allowed = {"NO_ACTION", "RISK_REJECTED", "ORDER_FILLED", "NO_NEW_BAR", "BLOCKED"}
+    allowed = {"NO_ACTION", "RISK_REJECTED", "ORDER_FILLED", "NO_NEW_BAR", "BLOCKED", "AWAITING_APPROVAL"}
     check("cycle ended in an honest, documented status", rec.get("status") in allowed, str(rec.get("status")))
     if rec.get("status") == "NO_ACTION":
         check("no signal -> no order was manufactured", rec.get("client_order_id") is None and
               PaperStore.open_existing(paper_db).list_fills(exp) == [])
+    if rec.get("status") == "AWAITING_APPROVAL":
+        print("  (the real strategy signalled) a PROPOSAL was persisted; no order exists until a human approves it")
+        s0 = PaperStore.open_existing(paper_db)
+        check("proposal created WITHOUT an order, intent or fill", rec.get("intent_id") is None and s0.list_fills(exp) == []
+              and s0.list_intents(exp) == [])
+        r2 = cli(work, "run", "--once", *base, "--monitor-db", str(mon_db), "--json")
+        check("rerun while the proposal is pending is a replay (no second proposal)",
+              json.loads(r2.stdout).get("cycle_id") == rec.get("cycle_id") and len(s0.list_proposals(exp)) == 1)
+        pid = s0.list_proposals(exp)[0].proposal_id
+        ra = cli(work, "approve", *base, "--monitor-db", str(mon_db), "--proposal", pid, "--json")
+        done = json.loads(ra.stdout) if ra.stdout.strip().startswith("{") else {}
+        print(f"  approved proposal {pid[:12]}: status={done.get('status')} reason={done.get('reason_code')}")
+        check("explicit approval of the exact proposal ended in a documented status",
+              done.get("status") in {"ORDER_FILLED", "PROPOSAL_INVALIDATED", "PROPOSAL_EXPIRED", "BLOCKED", "RISK_REJECTED", "ORDER_REJECTED"})
+        rb = cli(work, "approve", *base, "--monitor-db", str(mon_db), "--proposal", pid, "--json")
+        check("approving the same proposal again places no second order", len(PaperStore.open_existing(paper_db).list_fills(exp)) <= 1,
+              rb.stdout.strip()[:80])
+        rec = done or rec
     if rec.get("status") == "ORDER_FILLED":
-        print(f"  (the real strategy signalled) intent={rec['intent_id']} order={rec['client_order_id']} fill={rec['fill']}")
+        print(f"  intent={rec['intent_id']} order={rec['client_order_id']} fill={rec['fill']}")
         print(f"  monitoring={rec.get('monitoring')}  reconciliation={rec.get('reconciliation_status')}")
     if rec.get("status") in ("NO_ACTION", "ORDER_FILLED", "RISK_REJECTED"):
         r2 = cli(work, "run", "--once", *base, "--monitor-db", str(mon_db), "--json")
@@ -194,8 +212,16 @@ def part2(root: Path) -> None:
     check("preflight PASS", run("preflight", "--json") == 0 and json.loads("\n".join(out))["ready"])
     store = PaperStore.open_existing(paper_db)
 
-    print("-- cycle 1: crafted LONG at the decision bar --")
-    check("cycle 1 exit 0", run("run", "--once", "--json") == 0)
+    print("-- cycle 1: crafted LONG at the decision bar -> PROPOSAL, then explicit approval --")
+    check("cycle 1 exit 1 (attention: a human decision is required)", run("run", "--once", "--json") == 1)
+    p1 = json.loads("\n".join(out))
+    check("cycle 1 ends as AWAITING_APPROVAL with no intent, order or fill",
+          p1["status"] == "AWAITING_APPROVAL" and not store.list_intents(exp) and not store.list_fills(exp))
+    check("the portfolio is untouched by a proposal", registry.get_portfolio(exp).cash == 10_000.0 and not registry.get_portfolio(exp).positions)
+    check("rerun while pending replays, creating no second proposal", run("run", "--once", "--json") == 1 and
+          json.loads("\n".join(out))["cycle_id"] == p1["cycle_id"] and len(store.list_proposals(exp)) == 1)
+    pid1 = store.list_proposals(exp)[0].proposal_id
+    check("approve exact proposal id", run("approve", "--proposal", pid1, "--json") == 0)
     c1 = json.loads("\n".join(out))
     print(f"   cycle {c1['cycle_id']}  status={c1['status']}  bar={c1['decision_bar']}")
     print(f"   signal {c1['signal']['id']}  risk approved qty={c1['risk_decision']['final_approved_quantity']} "
@@ -232,8 +258,11 @@ def part2(root: Path) -> None:
     from src.paper.config import PaperRunConfig
     rt = PaperTradingRuntime(PaperRunConfig.from_file(cfg), registry_path=reg_path, store_path=paper_db, market_data=md,
                              monitor_factory=monitor, clock=lambda: clock["now"], faults=faults)
+    p2 = rt.run_cycle()
+    check("cycle 2 FLAT signal is a PROPOSAL first", p2.status.value == "AWAITING_APPROVAL")
+    pid2 = store.list_proposals(exp, (__import__("src.paper.models", fromlist=["x"]).ProposalStatus.PENDING,))[0].proposal_id
     try:
-        rt.run_cycle(); crashed = False
+        rt.approve_proposal(pid2); crashed = False
     except SimulatedCrash:
         crashed = True
     check("simulated process death after broker commit", crashed)
@@ -260,8 +289,10 @@ def part2(root: Path) -> None:
     from src.data.fault_injection import Fault, FaultInjectingProvider, FaultKind
     provider["p"] = FaultInjectingProvider(CraftedProvider(date(2026, 10, 9), [140.0, 60.0, 60.0]), [Fault(FaultKind.TIMEOUT)])
     n_fills = len(store.list_fills(exp))
-    check("data failure -> BLOCKED exit 3, no order", run("run", "--once", "--json") == 3 and
-          json.loads("\n".join(out))["status"] == "BLOCKED" and len(store.list_fills(exp)) == n_fills)
+    code = run("run", "--once", "--json")
+    last = json.loads("\n".join(out))
+    check("data failure -> BLOCKED exit 3, no order", code == 3 and last["status"] == "BLOCKED" and len(store.list_fills(exp)) == n_fills,
+          f"exit={code} status={last.get('status')} reason={last.get('reason_code')}")
     print("   (injected, synthetic data fault: not a real provider outage)")
 
 

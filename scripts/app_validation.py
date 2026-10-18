@@ -1,4 +1,4 @@
-"""Sprint 19 real-machine validation of the local application (manual; run on the development machine).
+"""Sprint 19/20 real-machine validation of the local application (manual; run on the development machine).
 
 Evidence classes, kept separate in the output:
 
@@ -7,9 +7,11 @@ Evidence classes, kept separate in the output:
                            NOTE: Streamlit executes the app script only when a browser session connects, so this part proves
                            startup/shutdown, not page rendering.
   PART B  SCRIPTED SESSION Streamlit's `AppTest` drives the real app script against a disposable root: every page, explicit
-                           paper-account initialisation, REAL preflight (real market data), ONE real-data paper cycle through
-                           the UI, a fresh session showing the persisted record, a repeated submission (backend replay), and
-                           safety checks. This is a scripted Streamlit session, NOT a manual browser walkthrough.
+                           paper-account initialisation, Home as the landing page, persisted account selection across fresh
+                           sessions, ONE Run click (fresh REAL preflight inside it, real market data) producing a cycle, and --
+                           only if the real strategy proposed a trade -- explicit approval of the exact proposal in the disposable
+                           paper account; a fresh session showing the persisted record; a repeated submission (backend replay);
+                           and safety checks. This is a scripted Streamlit session, NOT a manual browser walkthrough.
                            If the registered strategy gives no signal the honest result is NO_ACTION; nothing is manufactured.
 
 Everything lives in a fresh temporary directory (your normal data/ is untouched). No live broker is reachable and no Anthropic key
@@ -136,16 +138,20 @@ def part_b(work: Path, exp: int) -> None:
     for page in PAGES:
         go(at, page)
         ok = ok and not at.exception
-    check("all seven pages render", ok)
+    check("all eight pages render", ok and len(PAGES) == 8)
+    check("Home is the default landing page", fresh().sidebar.radio(key="page").value == "Home")
     check("PAPER MODE indicator is visible", any("PAPER MODE" in w.value for w in at.sidebar.warning))
     check("browsing created no paper or monitoring database", not (work / "data" / "paper").exists() and not (work / "data" / "monitoring").exists())
 
-    at.sidebar.selectbox[0].set_value(exp).run(timeout=t)
+    check("no account is remembered before an explicit choice", not (work / "data" / "app" / "preferences.json").exists())
+    at.sidebar.selectbox(key="account_id").set_value(exp).run(timeout=t)
+    check("selecting an account persisted the preference", (work / "data" / "app" / "preferences.json").is_file())
+    check("selecting an account did not create the paper database", not (work / "data" / "paper").exists())
     go(at, "Paper Trading")
     pick(at)
     check("strategy selector offers ema_cross from the registry", "ema_cross" in at.selectbox(key="paper_strategy").options)
-    run_btn = next(b for b in at.button if b.label == "Run one paper cycle")
-    check("run control is disabled before account init and preflight", run_btn.disabled is True)
+    run_btn = next(b for b in at.button if b.label == "Run paper cycle")
+    check("Run is disabled until the paper account is initialised", run_btn.disabled is True)
 
     next(c for c in at.checkbox if c.label.startswith("I understand this records the baseline")).check()
     next(x for x in at.text_input if x.label == "Label for this account baseline").set_value("sprint19 validation (disposable)")
@@ -155,21 +161,18 @@ def part_b(work: Path, exp: int) -> None:
     go(at, "Paper Trading")
     pick(at)
 
-    at.button(key="btn_preflight").click().run(timeout=t)
-    pre_text = " ".join(m.value for m in list(at.success) + list(at.warning) + list(at.error) + list(at.info))
-    print("  preflight: " + next((s.value for s in list(at.success) + list(at.warning) + list(at.error) if "Preflight" in s.value), "(none)"))
-    for df in at.dataframe:
-        txt = df.value.to_string()
-        if "market_data" in txt:
-            print("  " + txt.replace("\n", "\n  "))
-    run_btn = next(b for b in at.button if b.label == "Run one paper cycle")
-    if run_btn.disabled:
-        check("preflight blocked the run control honestly (no cycle was forced)", True, pre_text[:160])
-        print("  RESULT NOTE: preflight did not PASS (see above); the real-data cycle was NOT executed.")
-        return
-    next(c for c in at.checkbox if c.label == "I confirm: run one paper-only cycle now").check()
+    run_btn = next(b for b in at.button if b.label == "Run paper cycle")
+    check("Run is enabled after explicit initialisation (no separate preflight click needed)", run_btn.disabled is False)
     run_btn.click().run(timeout=t)
-    check("cycle submission raised no exception", not at.exception, str([e.message for e in at.exception]))
+    check("Run click raised no exception", not at.exception, str([e.message for e in at.exception]))
+    if any("Not run" in e.value for e in at.error):
+        print("  RESULT NOTE: the fresh preflight inside Run BLOCKED the cycle (see the blocking checks above); nothing was forced.")
+        for df in at.dataframe:
+            txt = df.value.to_string()
+            if "market_data" in txt or "Check" in txt:
+                print("  " + txt.replace("\n", "\n  "))
+        check("a blocked Run recorded no cycle", not svc.store() or svc.store().list_cycles(exp) == [])
+        return
     store = svc.store()
     cycles = store.list_cycles(exp)
     check("exactly one cycle was recorded", len(cycles) == 1)
@@ -183,30 +186,45 @@ def part_b(work: Path, exp: int) -> None:
     check("post-cycle monitoring was recorded on the cycle and its run exists in the monitoring store",
           mon.get("outcome") == "COMPLETED" and bool(linked), str(mon)[:200])
     print(f"  monitoring: outcome={mon.get('outcome')} run_id={mon.get('run_id')} status={mon.get('status')}")
-    if cyc.fill:
-        print(f"  (the real strategy signalled) intent={cyc.intent_id} order={cyc.client_order_id} fill={cyc.fill}")
+    if cyc.status.value == "AWAITING_APPROVAL":
+        print("  REAL-DATA approval path OBSERVED: the real strategy produced an actionable, risk-approved signal -> PROPOSAL")
+        check("the proposal exists with NO order, intent or fill", len(store.list_proposals(exp)) == 1 and store.list_fills(exp) == []
+              and store.list_intents(exp) == [])
+        pid = store.list_proposals(exp)[0].proposal_id
+        at.run(timeout=t)
+        go(at, "Paper Trading")
+        pick(at)
+        at.checkbox(key=f"appr_ok_{pid}").check()
+        at.button(key=f"appr_approve_{pid}").click().run(timeout=t)
+        check("explicit approval raised no exception", not at.exception, str([e.message for e in at.exception]))
+        cyc = store.get_cycle(cyc.cycle_id)
+        print(f"  after approval: status={cyc.status.value} fill={cyc.fill}")
+        check("approval of the exact proposal produced at most one simulated fill", len(store.list_fills(exp)) <= 1)
+    elif cyc.fill:
+        print(f"  intent={cyc.intent_id} order={cyc.client_order_id} fill={cyc.fill}")
     elif cyc.status.value in ("NO_ACTION", "NO_NEW_BAR", "RISK_REJECTED"):
+        print("  REAL-DATA approval path NOT observed: the real strategy gave no actionable signal today (honest, nothing manufactured).")
         check("no order or fill was manufactured", store.list_fills(exp) == [] and cyc.client_order_id is None)
     at.run(timeout=t); at.run(timeout=t)
     check("page reruns did not repeat the cycle", len(store.list_cycles(exp)) == 1)
 
     print("-- fresh session (restart simulation): persisted record, repeated submission --")
     at2 = fresh()
-    at2.sidebar.selectbox[0].set_value(exp).run(timeout=t)
+    check("a fresh session restored the last-used account", at2.sidebar.selectbox(key="account_id").value == exp)
     go(at2, "Paper Trading")
     check("history in a NEW session lists the stored cycle", any(cyc.cycle_id[:12] in df.value.to_string() for df in at2.dataframe))
-    go(at2, "Overview")
-    check("overview shows the latest cycle status", any(cyc.status.value in x.value for x in list(at2.success) + list(at2.warning) + list(at2.info)))
+    go(at2, "Home")
+    check("Home shows the latest cycle status", any(cyc.status.value in x.value for x in list(at2.success) + list(at2.warning) + list(at2.info)))
+    go(at2, "Activity")
+    check("Activity renders the stored cycle", not at2.exception and any("Cycle" in df.value.to_string() for df in at2.dataframe))
     go(at2, "Paper Trading")
     pick(at2)
-    at2.button(key="btn_preflight").click().run(timeout=t)
-    fills_before = len(store.list_fills(exp))
-    nxt = next((b for b in at2.button if b.label == "Run one paper cycle"), None)
+    fills_before, cycles_before = len(store.list_fills(exp)), len(store.list_cycles(exp))
+    nxt = next((b for b in at2.button if b.label == "Run paper cycle"), None)
     if nxt is not None and not nxt.disabled:
-        next(c for c in at2.checkbox if c.label == "I confirm: run one paper-only cycle now").check()
         nxt.click().run(timeout=t)
-        check("a second submission for the same bar is a backend replay (no new cycle or fill)",
-              len(store.list_cycles(exp)) == 1 and len(store.list_fills(exp)) == fills_before)
+        check("a second Run for the same bar is a backend replay (no new cycle, order or fill)",
+              len(store.list_cycles(exp)) == cycles_before and len(store.list_fills(exp)) == fills_before)
     go(at2, "Portfolio & Execution")
     check("portfolio page renders with no price requested until clicked", not at2.exception and any("Not valued" in i.value for i in at2.info))
     go(at2, "Monitoring & Alerts")

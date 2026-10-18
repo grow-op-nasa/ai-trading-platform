@@ -40,6 +40,13 @@ class Cli:
     def json(self) -> dict:
         return json.loads(self.text)
 
+    def approve_pending(self) -> int:
+        """Sprint 20: the CLI creates a PROPOSAL; a human approves the exact id. Returns the approve exit code."""
+        assert self.run("proposals", "--json") == EXIT_OK
+        pending = [p for p in self.json() if p["status"] == "PENDING"]
+        assert len(pending) == 1
+        return self.run("approve", "--proposal", pending[0]["proposal_id"], "--json")
+
 
 @pytest.fixture
 def cli(tmp_path):
@@ -81,10 +88,13 @@ def test_preflight_exit_codes_and_json_are_truthful(cli):
 def test_run_once_filled_cycle_json_is_explicit_that_the_fill_is_simulated(cli):
     cli.run("init", "--label", "x")
     cli.w.script(WED, "LONG")
-    assert cli.run("run", "--once", "--json") == EXIT_OK
+    assert cli.run("run", "--once", "--json") == EXIT_ATTENTION                 # a proposal, not an order
+    pending = cli.json()
+    assert pending["status"] == "AWAITING_APPROVAL" and pending["filled"] is False and pending["client_order_id"] is None
+    assert cli.w.store().list_fills(cli.w.exp) == []
+    assert cli.approve_pending() == EXIT_OK
     data = cli.json()
-    assert data["status"] == "ORDER_FILLED" and data["filled"] is True and data["exit_code"] == 0
-    assert "PaperBroker" in data["executed_by"] and data["client_order_id"] and data["fill"]["side"] == "BUY"
+    assert data["status"] == "ORDER_FILLED" and data["client_order_id"] and data["fill"]["side"] == "BUY"
     assert data["monitoring"]["status"] == "HEALTHY" and data["reconciliation_status"] == "MATCH"
     assert cli.run("run", "--once", "--json") == EXIT_OK and cli.json()["replayed"] is True
 
@@ -110,7 +120,7 @@ def test_exit_codes_distinguish_blocked_failed_and_attention(cli):
     ScriptedStrategy.RAISE = False
     # a tampered portfolio -> reconciliation required (needs an executed fill first)
     cli.w.script(WED, "LONG")
-    assert cli.run("run", "--once") == EXIT_OK
+    assert cli.run("run", "--once") == EXIT_ATTENTION and cli.approve_pending() == EXIT_OK
     good = cli.w.portfolio()
     cli.w.registry.save_portfolio(cli.w.exp, Portfolio.reconstruct(cash=good.cash + 50, positions=list(good.positions.values())))
     cli.w.script(date(2026, 10, 8), "FLAT"); cli.w.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
@@ -123,6 +133,7 @@ def test_status_inspects_cycles_intents_fills_and_discrepancies_read_only(cli):
     cli.run("init", "--label", "x")
     cli.w.script(WED, "LONG")
     cli.run("run", "--once")
+    cli.approve_pending()
     before = state_fp(cli.w)
     assert cli.run("status", "--json") == EXIT_OK
     d = cli.json()

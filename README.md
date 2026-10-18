@@ -66,14 +66,14 @@ shows a value. Paper-run settings are validated JSON "profiles" in `data/app/pap
 - *Setup & System Status* shows what is missing and how to fix it. A fresh install has no experiments, so most pages show an honest empty state.
 - Create experiments with `python scripts/run_experiment.py` (historical backtests; the app does not launch them).
 - Choose a paper account (an experiment with a saved portfolio) in the sidebar. Nothing is selected or created for you.
-- *Paper Trading* -> choose strategy, paper account, instrument and timeframe -> *Run preflight* -> *Run one paper cycle* (enabled only after a passing preflight for exactly those selections). No account yet? Use *Create a new empty paper account*, then *Initialise paper account*.
-- Initialise the paper account (explicit, once per experiment), then **Run preflight** (read-only; makes one market-data request).
-- Only when preflight PASSES is **Run one paper cycle** enabled; tick the confirmation and run. Outcomes: NO_ACTION (a valid result: no signal), RISK_REJECTED,
-  BLOCKED, ORDER_FILLED (a *simulated* paper fill), RECONCILIATION_REQUIRED, FAILED. Inspect any cycle in *Cycle history & trace*.
+- *Paper Trading* -> choose strategy, paper account, instrument and timeframe. No account yet? Use *Create a new empty paper account*, then *Initialise paper account* (explicit, once per experiment).
+- **Run paper cycle** performs a fresh preflight and one cycle in one click (*Preflight only (read-only)* is still available). Outcomes: NO_ACTION (a valid result: no signal), RISK_REJECTED,
+  BLOCKED, AWAITING_APPROVAL (a proposed trade; no order yet), RECONCILIATION_REQUIRED, FAILED. Approve or reject the exact proposal on the *Approvals* tab; only an approval can produce ORDER_FILLED
+  (a *simulated* paper fill). Inspect any cycle in *Cycle history & trace*.
 - *Portfolio & Execution*: the stored portfolio, an explicit **Value open positions now** (equity is undefined if any open position has no price),
   paper intents, fills, fees and reconciliation. *Monitoring & Alerts*: runs, per-check status (unknown is never shown as healthy), findings, deliveries.
 
-**6. What is running.** Only the app server. There is no background paper trading (one cycle per click, or `paper run --once`), no monitoring unless you
+**6. What is running.** Only the app server. There is no background paper trading (one cycle per click, or `paper run --once`; trades need your approval), no monitoring unless you
 start `monitor-scheduler` in a terminal (the app reports a running scheduler from its lock file, and never starts or stops one), no live prices until you
 ask, and nothing keeps running after you stop the app. Alert delivery works only if you enabled and verified it (`alerts test-send`).
 
@@ -205,3 +205,11 @@ an interrupted cycle is recovered at the next run by ledger lookup, never blind 
 new risk; they are never auto-corrected. PaperBroker fills instantly and fully at the signal-bar close with configured slippage/fee: no partial
 fills, intraday bars, NEXT_BAR_OPEN or shorts. Fixture validation proves plumbing; real-data runs may produce no signal (and then no fill).
 There is no live adapter and no AI in this path.
+
+### Guided flow (Sprint 20)
+
+Open the app on **Home**: it shows the selected paper account, what needs attention, a setup checklist (required vs optional) and one suggested next step. Your last-used
+account is remembered (`data/app/preferences.json`) and restored after a refresh; nothing is created or run by selecting it. On **Paper Trading**, *Run paper cycle* performs a fresh
+preflight and one cycle in a single click. If the strategy finds a risk-approved trade, it becomes a **proposal** -- no order exists until you approve that exact proposal on the
+*Approvals* tab (it expires after 30 minutes; rejecting or ignoring it places nothing). CLI equivalents: `paper proposals`, `paper approve --proposal ID`, `paper reject --proposal ID`.
+**Activity** shows a read-only timeline of cycles, proposals, orders, fills, reconciliations, monitoring and alerts. Paper only; fills are simulated.

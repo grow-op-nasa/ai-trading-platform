@@ -1,13 +1,12 @@
-"""Paper Trading (Sprint 19 follow-up): ONE visible workflow -- choose, preflight, run one cycle, inspect.
+"""Paper Trading (Sprint 20): guided workflow -- choose, Run (fresh preflight included), approve a proposal, inspect.
 
-Everything needed is on the page with no prerequisite object (no profile): strategy, paper account, instrument and timeframe
-selectors; settings; a Run preflight button; the preflight result with remediation; the run control (enabled only when the latest
-preflight PASSED for exactly the current selections and is recent); and the persisted result of the cycle.
+"Run paper cycle" performs a FRESH authoritative preflight automatically and then ONE bounded cycle; there is no separate
+preflight click. A read-only "Preflight only" button remains. A risk-approved actionable signal ends as a persisted PROPOSAL
+(no order); only an explicit Approve click on the Approvals tab -- on that exact proposal id -- can place the simulated order,
+and the backend re-validates everything at that moment. Rerun, refresh, expiry, rejection and silence never trade.
 
-Side effects happen only inside `st.button` / `st.form_submit_button` branches. A rerun, refresh or reconnection cannot repeat a
-preflight or a cycle: (1) the branch runs only on the rerun triggered by the click, (2) the submission token is consumed per click,
-(3) the service re-checks the approved configuration hash and the hard preflight failures at the boundary, and (4) the runtime
-enforces idempotency (cycle key, intent and ledger UNIQUE constraints) regardless of the UI.
+Side effects happen only inside `st.button` branches. The submission token is consumed per click, the service/runtime enforce
+blocking checks and idempotency regardless of the UI.
 """
 
 from __future__ import annotations
@@ -18,13 +17,12 @@ from uuid import uuid4
 
 import streamlit as st
 
-from src.appsvc import strategies
-from src.appsvc.paper import DEFAULT_FORM, OUTCOME_MEANING, PaperConfigError, PaperService
+from src.appsvc import explain, freshness, strategies
+from src.appsvc.paper import DEFAULT_FORM, OUTCOME_MEANING, PaperConfigError, PaperService, stages_from_record
 from src.appsvc.paths import AppPaths
-from src.dashboard import shell, ui
+from src.dashboard import proposals_ui, shell, ui
 
-PREFLIGHT_MAX_AGE_SECONDS = 1800
-_OUTCOME_STATE = {"ORDER_FILLED": "OK", "NO_ACTION": "INFO", "NO_NEW_BAR": "INFO", "RISK_REJECTED": "WARN", "ORDER_REJECTED": "WARN",
+_OUTCOME_STATE = {"AWAITING_APPROVAL": "WARN", "PROPOSAL_REJECTED": "INFO", "PROPOSAL_EXPIRED": "INFO", "PROPOSAL_INVALIDATED": "WARN", "ORDER_FILLED": "OK", "NO_ACTION": "INFO", "NO_NEW_BAR": "INFO", "RISK_REJECTED": "WARN", "ORDER_REJECTED": "WARN",
                   "AWAITING_EXECUTION": "WARN", "RECONCILIATION_REQUIRED": "FAIL", "BLOCKED": "WARN", "FAILED": "FAIL", "STARTED": "FAIL"}
 REMEDIATION = {
     "registry": "The experiment registry file is missing. It is never created implicitly; create a paper account below or run scripts/run_experiment.py.",
@@ -46,9 +44,13 @@ def render(paths: AppPaths, svc: PaperService, account: int | None) -> None:
     shell.header("Paper Trading")
     st.warning("PAPER ONLY. This page can run exactly one simulated decision cycle at a time through the same runtime as "
                "`python -m src.cli paper run --once`. It cannot place real orders, select a live broker, or start a background loop.")
-    tab_run, tab_hist = st.tabs(["Run", "Cycle history & trace"])
+    acting = st.session_state.get("paper_account") or account       # the account chosen on this page, else the sidebar one
+    pending = len(svc.proposals(acting, pending_only=True)) if acting is not None else 0
+    tab_run, tab_appr, tab_hist = st.tabs(["Run", f"Approvals ({pending})", "Cycle history & trace"])
     with tab_run:
         _run_tab(paths, svc, account)
+    with tab_appr:
+        _approvals_tab(svc, acting)
     with tab_hist:
         _history_tab(paths, svc, account)
 
@@ -157,58 +159,42 @@ def _run_tab(paths: AppPaths, svc: PaperService, sidebar_account: int | None) ->
         st.warning("This experiment has no initialised paper account. A cycle cannot run until you explicitly initialise one.")
         _init_form(svc, cfg)
 
-    st.subheader("3. Preflight (read-only)")
-    st.caption(f"Checks this exact configuration ({cfg.strategy_name}, {cfg.symbol}, {cfg.interval}, account #{cfg.experiment_id}) and makes one "
-               "market-data request. It changes nothing. It never runs by itself: press the button.")
-    if st.button("Run preflight", key="btn_preflight"):
+    st.subheader("3. Run")
+    st.caption(f"One click runs a fresh preflight for this exact configuration ({cfg.strategy_name}, {cfg.symbol}, {cfg.interval}, account "
+               f"#{cfg.experiment_id}, paper) and then ONE bounded cycle. It makes market-data requests, never places an order by itself "
+               "(a trade becomes a proposal you approve) and starts no background loop.")
+    monitoring = st.checkbox("Run post-cycle monitoring (records a monitoring run; may queue alert events only if alerting is enabled)", value=True, key="paper_monitoring")
+    c_run, c_pre = st.columns(2)
+    if not initialised:
+        st.caption("Run is disabled until the paper account is initialised (explicit step above).")
+    if c_run.button("Run paper cycle", key="btn_run", type="primary", disabled=not initialised):
+        token = st.session_state.setdefault("run_token", uuid4().hex)
+        with st.status("Running paper cycle...", expanded=True) as box:
+            def progress(stage: str, status: str, detail: str) -> None:
+                box.write(f"{stage}: {status}" + (f" -- {detail}" if detail else ""))
+            outcome = svc.run_with_preflight(cfg, request_token=token, monitoring=monitoring, progress=progress)
+            box.update(label="Finished" if outcome.ran else "Not run" if outcome.refused else "Error",
+                       state="complete" if outcome.ran else "error")
+        st.session_state["run_token"] = uuid4().hex
+        st.session_state["last_outcome"] = outcome
+        st.cache_data.clear()
+    if c_pre.button("Preflight only (read-only)", key="btn_preflight"):
         now = datetime.now(timezone.utc)
         with st.spinner("Running preflight..."):
             try:
-                rep = svc.preflight(cfg, check_data=True)
-                st.session_state["paper_preflight"] = {"hash": chash, "at": now, "report": rep.to_dict()}
+                st.session_state["paper_preflight"] = {"hash": chash, "at": now, "report": svc.preflight(cfg, check_data=True).to_dict()}
             except Exception as exc:  # noqa: BLE001
                 st.session_state["paper_preflight"] = {"hash": chash, "at": now, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
     pre = st.session_state.get("paper_preflight")
-    ready = False
-    if pre is None:
-        st.info("No preflight has been run in this session. The run control stays disabled until one passes.")
-    elif pre["hash"] != chash:
-        st.warning("The selections or settings changed since the last preflight, so that result no longer applies. Run preflight again.")
-    else:
-        age = (datetime.now(timezone.utc) - pre["at"]).total_seconds()
+    if pre is not None and pre["hash"] == chash:
         if "error" in pre:
             st.error(f"Preflight could not be evaluated: {pre['error']}")
         else:
             rep = pre["report"]
-            stale = age > PREFLIGHT_MAX_AGE_SECONDS
-            ready = bool(rep["ready"]) and not stale and initialised
-            ui.box("PASS" if rep["ready"] else rep["overall"],
-                   f"Preflight {rep['overall']} at {pre['at'].isoformat(timespec='seconds')} for this configuration."
-                   + (" It is older than 30 minutes and no longer counts; run it again." if stale else ""))
-            ui.table([{"Check": c["name"], "Status": c["status"], "Detail": c["detail"][:140]} for c in rep["checks"]], empty="")
-            for c in rep["checks"]:
-                if c["status"] != "PASS":
-                    st.write(f"**{c['name']}** ({c['status']}): {REMEDIATION.get(c['name'], c['detail'])}")
-
-    st.subheader("4. Run ONE paper cycle")
-    with st.form("run_cycle_form"):
-        st.write(f"Will run one decision cycle: strategy **{cfg.strategy_name}**, instrument **{cfg.symbol}**, timeframe **{cfg.interval}**, "
-                 f"paper account **#{cfg.experiment_id}**, mode **paper**. A cycle may end with no signal, a risk rejection, or a simulated fill.")
-        monitoring = st.checkbox("Run post-cycle monitoring (records a monitoring run; may queue alert events only if alerting is enabled)", value=True, key="paper_monitoring")
-        confirm = st.checkbox("I confirm: run one paper-only cycle now", key="paper_confirm")
-        submitted = st.form_submit_button("Run one paper cycle", disabled=not ready)
-    if not ready:
-        st.caption("Disabled until the account is initialised and a recent preflight PASSED for exactly these selections.")
-    if submitted:
-        if not confirm:
-            st.warning("Tick the confirmation to run. Nothing was executed.")
-        else:
-            token = st.session_state.setdefault("run_token", uuid4().hex)
-            with st.spinner("Running one paper cycle..."):
-                outcome = svc.run_cycle(cfg, request_token=token, monitoring=monitoring, approved_config_hash=pre["hash"] if pre else None)
-            st.session_state["run_token"] = uuid4().hex
-            st.session_state["last_outcome"] = outcome
-            st.cache_data.clear()
+            ui.box("PASS" if rep["ready"] else rep["overall"], f"Preflight {rep['overall']} at {pre['at'].isoformat(timespec='seconds')} (read-only; nothing was run).")
+            _check_table(rep["checks"])
+    elif pre is not None:
+        st.caption("An earlier preflight was for different selections and is not shown.")
     last = st.session_state.get("last_outcome")
     if last is not None:
         _show_outcome(svc, last)
@@ -220,6 +206,28 @@ def _run_tab(paths: AppPaths, svc: PaperService, sidebar_account: int | None) ->
                 st.success(f"Saved {svc.save_profile(pname, cfg)}")
             except PaperConfigError as exc:
                 st.error(f"Not saved: {exc}")
+
+
+def _check_table(checks: list[dict]) -> None:
+    ui.table([{"Check": c["name"], "Status": c["status"], "Detail": c["detail"][:140]} for c in checks], empty="")
+    for c in checks:
+        if c["status"] != "PASS":
+            st.write(f"**{c['name']}** ({c['status']}): {REMEDIATION.get(c['name'], c['detail'])}")
+
+
+def _approvals_tab(svc: PaperService, account: int | None) -> None:
+    if not shell.need_account(account):
+        return
+    st.caption("A proposal is a persisted request to place ONE simulated paper order. Nothing is ordered until you approve that exact proposal. "
+               "Rejecting, letting it expire, or doing nothing places no order.")
+    proposals_ui.show_decision()
+    proposals_ui.render_queue(svc, account, key="appr")
+    past = [r for r in svc.proposals(account) if r["effective_status"] != "PENDING"]
+    if past:
+        st.markdown("Decided or lapsed proposals")
+        ui.table([{"Proposal": r["proposal"].proposal_id[:12], "Symbol": r["proposal"].symbol, "Side": r["proposal"].side,
+                   "Status": r["effective_status"], "Meaning": explain.proposal(r["effective_status"]).meaning,
+                   "Created": ui.ts(r["proposal"].created_at)} for r in past], empty="")
 
 
 def _init_form(svc: PaperService, cfg) -> None:
@@ -246,8 +254,9 @@ def _show_outcome(svc: PaperService, out) -> None:
         st.info("This submission had already been executed; the earlier result is shown. Nothing was run again.")
     if out.refused:
         st.error(f"Not run: {out.refused}")
-        for c in out.refused_checks:
-            st.write(f"- {c['name']}: {c['detail']}")
+        if out.refused_checks:
+            st.write("Blocking checks (nothing was executed; the runtime enforces these independently of this page):")
+            _check_table(out.refused_checks)
         if out.locked:
             st.caption("Another paper run holds the lock for this account.")
         return
@@ -259,9 +268,15 @@ def _show_outcome(svc: PaperService, out) -> None:
     status = rec.status.value
     ui.box(_OUTCOME_STATE.get(status, "INFO"), f"{status}" + (f" [{rec.reason_code}]" if rec.reason_code else "")
            + (" -- replayed an existing cycle (no new execution)" if out.record.replayed else ""))
-    st.write(OUTCOME_MEANING.get(status, ""))
+    ex = explain.cycle(status, rec.reason_code)
+    st.write(OUTCOME_MEANING.get(status, ex.meaning))
+    if ex.next_step:
+        st.caption("Next: " + ex.next_step)
     if rec.reason:
         st.caption(rec.reason)
+    if status == "AWAITING_APPROVAL":
+        st.warning("A trade is proposed but NOT placed. Open the Approvals tab to approve or reject this exact proposal.")
+    ui.table(stages_from_record(rec), empty="")
     ui.table([{"Item": k, "Value": v} for k, v in [
         ("Cycle id", rec.cycle_id), ("Status", status), ("Started", ui.ts(rec.started_at)), ("Finished", ui.ts(rec.finished_at)),
         ("Decision bar", ui.ts(rec.decision_bar)), ("Reconciliation", rec.reconciliation_status or "not run"),

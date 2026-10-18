@@ -11,6 +11,16 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 20 -- 2026-10-17, Guided paper trading (ADR-0056)
+
+Added: `Home` landing page (read-only) with required/optional setup checklist and a contextual primary action; persisted last-used paper account
+(`data/app/preferences.json`, atomic); `PaperService.run_with_preflight` (fresh preflight inside the Run click; "Preflight only" kept); persisted trade proposals with exact-id
+Approve/Reject, revalidation, expiry/invalidation, idempotency and crash recovery (`ProposalRecord`, `paper_proposals`, new cycle statuses, `paper proposals|approve|reject`);
+approval queue on Home and Paper Trading; `Activity` timeline; deterministic status explanations (`appsvc.explain`); calendar freshness (`appsvc.freshness`); honest stage
+tables. Changed: signals no longer become orders without approval; `paper run` exits 1 for AWAITING_APPROVAL; `Overview` renamed `Home` (8 pages). Fixed: a crashed approval left the
+proposal APPROVING and blocked later cycles (found by `scripts/paper_runtime_validation.py`). Tests: new `tests/test_sprint20_services.py`, extended runtime/CLI/service/AppTest/static suites;
+validation scripts updated. Real-machine verification: see PROJECT_STATE.md.
+
 ## Sprint 19 follow-up 2 -- 2026-10-16, Post-cycle monitoring for every evaluated cycle; explicit monitoring state
 
 See ADR-0055. Root cause: monitoring ran only after a fill, so NO_ACTION cycles had `monitoring = null` and no linked run. `PaperTradingRuntime._finish` now

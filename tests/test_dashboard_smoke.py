@@ -170,10 +170,13 @@ def test_every_page_renders_with_no_data_and_creates_nothing(workdir):
     assert any("PAPER MODE" in w.value for w in at.sidebar.warning)
 
 
-def test_overview_with_no_registry_explains_the_next_step(workdir):
+def test_home_is_the_default_landing_page_and_explains_the_next_step(workdir):
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
-    assert any("No experiment registry exists yet" in i.value for i in at.info)
+    assert at.sidebar.radio(key="page").value == "Home" and PAGES[0] == "Home" and len(PAGES) == 8
+    assert any("Next step" in x.value and "Review setup" in x.value for x in list(at.warning) + list(at.error) + list(at.info))
+    assert any(b.label == "Review setup" for b in at.button)
+    assert not (workdir / "data").exists()
 
 
 def test_research_page_with_no_experiments_says_so(workdir):
@@ -301,10 +304,21 @@ def _select_all(at, w, symbol="QQQ"):
     _assert_no_exception(at)
 
 
-def _confirm_and_run(at):
-    _checkbox(at, "I confirm: run one paper-only cycle now").check()
-    _button(at, "Run one paper cycle").click().run(timeout=_RUN_TIMEOUT)
+def _run(at):
+    """The primary action: ONE click; the fresh preflight is performed inside it (no separate preflight click)."""
+    _button(at, "Run paper cycle").click().run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
+
+
+def _approve(at, pid, *, confirm=True):
+    if confirm:
+        at.checkbox(key=f"appr_ok_{pid}").check()
+    at.button(key=f"appr_approve_{pid}").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+
+
+def _pending(svc, w):
+    return svc.proposals(w.exp, pending_only=True)
 
 
 def test_selectors_are_visible_and_populated_from_the_production_registry(paper_world):
@@ -317,11 +331,10 @@ def test_selectors_are_visible_and_populated_from_the_production_registry(paper_
     assert list(strat.options) == eligible_names(AppPaths())
     assert any(o.startswith(f"#{w.exp} ") for o in at.selectbox(key="paper_account").options)
     assert at.selectbox(key="paper_interval").options == ["1d"]
-    assert at.text_input(key="paper_symbol_text") is not None
-    assert not any(b.label == "Run preflight" for b in at.button)       # only offered once the selections are complete
+    assert not any(b.label == "Run paper cycle" for b in at.button)    # only offered once the selections are complete
     _select_all(at, w)
-    assert any(b.label == "Run preflight" for b in at.button)
-    assert _button(at, "Run one paper cycle").disabled is True
+    assert _button(at, "Run paper cycle").disabled is False             # no separate preflight click is required
+    assert any(b.label == "Preflight only (read-only)" for b in at.button)
 
 
 def test_ema_cross_is_offered_only_because_it_is_registered():
@@ -331,7 +344,7 @@ def test_ema_cross_is_offered_only_because_it_is_registered():
     assert set(eligible_names(AppPaths())) == set(available_strategies())
 
 
-def test_preflight_runs_only_on_an_explicit_click(paper_world, monkeypatch):
+def test_standalone_preflight_is_read_only_and_runs_only_on_an_explicit_click(paper_world, monkeypatch):
     w, svc, at = paper_world
     calls = []
     real = svc.preflight
@@ -344,32 +357,36 @@ def test_preflight_runs_only_on_an_explicit_click(paper_world, monkeypatch):
     assert len(calls) == 1
     at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)          # reruns never repeat it
     assert len(calls) == 1
+    assert w.store().list_cycles(w.exp) == [] and w.store().list_proposals(w.exp) == []     # it changed nothing
 
 
-def test_run_is_disabled_until_a_preflight_passes(paper_world):
+def test_run_performs_its_own_fresh_preflight_and_ends_as_a_proposal_not_an_order(paper_world, monkeypatch):
     w, svc, at = paper_world
+    standalone = []
+    real = svc.preflight
+    monkeypatch.setattr(svc, "preflight", lambda *a, **k: (standalone.append(1), real(*a, **k))[1])
     _go(at, "Paper Trading")
     _select_all(at, w)
-    assert _button(at, "Run one paper cycle").disabled is True
-    assert w.store().list_cycles(w.exp) == []
+    _run(at)
+    assert standalone == []                                                  # no separate preflight click or call
+    assert len(w.store().list_cycles(w.exp)) == 1 and len(_pending(svc, w)) == 1
+    assert w.store().list_intents(w.exp) == [] and w.store().list_fills(w.exp) == []      # NO order yet
+    assert any("AWAITING_APPROVAL" in x.value for x in at.warning)
+    assert any("NOT placed" in x.value for x in at.warning)
+    at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)               # reruns never repeat the cycle
+    assert len(w.store().list_cycles(w.exp)) == 1 and len(_pending(svc, w)) == 1
 
 
-def test_changing_any_selection_invalidates_the_preflight(paper_world):
+def test_changing_a_selection_never_reuses_an_earlier_standalone_preflight(paper_world):
     w, svc, at = paper_world
     _go(at, "Paper Trading")
     _select_all(at, w)
     at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
-    assert _button(at, "Run one paper cycle").disabled is False
     at.text_input(key="paper_symbol_text").set_value("SPY").run(timeout=_RUN_TIMEOUT)
-    assert _button(at, "Run one paper cycle").disabled is True
-    assert any("no longer applies" in x.value for x in at.warning)
-    at.text_input(key="paper_symbol_text").set_value("QQQ").run(timeout=_RUN_TIMEOUT)
-    assert _button(at, "Run one paper cycle").disabled is False        # same configuration again: the earlier approval applies
-    at.number_input(key="paper_slip").set_value(7.0).run(timeout=_RUN_TIMEOUT)    # a settings change also invalidates
-    assert _button(at, "Run one paper cycle").disabled is True
+    assert any("different selections" in x.value for x in at.caption)
 
 
-def test_failed_preflight_blocks_execution_with_an_actionable_explanation(paper_world):
+def test_failed_fresh_preflight_blocks_the_run_with_an_actionable_explanation(paper_world):
     w, svc, at = paper_world
     _go(at, "Paper Trading")
     class _Down:
@@ -378,32 +395,57 @@ def test_failed_preflight_blocks_execution_with_an_actionable_explanation(paper_
         fetch_candles = get_history = get_dataset = get_candles
     svc._market_data = _Down()                                         # market data cannot be obtained
     _select_all(at, w)
-    at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
-    _assert_no_exception(at)
-    assert _button(at, "Run one paper cycle").disabled is True
+    _run(at)
+    assert any("Not run" in e.value for e in at.error)
     assert any("market_data" in m.value for m in at.markdown)           # the failing check is named with its remediation
-    assert w.store().list_cycles(w.exp) == []
+    assert w.store().list_cycles(w.exp) == [] and w.store().list_proposals(w.exp) == []
 
 
-def test_one_explicit_run_executes_one_cycle_and_reruns_never_repeat_it(paper_world):
+def test_approving_the_exact_proposal_places_one_simulated_order_and_reruns_never_repeat_it(paper_world):
     w, svc, at = paper_world
     _go(at, "Paper Trading")
     _select_all(at, w)
-    at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
-    assert any(b.label == "Run one paper cycle" and not b.disabled for b in at.button)
-    _confirm_and_run(at)
-    assert len(w.store().list_cycles(w.exp)) == 1 and len(w.store().list_fills(w.exp)) == 1
-    assert any("ORDER_FILLED" in s.value for s in at.success)
-    labels = [e.label for e in at.expander]
-    assert "Signal at the decision bar" in labels and "Risk decision" in labels and "Paper fill (simulated)" in labels
+    _run(at)
+    pid = _pending(svc, w)[0]["proposal"].proposal_id
+    _approve(at, pid)
+    assert len(w.store().list_cycles(w.exp)) == 1 and len(w.store().list_fills(w.exp)) == 1 and len(w.store().list_intents(w.exp)) == 1
+    assert any("ORDER_FILLED" in x.value for x in at.success)
+    assert svc.proposals(w.exp)[0]["effective_status"] == "EXECUTED" and _pending(svc, w) == []
     at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)
-    assert len(w.store().list_cycles(w.exp)) == 1 and len(w.store().list_fills(w.exp)) == 1 and len(w.monitor_calls) == 1
-    # a brand-new session (browser refresh) re-runs nothing and shows the persisted cycle in history
-    at2 = AppTest.from_file(APP_PATH)
+    assert len(w.store().list_fills(w.exp)) == 1 and len(w.monitor_calls) == 1
+    at2 = AppTest.from_file(APP_PATH)                                     # a brand-new session (refresh) runs and approves nothing
     at2.session_state["_paper_service"] = svc
     at2.run(timeout=_RUN_TIMEOUT)
     _go(at2, "Paper Trading")
-    assert len(w.store().list_cycles(w.exp)) == 1 and len(w.store().list_fills(w.exp)) == 1
+    assert len(w.store().list_fills(w.exp)) == 1
+
+
+def test_approval_without_confirmation_and_rejection_place_no_order(paper_world):
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    _select_all(at, w)
+    _run(at)
+    pid = _pending(svc, w)[0]["proposal"].proposal_id
+    _approve(at, pid, confirm=False)
+    assert w.store().list_fills(w.exp) == [] and len(_pending(svc, w)) == 1
+    assert any("Tick the confirmation" in x.value for x in at.warning)
+    at.button(key=f"appr_reject_{pid}").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert w.store().list_fills(w.exp) == [] and w.store().list_intents(w.exp) == [] and _pending(svc, w) == []
+    assert svc.proposals(w.exp)[0]["effective_status"] == "REJECTED"
+
+
+def test_an_expired_proposal_cannot_be_approved_and_places_no_order(paper_world):
+    from datetime import timedelta
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    _select_all(at, w)
+    _run(at)
+    pid = _pending(svc, w)[0]["proposal"].proposal_id
+    w.now[0] = w.now[0] + timedelta(hours=2)                              # silence: the proposal lapses
+    assert _pending(svc, w) == []
+    assert svc.approve_proposal(pid, w.exp).proposal_error in ("EXPIRED", "NOT_PENDING")
+    assert w.store().list_fills(w.exp) == [] and w.store().list_intents(w.exp) == []
 
 
 def test_the_service_boundary_refuses_a_run_whose_approval_does_not_match(paper_world):
@@ -413,24 +455,13 @@ def test_the_service_boundary_refuses_a_run_whose_approval_does_not_match(paper_
     assert w.store() is None or w.store().list_cycles(w.exp) == []
 
 
-def test_a_click_without_confirmation_runs_nothing(paper_world):
-    w, svc, at = paper_world
-    _go(at, "Paper Trading")
-    _select_all(at, w)
-    at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
-    _button(at, "Run one paper cycle").click().run(timeout=_RUN_TIMEOUT)
-    _assert_no_exception(at)
-    assert w.store().list_cycles(w.exp) == [] and any("Tick the confirmation" in x.value for x in at.warning)
-
-
 def test_no_signal_is_shown_as_a_valid_outcome_not_a_failure(paper_world):
     w, svc, at = paper_world
     from tests.test_paper_runtime import ScriptedStrategy
     ScriptedStrategy.SCRIPT.clear()                # no actionable signal on the decision bar
     _go(at, "Paper Trading")
     _select_all(at, w)
-    at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
-    _confirm_and_run(at)
+    _run(at)
     assert any("NO_ACTION" in i.value for i in at.info)
     # the fixture's fake monitor writes no monitoring database, so the page truthfully reports the linked run as missing;
     # that is the ONLY error allowed, and the cycle itself is shown as the valid outcome it is
@@ -561,8 +592,7 @@ def test_run_result_view_shows_the_monitoring_outcome_of_a_no_action_cycle(paper
     ScriptedStrategy.SCRIPT.clear()
     _go(at, "Paper Trading")
     _select_all(at, w)
-    at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
-    _confirm_and_run(at)
+    _run(at)
     assert len(w.monitor_calls) == 1
     assert any(e.label == "Monitoring" for e in at.expander)
     assert "No monitoring run is linked" not in " ".join(x.value for x in at.markdown)
@@ -609,3 +639,95 @@ def test_opening_the_app_never_calls_the_llm_or_a_live_broker(workdir, monkeypat
         _go(at, page)
     after = {m for m in sys.modules if m.split(".")[0] in {"anthropic"} or m.startswith("src.broker")}
     assert after == before
+
+
+# ---------------------------------------------------------------------------
+# Sprint 20: Home, persisted account, approval queue, activity
+# ---------------------------------------------------------------------------
+
+
+def test_home_is_read_only_and_requests_nothing(paper_world, monkeypatch):
+    w, svc, at = paper_world
+    calls = []
+    for name in ("preflight", "run_cycle", "run_with_preflight", "approve_proposal", "reject_proposal", "monitor_cycle", "create_paper_account"):
+        real = getattr(svc, name)
+        monkeypatch.setattr(svc, name, lambda *a, _n=name, _r=real, **k: (calls.append(_n), _r(*a, **k))[1])
+    before = (len(w.store().list_cycles(w.exp)), len(w.provider.calls) if hasattr(w.provider, "calls") else None)
+    at.sidebar.selectbox(key="account_id").set_value(w.exp).run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)
+    assert calls == [] and len(w.store().list_cycles(w.exp)) == before[0]
+    if before[1] is not None:
+        assert len(w.provider.calls) == before[1]
+
+
+def test_selecting_an_account_persists_it_and_a_new_session_restores_it(paper_world, workdir):
+    import json
+    w, svc, at = paper_world
+    assert not AppPaths().prefs_file.exists()                             # nothing is remembered until an explicit choice
+    snapshot = (w.reg_path.read_bytes(), w.store_path.read_bytes())
+    at.sidebar.selectbox(key="account_id").set_value(w.exp).run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert json.loads(AppPaths().prefs_file.read_text())["last_account_id"] == w.exp
+    assert (w.reg_path.read_bytes(), w.store_path.read_bytes()) == snapshot   # selection mutated no portfolio or ledger
+    at2 = AppTest.from_file(APP_PATH)                                     # restart/refresh
+    at2.session_state["_paper_service"] = svc
+    at2.run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at2)
+    assert at2.sidebar.selectbox(key="account_id").value == w.exp
+    assert w.store().list_cycles(w.exp) == []                             # restoring executed nothing
+
+
+def test_a_missing_or_malformed_preference_warns_and_is_never_replaced_silently(paper_world, workdir):
+    from src.appsvc import prefs
+    w, svc, _ = paper_world
+    prefs.save_account(AppPaths(), 999)
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["_paper_service"] = svc
+    at.run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert at.sidebar.selectbox(key="account_id").value is None
+    assert any("no longer available" in x.value for x in at.sidebar.warning)
+    AppPaths().prefs_file.write_text("{broken")
+    at2 = AppTest.from_file(APP_PATH)
+    at2.session_state["_paper_service"] = svc
+    at2.run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at2)
+    assert at2.sidebar.selectbox(key="account_id").value is None
+    assert any("could not be read" in x.value for x in at2.sidebar.warning)
+    assert AppPaths().prefs_file.read_text() == "{broken"                 # not repaired, not overwritten by viewing
+
+
+def test_home_shows_the_pending_approval_and_its_primary_action_navigates_without_running(paper_world):
+    w, svc, at = paper_world
+    svc.run_with_preflight(w.config(), request_token="seed")
+    at.sidebar.selectbox(key="account_id").set_value(w.exp).run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert any("Review proposed trade" in x.value for x in list(at.warning) + list(at.error) + list(at.info))
+    n = len(w.store().list_cycles(w.exp))
+    at.button(key="home_primary").click().run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert at.sidebar.radio(key="page").value == "Paper Trading"
+    assert len(w.store().list_cycles(w.exp)) == n and w.store().list_fills(w.exp) == []
+
+
+def test_optional_features_off_do_not_make_home_look_unhealthy(paper_world):
+    w, svc, at = paper_world
+    at.sidebar.selectbox(key="account_id").set_value(w.exp).run(timeout=_RUN_TIMEOUT)
+    assert not any("optional" in x.value.lower() for x in at.error)
+    assert any("Optional items never make the app unhealthy" in c.value for c in at.caption)
+
+
+def test_activity_page_links_records_only_through_stored_ids(paper_world):
+    w, svc, at = paper_world
+    svc.run_with_preflight(w.config(), request_token="seed")
+    pid = _pending(svc, w)[0]["proposal"].proposal_id
+    svc.approve_proposal(pid, w.exp)
+    at.sidebar.selectbox(key="account_id").set_value(w.exp).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Activity")
+    frame = at.dataframe[0].value
+    assert {"Cycle", "Proposal", "Order", "Fill"} <= set(frame["Type"])
+    fill_row = frame[frame["Type"] == "Fill"].iloc[0]
+    assert "client_order_id=" in fill_row["Linked ids"] and "cycle_id" not in fill_row["Linked ids"]
+    at.multiselect(key="act_cats").set_value(["Fill"]).run(timeout=_RUN_TIMEOUT)
+    assert set(at.dataframe[0].value["Type"]) == {"Fill"}

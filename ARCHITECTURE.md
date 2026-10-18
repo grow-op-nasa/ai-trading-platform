@@ -2037,6 +2037,13 @@ record. The runtime imports no broker/AI/alert-transport code and nothing import
 owns no state and returns plain data; pages never import `src.paper`, brokers, execution, risk or AI code. Launch path: `scripts/start_app.sh` ->
 `python -m src.dashboard.launch` -> Streamlit (loopback). Side effects exist only behind explicit buttons.
 
+### Guided paper trading (Sprint 20, ADR-0056)
+
+`Home`/`Activity`/`Paper Trading` sit on new Streamlit-free services: `appsvc.home` (read-only state + checklist + primary action), `appsvc.prefs` (atomic last-account file),
+`appsvc.activity` (timeline over stored ids), `appsvc.explain` (lookup tables), `appsvc.freshness` (calendar arithmetic, no data request). Trade flow: `PaperService.run_with_preflight` ->
+fresh preflight (`blocking_checks`) -> `PaperTradingRuntime.run_cycle` -> **proposal** (`paper_proposals`, cycle `AWAITING_APPROVAL`, no order) -> `approve_proposal(id)` (compare-and-set,
+revalidate, durable intent, PaperBroker) or `reject_proposal(id)`. Only `dashboard/proposals_ui.py` can call approve/reject (static test); AI and monitoring code cannot.
+
 ### Promotion (Sprint 15, ADR-0049)
 
 `src/promotion/` (human-CLI only) + `src/strategies/promoted/` (manifest

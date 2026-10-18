@@ -145,6 +145,7 @@ class World:
     def runtime(self, *, with_monitor: bool = True, **kw) -> PaperTradingRuntime:
         md = MarketDataService(provider=self.provider, cache_dir=self.tmp / "cache", use_cache=False)
         kw.setdefault("faults", self.faults)
+        kw.setdefault("approval_required", False)         # Sprint 18 semantics for legacy tests; Sprint 20 tests pass True explicitly
         return PaperTradingRuntime(
             self.config(), registry_path=self.reg_path, store_path=self.store_path, market_data=md,
             monitor_factory=self.monitor if with_monitor else None, clock=lambda: self.now[0],
@@ -1034,3 +1035,199 @@ def test_monitor_cycle_rejects_unknown_cycles_and_unconfigured_runtimes(world):
         world.runtime().monitor_cycle("does-not-exist")
     with pytest.raises(PaperSetupError):
         world.runtime(with_monitor=False).monitor_cycle(rec.cycle_id)
+
+
+# =====================================================================================
+# Sprint 20: human approval of a persisted proposal (ADR-0056)
+# =====================================================================================
+from datetime import timedelta  # noqa: E402
+
+from src.paper.models import ProposalStatus  # noqa: E402
+from src.paper.runtime import PaperProposalError  # noqa: E402
+
+
+def _ar(world, **kw):
+    return world.runtime(approval_required=True, **kw)
+
+
+def _no_order(world):
+    st = world.store()
+    assert st.list_fills(world.exp) == [] and st.list_intents(world.exp) == []
+    assert world.portfolio().cash == 10_000.0 and not world.portfolio().positions
+
+
+def test_an_actionable_risk_approved_signal_becomes_a_pending_proposal_and_no_order(world):
+    world.script(WED, "LONG")
+    rec = _ar(world).run_cycle()
+    assert rec.status is CycleStatus.AWAITING_APPROVAL and rec.reason_code == "PROPOSAL_PENDING"
+    _no_order(world)
+    [p] = world.store().list_proposals(world.exp)
+    assert p.status is ProposalStatus.PENDING and p.cycle_id == rec.cycle_id and p.side == "BUY" and p.quantity > 0
+    assert p.reference_price > 0 and p.expires_at > p.created_at and p.symbol == "QQQ" and p.interval == "1d"
+    assert p.strategy_hash == rec.strategy_hash and p.config_hash == rec.config_hash and p.signal["direction"] == "LONG"
+    assert p.risk_decision["approved"] is True and p.dataset["complete_bars_hash"]
+    assert rec.intent_id is None and rec.client_order_id is None
+    assert world.monitor_calls == []                                    # monitored after the decision, not while pending
+
+
+def test_no_signal_and_risk_rejection_create_no_proposal(tmp_path):
+    w = World(tmp_path)
+    ScriptedStrategy.SCRIPT.clear()
+    assert _ar(w).run_cycle().status is CycleStatus.NO_ACTION
+    assert w.store().list_proposals(w.exp) == []
+    w2 = World(tmp_path / "b", config_over={"risk": {"allocation_per_trade_pct": 0.0001, "max_portfolio_exposure_pct": 0.5,
+                                                    "risk_pct_per_trade": 0.01}})
+    w2.script(WED, "LONG")
+    assert _ar(w2).run_cycle().status is CycleStatus.RISK_REJECTED
+    assert w2.store().list_proposals(w2.exp) == []
+
+
+def test_rerunning_while_pending_replays_the_same_proposal_and_stacks_nothing(world):
+    world.script(WED, "LONG")
+    first = _ar(world).run_cycle()
+    again = _ar(world).run_cycle()
+    assert again.replayed and again.cycle_id == first.cycle_id and again.status is CycleStatus.AWAITING_APPROVAL
+    assert len(world.store().list_proposals(world.exp)) == 1 and len(world.store().list_cycles(world.exp)) == 1
+    _no_order(world)
+
+
+def test_approval_executes_exactly_one_paper_order_through_the_ordinary_path(world):
+    world.script(WED, "LONG")
+    rec = _ar(world).run_cycle()
+    pid = world.store().list_proposals(world.exp)[0].proposal_id
+    done = _ar(world).approve_proposal(pid)
+    assert done.status is CycleStatus.ORDER_FILLED and done.cycle_id == rec.cycle_id
+    only_one_execution(world)
+    p = world.store().get_proposal(pid)
+    assert p.status is ProposalStatus.EXECUTED and "ORDER_FILLED" in p.decision_reason
+    intent = world.store().list_intents(world.exp)[0]
+    assert intent.intent_id == p.intent_id and intent.client_order_id == p.client_order_id and intent.quantity == p.quantity
+    assert done.monitoring["outcome"] == "COMPLETED" and len(world.monitor_calls) == 1
+
+
+def test_approving_twice_or_after_restart_never_creates_a_second_order(world):
+    world.script(WED, "LONG")
+    _ar(world).run_cycle()
+    pid = world.store().list_proposals(world.exp)[0].proposal_id
+    _ar(world).approve_proposal(pid)
+    again = _ar(world).approve_proposal(pid)                            # a brand-new runtime = restart
+    assert again.replayed and again.status is CycleStatus.ORDER_FILLED
+    only_one_execution(world)
+    assert len(world.monitor_calls) == 1
+
+
+def test_rejection_submits_nothing_and_cannot_be_reversed_by_a_later_approval(world):
+    world.script(WED, "LONG")
+    _ar(world).run_cycle()
+    pid = world.store().list_proposals(world.exp)[0].proposal_id
+    rej = _ar(world).reject_proposal(pid)
+    assert rej.status is CycleStatus.PROPOSAL_REJECTED
+    assert _ar(world).reject_proposal(pid).replayed                     # idempotent
+    with pytest.raises(PaperProposalError) as e:
+        _ar(world).approve_proposal(pid)
+    assert e.value.code == "REJECTED"
+    _no_order(world)
+    again = _ar(world).run_cycle()                                      # the same bar replays the human's decision
+    assert again.status is CycleStatus.PROPOSAL_REJECTED and again.replayed
+    assert len(world.store().list_proposals(world.exp)) == 1
+
+
+def test_an_expired_proposal_cannot_be_approved_and_a_fresh_cycle_can_re_evaluate(world):
+    world.script(WED, "LONG")
+    _ar(world).run_cycle()
+    pid = world.store().list_proposals(world.exp)[0].proposal_id
+    world.now[0] = world.now[0] + timedelta(seconds=1801)
+    with pytest.raises(PaperProposalError) as e:
+        _ar(world).approve_proposal(pid)
+    assert e.value.code == "EXPIRED"
+    assert world.store().get_proposal(pid).status is ProposalStatus.EXPIRED
+    assert world.store().list_cycles(world.exp)[0].status is CycleStatus.PROPOSAL_EXPIRED
+    _no_order(world)
+    fresh = _ar(world).run_cycle()                                      # silence never trades; a new decision is possible
+    assert fresh.status is CycleStatus.AWAITING_APPROVAL
+    props = world.store().list_proposals(world.exp)
+    assert len(props) == 2 and {p.status for p in props} == {ProposalStatus.EXPIRED, ProposalStatus.PENDING}
+    _no_order(world)
+
+
+def test_changed_portfolio_data_or_configuration_invalidates_the_proposal(tmp_path):
+    cases = {}
+    for name in ("portfolio", "data", "config"):
+        w = World(tmp_path / name)
+        w.script(WED, "LONG")
+        _ar(w).run_cycle()
+        pid = w.store().list_proposals(w.exp)[0].proposal_id
+        if name == "portfolio":
+            w.registry.save_portfolio(w.exp, Portfolio.reconstruct(cash=9_999.0, positions=[]))
+            expect = "PORTFOLIO_CHANGED"
+        elif name == "data":
+            w.provider = FaultInjectingProvider(SyntheticCandleProvider(date(2026, 9, 29)), [None])   # an older last session
+            expect = "DATA_CHANGED"
+        else:
+            w.cfg_dict["execution"]["fee_bps"] = 5.0
+            expect = "CONFIG_CHANGED"
+        with pytest.raises(PaperProposalError) as e:
+            _ar(w).approve_proposal(pid)
+        assert e.value.code == expect, (name, e.value.code)
+        assert w.store().get_proposal(pid).status is ProposalStatus.INVALIDATED
+        assert w.store().list_fills(w.exp) == [] and w.store().list_intents(w.exp) == []
+        cases[name] = expect
+    assert len(cases) == 3
+
+
+def test_a_crash_during_approval_is_recovered_without_a_second_order(world):
+    world.script(WED, "LONG")
+    _ar(world).run_cycle()
+    pid = world.store().list_proposals(world.exp)[0].proposal_id
+    world.faults.arm("after_intent_persisted", SimulatedCrash("x"))
+    with pytest.raises(SimulatedCrash):
+        _ar(world).approve_proposal(pid)
+    assert world.store().get_proposal(pid).status is ProposalStatus.APPROVING
+    assert len(world.store().list_intents(world.exp)) == 1 and world.store().list_fills(world.exp) == []
+    done = _ar(world).approve_proposal(pid)                             # approving again resolves it by lookup, never resubmits blindly
+    assert done.status is CycleStatus.ORDER_FILLED
+    only_one_execution(world)
+    assert world.store().get_proposal(pid).status is ProposalStatus.EXECUTED
+
+
+def test_a_crashed_approval_recovered_by_the_next_cycle_does_not_block_later_cycles(world):
+    """Regression (found by the Sprint 20 validation script): recovery must close an APPROVING proposal whose order it resolved,
+    otherwise the pending-proposal gate replays the old cycle forever."""
+    world.script(WED, "LONG")
+    _ar(world).run_cycle()
+    pid = world.store().list_proposals(world.exp)[0].proposal_id
+    world.faults.arm("broker_after_commit", SimulatedCrash("x"))
+    with pytest.raises(SimulatedCrash):
+        _ar(world).approve_proposal(pid)
+    assert world.store().get_proposal(pid).status is ProposalStatus.APPROVING
+    rec = _ar(world).run_cycle()                                       # a plain next run recovers by lookup
+    assert rec.status is CycleStatus.ORDER_FILLED
+    assert world.store().get_proposal(pid).status is ProposalStatus.EXECUTED
+    only_one_execution(world)
+    again = _ar(world).run_cycle()                                     # and nothing is stuck pending afterwards
+    assert world.store().list_proposals(world.exp, (ProposalStatus.PENDING, ProposalStatus.APPROVING)) == []
+    assert again.cycle_id == rec.cycle_id or again.status is not CycleStatus.AWAITING_APPROVAL
+
+
+def test_an_uncertain_submission_is_reconciled_before_any_retry_after_approval(world):
+    world.script(WED, "LONG")
+    _ar(world).run_cycle()
+    pid = world.store().list_proposals(world.exp)[0].proposal_id
+    world.faults.arm("broker_after_commit", BrokerUncertain("ack lost"))
+    res = _ar(world).approve_proposal(pid)
+    assert res.status in (CycleStatus.AWAITING_EXECUTION, CycleStatus.ORDER_FILLED)
+    again = _ar(world).approve_proposal(pid)
+    assert again.status is CycleStatus.ORDER_FILLED
+    only_one_execution(world)
+
+
+def test_the_unapproved_default_runtime_cannot_place_an_order_without_a_human(tmp_path):
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    import inspect as _i
+    assert _i.signature(PaperTradingRuntime.__init__).parameters["approval_required"].default is True
+    md = MarketDataService(provider=w.provider, cache_dir=tmp_path / "c", use_cache=False)
+    rt = PaperTradingRuntime(w.config(), registry_path=w.reg_path, store_path=w.store_path, market_data=md,
+                             clock=lambda: w.now[0], allowed_strategy_prefixes=("src.strategies", "tests.test_paper_runtime"))
+    assert rt.run_cycle().status is CycleStatus.AWAITING_APPROVAL
+    _no_order(w)

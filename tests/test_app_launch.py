@@ -195,8 +195,9 @@ def test_no_ui_widget_offers_a_live_or_broker_choice_and_there_is_no_shell_or_ex
 
 def test_all_state_changing_ui_calls_sit_behind_a_button_or_form_submission():
     """Every service mutation in the pages is lexically inside an `if <button/form flag>:` branch."""
-    mutating = ("run_cycle(", "initialize_account(", "save_profile(", "dispatch_pending(", "retry_failed(", "value_now(", ".preflight(")
-    for f in (SRC / "dashboard").glob("page_*.py"):
+    mutating = ("run_cycle(", "initialize_account(", "save_profile(", "dispatch_pending(", "retry_failed(", "value_now(", ".preflight(",
+               "run_with_preflight(", "approve_proposal(", "reject_proposal(", "create_paper_account(", "monitor_cycle(")
+    for f in [*(SRC / "dashboard").glob("page_*.py"), SRC / "dashboard" / "proposals_ui.py"]:
         lines = f.read_text().splitlines()
         for i, line in enumerate(lines):
             if any(m in line for m in mutating) and not line.lstrip().startswith(("#", "def ", '"""')):
@@ -213,3 +214,45 @@ def test_all_state_changing_ui_calls_sit_behind_a_button_or_form_submission():
                         if prev.lstrip().startswith("def "):
                             break
                 assert guard is not None, f"{f.name}:{i + 1} calls a mutating service outside an explicit if-branch: {line.strip()}"
+
+
+# ------------------------------------------------------------------ Sprint 20 (ADR-0056)
+_MUTATORS = ("run_cycle", "run_with_preflight", "approve_proposal", "reject_proposal", "preflight", "initialize_account",
+             "create_paper_account", "monitor_cycle", "value_now", "dispatch_pending", "retry_failed", "save_account")
+
+
+def _call_names(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text())
+    return {n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "") for n in ast.walk(tree) if isinstance(n, ast.Call)}
+
+
+def test_home_and_activity_pages_are_read_only_by_construction():
+    for name in ("page_home.py", "page_activity.py"):
+        assert _call_names(SRC / "dashboard" / name).isdisjoint(_MUTATORS), name
+
+
+def test_the_read_only_homepage_and_timeline_services_cannot_reach_any_mutator():
+    for name in ("home.py", "activity.py", "freshness.py", "explain.py"):
+        assert _call_names(SRC / "appsvc" / name).isdisjoint(set(_MUTATORS) - {"save_account"}), name
+        assert "save_account" not in _call_names(SRC / "appsvc" / name)
+
+
+def test_only_the_approval_widget_module_can_approve_or_reject_a_proposal_in_the_ui():
+    callers = {f.name for f in (SRC / "dashboard").glob("*.py") if {"approve_proposal", "reject_proposal"} & _call_names(f)}
+    assert callers == {"proposals_ui.py"}
+
+
+def test_no_ai_or_notification_code_can_approve_a_proposal():
+    offenders = [str(f.relative_to(REPO)) for d in ("ai", "monitoring", "agents") if (SRC / d).is_dir() for f in (SRC / d).rglob("*.py")
+                 if {"approve_proposal", "reject_proposal"} & _call_names(f)]
+    assert offenders == []
+
+
+def test_only_the_preference_store_writes_the_preference_file_and_the_dashboard_only_via_the_shell_callback():
+    savers = {f.name for f in (SRC / "dashboard").glob("*.py") if "save_account" in _call_names(f)}
+    assert savers == {"shell.py"}
+
+
+def test_the_app_binds_to_loopback_by_default():
+    text = (SRC / "dashboard" / "launch.py").read_text()
+    assert "127.0.0.1" in text and "0.0.0.0" not in text

@@ -19,6 +19,10 @@ class CycleStatus(str, Enum):
     ORDER_FILLED = "ORDER_FILLED"                  # completed: filled and applied to the portfolio
     AWAITING_EXECUTION = "AWAITING_EXECUTION"      # intent exists but its outcome is not yet conclusive
     BLOCKED = "BLOCKED"                            # data or safety preconditions prevented a decision
+    AWAITING_APPROVAL = "AWAITING_APPROVAL"        # Sprint 20: risk-approved action persisted as a PROPOSAL; no order exists
+    PROPOSAL_REJECTED = "PROPOSAL_REJECTED"        # completed: the human declined; no order
+    PROPOSAL_EXPIRED = "PROPOSAL_EXPIRED"          # the proposal lapsed unapproved; no order; a fresh cycle may re-evaluate
+    PROPOSAL_INVALIDATED = "PROPOSAL_INVALIDATED"  # conditions changed before/at approval; no order; a fresh cycle may re-evaluate
     RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
     FAILED = "FAILED"                              # infrastructure / persistence / strategy error
 
@@ -192,3 +196,57 @@ class ReconRecord:
         d = asdict(self)
         d["status"] = self.status.value
         return d
+
+
+class ProposalStatus(str, Enum):
+    """Lifecycle of a human-approval proposal (Sprint 20, ADR-0056). Only APPROVING -> EXECUTED can lead to an order."""
+
+    PENDING = "PENDING"            # awaiting the human's decision; no order exists
+    APPROVING = "APPROVING"        # approval accepted, revalidated and claimed; the durable intent is being created/executed
+    EXECUTED = "EXECUTED"          # the approved proposal went through the ordinary intent/execution path (terminal)
+    REJECTED = "REJECTED"          # human declined (terminal)
+    EXPIRED = "EXPIRED"            # lapsed before approval (terminal)
+    INVALIDATED = "INVALIDATED"    # conditions changed; approval refused (terminal)
+
+
+@dataclass
+class ProposalRecord:
+    proposal_id: str
+    cycle_id: str
+    experiment_id: int
+    status: ProposalStatus
+    created_at: str
+    expires_at: str
+    strategy_name: str
+    strategy_hash: str
+    config_hash: str
+    symbol: str
+    interval: str
+    decision_bar: str
+    side: str
+    direction: str
+    quantity: float
+    approved_quantity: float
+    reference_price: float
+    stop_price: float | None
+    signal: dict[str, Any]
+    risk_decision: dict[str, Any]
+    execution_config: dict[str, Any]
+    dataset: dict[str, Any] | None
+    portfolio_fingerprint: str
+    intent_id: str
+    client_order_id: str
+    decided_at: str | None = None
+    decision_reason: str | None = None
+    config: dict[str, Any] | None = None     # the exact PaperRunConfig the proposal was made under
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["status"] = self.status.value
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ProposalRecord":
+        d = dict(d)
+        d["status"] = ProposalStatus(d["status"])
+        return cls(**d)

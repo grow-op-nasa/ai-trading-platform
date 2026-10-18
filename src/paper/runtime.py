@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import uuid
 from contextlib import contextmanager
@@ -47,6 +48,8 @@ from src.paper.models import (
     NON_TERMINAL_CYCLE,
     PreflightCheck,
     PreflightReport,
+    ProposalRecord,
+    ProposalStatus,
     ReconStatus,
 )
 from src.paper.reconcile import portfolio_state, reconcile, states_match
@@ -57,7 +60,8 @@ from src.strategies.identity import strategy_version
 from src.utils.hashing import dataframe_fingerprint
 
 _NO_RETRY = (CycleStatus.NO_ACTION, CycleStatus.RISK_REJECTED, CycleStatus.ORDER_REJECTED,
-             CycleStatus.ORDER_FILLED, CycleStatus.RECONCILIATION_REQUIRED)
+             CycleStatus.ORDER_FILLED, CycleStatus.RECONCILIATION_REQUIRED,
+             CycleStatus.AWAITING_APPROVAL, CycleStatus.PROPOSAL_REJECTED)     # EXPIRED/INVALIDATED may be re-evaluated
 _SECRET = re.compile(r"(sk-ant-[A-Za-z0-9_\-]+|(?i:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*\S+)")
 
 
@@ -67,6 +71,14 @@ class PaperSetupError(RuntimeError):
 
 class PaperLockedError(RuntimeError):
     """Another paper run holds the lock for this account."""
+
+
+class PaperProposalError(RuntimeError):
+    """A proposal decision was refused. `code` is machine-readable; nothing was submitted to the paper broker."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def safe_error(exc: BaseException, limit: int = 300) -> str:
@@ -105,6 +117,8 @@ class PaperTradingRuntime:
         faults: Any = None,
         calendar: Any = None,
         allowed_strategy_prefixes: tuple[str, ...] = ("src.strategies",),
+        approval_required: bool = True,
+        proposal_ttl_seconds: int = 1800,
     ) -> None:
         config.validate()
         self._config = config
@@ -119,6 +133,11 @@ class PaperTradingRuntime:
             calendar = NYSECalendar()
         self._cal = calendar
         self._prefixes = allowed_strategy_prefixes
+        # Sprint 20 (ADR-0056): by default a risk-approved action becomes a persisted PROPOSAL that a human must approve.
+        # `False` is the Sprint 18 immediate path, reachable only by passing it explicitly (tests/fixtures).
+        self._approval_required = bool(approval_required)
+        self._ttl = int(proposal_ttl_seconds)
+        self._memo: tuple[datetime, Any] | None = None
         self._risk = PortfolioRiskEngine(config.risk_limits(), config.portfolio_limits())
         self._stop = config.stop_policy()
         self._exec = ExecutionModel(config.execution_config())
@@ -316,16 +335,27 @@ class PaperTradingRuntime:
 
     def _data_check(self):
         try:
-            ds = self._fetch_dataset()
+            ds = self._fetch_dataset(remember=True)
         except Exception as exc:  # noqa: BLE001
             return ("market_data", CheckStatus.FAIL, safe_error(exc))
         return ("market_data", CheckStatus.PASS, f"{len(ds.candles)} bars via {ds.provider}, latest {ds.dataset_end}")
 
-    def _fetch_dataset(self):
-        end = self._clock().date()
+    def _fetch_dataset(self, *, remember: bool = False, reuse: bool = False):
+        """`remember`: keep the result for ONE immediately following run in this operation (preflight -> run). `reuse`:
+        consume that memo if it is under two minutes old. Approval revalidation never reuses (always fresh)."""
+        now = self._clock()
+        if reuse and self._memo is not None:
+            at, ds = self._memo
+            self._memo = None
+            if 0 <= (now - at).total_seconds() < 120:
+                return ds
+        end = now.date()
         start = end - timedelta(days=self._config.lookback_days)
-        return self._md.get_dataset(self._config.symbol, start=start, end=end,
-                                    interval=self._config.interval_enum(), use_cache=False)
+        ds = self._md.get_dataset(self._config.symbol, start=start, end=end,
+                                  interval=self._config.interval_enum(), use_cache=False)
+        if remember:
+            self._memo = (now, ds)
+        return ds
 
     # ================================================================== public cycle API
     def run_cycle(self) -> CycleRecord:
@@ -387,6 +417,13 @@ class PaperTradingRuntime:
         try:
             # ---- gate: resolve anything left over before taking any new risk
             self._recover_locked(store, registry)
+            self._expire_due(store)
+            pending = store.list_proposals(cfg.experiment_id, (ProposalStatus.PENDING, ProposalStatus.APPROVING), limit=1)
+            if pending:                                 # a decision is already awaiting the human: replay it, never stack another
+                waiting = store.get_cycle(pending[0].cycle_id)
+                if waiting is not None:
+                    waiting.replayed = True
+                    return waiting
             unresolved = store.list_intents(cfg.experiment_id, unresolved_only=True)
             if unresolved:
                 last = store.latest_reconciliation(cfg.experiment_id)
@@ -407,7 +444,7 @@ class PaperTradingRuntime:
 
             # ---- data
             try:
-                ds = self._fetch_dataset()
+                ds = self._fetch_dataset(reuse=True)
             except (DataProviderError, DataValidationError) as exc:
                 code = "DATA_INVALID" if isinstance(exc, DataValidationError) else "DATA_UNAVAILABLE"
                 return self._finish(store, rec, CycleStatus.BLOCKED, code, safe_error(exc))
@@ -527,14 +564,9 @@ class PaperTradingRuntime:
             approved_qty = float(decision.final_approved_quantity)
             if quantity > approved_qty + 1e-9:
                 return self._finish(store, rec, CycleStatus.FAILED, "INTENT_INVALID", "quantity exceeds approval")
-            intent = IntentRecord(
-                intent_id=_sha(key, "intent")[:32], cycle_id=rec.cycle_id, experiment_id=cfg.experiment_id,
-                client_order_id="atp-paper-" + _sha(key, "order")[:24], symbol=cfg.symbol, decision_bar=rec.decision_bar,
-                state=IntentState.INTENT_RECORDED, side=side.value, quantity=quantity,
-                approved_quantity=approved_qty,
-                direction=signal.direction.value, reference_price=price, stop_price=stop_price,
-                signal=rec.signal, risk_decision=rec.risk_decision, execution_config=rec.provenance["execution"],
-                created_at=self._clock().isoformat())
+            intent = self._build_intent(rec, key, signal, side.value, quantity, approved_qty, price, stop_price)
+            if self._approval_required:
+                return self._propose(store, rec, intent, portfolio)
             rec.intent_id, rec.client_order_id = intent.intent_id, intent.client_order_id
             rec.status = CycleStatus.AWAITING_EXECUTION
             if not store.record_intent(intent, rec):
@@ -688,6 +720,180 @@ class PaperTradingRuntime:
             self._persist(store, rec)
             return rec
 
+    # ================================================================== human approval (Sprint 20, ADR-0056)
+    def _build_intent(self, rec: CycleRecord, key: str, signal: Signal, side: str, quantity: float, approved_qty: float,
+                      price: float, stop_price: float | None) -> IntentRecord:
+        return IntentRecord(
+            intent_id=_sha(key, "intent")[:32], cycle_id=rec.cycle_id, experiment_id=self._config.experiment_id,
+            client_order_id="atp-paper-" + _sha(key, "order")[:24], symbol=self._config.symbol, decision_bar=rec.decision_bar,
+            state=IntentState.INTENT_RECORDED, side=side, quantity=quantity, approved_quantity=approved_qty,
+            direction=signal.direction.value, reference_price=price, stop_price=stop_price, signal=rec.signal,
+            risk_decision=rec.risk_decision, execution_config=rec.provenance["execution"],
+            created_at=self._clock().isoformat())
+
+    @staticmethod
+    def portfolio_fingerprint(portfolio) -> str:
+        st = portfolio_state(portfolio)
+        payload = {"cash": round(float(st.cash), 6), "positions": {k: [round(float(v[0]), 8), round(float(v[1]), 8)]
+                                                                    for k, v in sorted(st.positions.items())}}
+        return _sha(json.dumps(payload, sort_keys=True))
+
+    def _propose(self, store: PaperStore, rec: CycleRecord, intent: IntentRecord, portfolio) -> CycleRecord:
+        """Persist the risk-approved action as a PROPOSAL. No intent row, no ledger entry, no order, no portfolio change."""
+        now = self._clock()
+        proposal = ProposalRecord(
+            proposal_id=_sha(rec.idempotency_key or rec.cycle_id, "proposal", now.isoformat())[:32], cycle_id=rec.cycle_id,
+            experiment_id=self._config.experiment_id, status=ProposalStatus.PENDING, created_at=now.isoformat(),
+            expires_at=(now + timedelta(seconds=self._ttl)).isoformat(), strategy_name=self._config.strategy_name,
+            strategy_hash=rec.strategy_hash, config_hash=rec.config_hash, symbol=self._config.symbol,
+            interval=self._config.interval, decision_bar=rec.decision_bar, side=intent.side, direction=intent.direction,
+            quantity=intent.quantity, approved_quantity=intent.approved_quantity, reference_price=intent.reference_price,
+            stop_price=intent.stop_price, signal=rec.signal, risk_decision=rec.risk_decision,
+            execution_config=rec.provenance["execution"], dataset=rec.dataset,
+            portfolio_fingerprint=self.portfolio_fingerprint(portfolio), intent_id=intent.intent_id,
+            client_order_id=intent.client_order_id, config=_jsonable(asdict(self._config)))
+        rec.status, rec.reason_code = CycleStatus.AWAITING_APPROVAL, "PROPOSAL_PENDING"
+        rec.reason = (f"{intent.side} {intent.quantity:g} {intent.symbol} proposed at reference {intent.reference_price:g}; "
+                      "no order exists until a human approves the proposal")
+        rec.finished_at = now.isoformat()
+        rec.monitoring = self._monitor_skipped(rec)
+        if not store.add_proposal_and_cycle(proposal, rec):
+            return self._finish(store, rec, CycleStatus.BLOCKED, "PROPOSAL_ALREADY_EXISTS", "a proposal with this id exists")
+        return rec
+
+    def _expire_due(self, store: PaperStore) -> None:
+        now = self._clock()
+        for p in store.list_proposals(self._config.experiment_id, (ProposalStatus.PENDING,)):
+            if datetime.fromisoformat(p.expires_at) <= now:
+                if store.set_proposal_status(p.proposal_id, ProposalStatus.EXPIRED, expect=(ProposalStatus.PENDING,),
+                                             decided_at=now.isoformat(), reason="expired before approval") is not None:
+                    cyc = store.get_cycle(p.cycle_id)
+                    if cyc is not None:
+                        self._finish(store, cyc, CycleStatus.PROPOSAL_EXPIRED, "PROPOSAL_EXPIRED",
+                                     "the proposal expired unapproved; no order was submitted")
+
+    def list_proposals(self, statuses: tuple[ProposalStatus, ...] | None = None, limit: int = 50) -> list[ProposalRecord]:
+        return self._open_store().list_proposals(self._config.experiment_id, statuses, limit)
+
+    def reject_proposal(self, proposal_id: str, reason: str = "rejected by user") -> CycleRecord:
+        """Decline a pending proposal. Submits nothing. Repeating it is a no-op returning the same record."""
+        store = self._open_store()
+        with self._lock():
+            prop = self._own_proposal(store, proposal_id)
+            cyc = store.get_cycle(prop.cycle_id)
+            if prop.status is ProposalStatus.REJECTED and cyc is not None:
+                cyc.replayed = True
+                return cyc
+            self._expire_due(store)
+            now = self._clock().isoformat()
+            if store.set_proposal_status(proposal_id, ProposalStatus.REJECTED, expect=(ProposalStatus.PENDING,),
+                                         decided_at=now, reason=reason) is None:
+                cur = store.get_proposal(proposal_id)
+                raise PaperProposalError("NOT_PENDING", f"the proposal is {cur.status.value if cur else 'missing'}; it cannot be rejected")
+            return self._finish(store, cyc, CycleStatus.PROPOSAL_REJECTED, "PROPOSAL_REJECTED",
+                                "the proposal was rejected by the user; no order was submitted")
+
+    def _own_proposal(self, store: PaperStore, proposal_id: str) -> ProposalRecord:
+        prop = store.get_proposal(proposal_id)
+        if prop is None:
+            raise PaperProposalError("NOT_FOUND", f"proposal {proposal_id} not found")
+        if prop.experiment_id != self._config.experiment_id:
+            raise PaperProposalError("WRONG_ACCOUNT", "that proposal belongs to a different account")
+        return prop
+
+    def _invalidate(self, store: PaperStore, prop: ProposalRecord, cyc: CycleRecord, code: str, reason: str):
+        store.set_proposal_status(prop.proposal_id, ProposalStatus.INVALIDATED,
+                                  expect=(ProposalStatus.PENDING,), decided_at=self._clock().isoformat(), reason=f"{code}: {reason}")
+        self._finish(store, cyc, CycleStatus.PROPOSAL_INVALIDATED, code, reason)
+        raise PaperProposalError(code, reason)
+
+    def approve_proposal(self, proposal_id: str) -> CycleRecord:
+        """Approve ONE exact persisted proposal. Every condition is re-checked authoritatively first; the order goes through
+        the ordinary durable-intent -> PaperBroker path; approving twice yields the same single execution."""
+        store = self._open_store()
+        self._require_account(store)
+        registry = self._registry()
+        self._portfolio(registry)
+        instance, shash = self.resolve_strategy()
+        with self._lock():
+            prop = self._own_proposal(store, proposal_id)
+            cyc = store.get_cycle(prop.cycle_id)
+            if cyc is None:
+                raise PaperProposalError("NOT_FOUND", "the proposal's cycle record is missing")
+            if prop.status is ProposalStatus.EXECUTED:
+                if cyc.status in NON_TERMINAL_CYCLE:       # an uncertain submission: resolve it by lookup, never by resubmitting
+                    self._recover_locked(store, registry)
+                    cyc = store.get_cycle(prop.cycle_id) or cyc
+                cyc.replayed = True
+                return cyc
+            if prop.status in (ProposalStatus.REJECTED, ProposalStatus.EXPIRED, ProposalStatus.INVALIDATED):
+                raise PaperProposalError(prop.status.value, f"the proposal is {prop.status.value} and cannot be approved; "
+                                                           "run a fresh cycle to evaluate current conditions")
+            if prop.status is ProposalStatus.PENDING:
+                if datetime.fromisoformat(prop.expires_at) <= self._clock():
+                    self._expire_due(store)
+                    raise PaperProposalError("EXPIRED", "the proposal expired; run a fresh cycle to evaluate current conditions")
+                self._revalidate(store, registry, prop, cyc, shash)
+            now = self._clock().isoformat()
+            if store.set_proposal_status(proposal_id, ProposalStatus.APPROVING, expect=(ProposalStatus.PENDING, ProposalStatus.APPROVING),
+                                         decided_at=now, reason="approved by user") is None:
+                raise PaperProposalError("NOT_PENDING", "the proposal changed state while approving; nothing was submitted")
+            intent = IntentRecord(
+                intent_id=prop.intent_id, cycle_id=prop.cycle_id, experiment_id=prop.experiment_id,
+                client_order_id=prop.client_order_id, symbol=prop.symbol, decision_bar=prop.decision_bar,
+                state=IntentState.INTENT_RECORDED, side=prop.side, quantity=prop.quantity, approved_quantity=prop.approved_quantity,
+                direction=prop.direction, reference_price=prop.reference_price, stop_price=prop.stop_price, signal=prop.signal,
+                risk_decision=prop.risk_decision, execution_config=prop.execution_config, created_at=now)
+            cyc.intent_id, cyc.client_order_id = intent.intent_id, intent.client_order_id
+            cyc.status, cyc.reason_code, cyc.reason = CycleStatus.AWAITING_EXECUTION, "APPROVED", "approved by the user; executing"
+            if store.record_intent(intent, cyc):
+                self._faults.fire("after_intent_persisted")
+                result = self._execute_and_conclude(store, registry, intent, cyc)
+            else:                                         # the intent already exists (repeat approval / crash recovery)
+                self._recover_locked(store, registry)
+                result = store.get_cycle(prop.cycle_id) or cyc
+            store.set_proposal_status(proposal_id, ProposalStatus.EXECUTED, expect=(ProposalStatus.APPROVING,),
+                                      decided_at=self._clock().isoformat(), reason=f"cycle ended {result.status.value}")
+            return result
+
+    def _revalidate(self, store: PaperStore, registry, prop: ProposalRecord, cyc: CycleRecord, shash: str) -> None:
+        cfg = self._config
+        if prop.strategy_hash != shash or prop.config_hash != cfg.identity_hash() or prop.symbol != cfg.symbol \
+                or prop.interval != cfg.interval:
+            self._invalidate(store, prop, cyc, "CONFIG_CHANGED", "the strategy, configuration or instrument changed since the proposal")
+        hard = [c for c in self.preflight(check_data=False).checks if c.status is CheckStatus.FAIL]
+        if hard:
+            raise PaperProposalError("PREFLIGHT_FAILED", "safety checks failed: " + "; ".join(f"{c.name}: {c.detail}" for c in hard)
+                                     + " (the proposal stays pending; nothing was submitted)")
+        try:
+            ds = self._fetch_dataset()                    # always fresh
+        except (DataProviderError, DataValidationError) as exc:
+            raise PaperProposalError("DATA_UNAVAILABLE", f"market data could not be validated now: {safe_error(exc)} "
+                                                         "(the proposal stays pending; nothing was submitted)")
+        complete, _ = bars.split_complete(ds.candles, self._cal, self._clock())
+        if complete.empty or pd.Timestamp(complete.index[-1]).isoformat() != prop.decision_bar:
+            self._invalidate(store, prop, cyc, "DATA_CHANGED", "the latest complete decision bar is no longer the one the proposal was based on")
+        latest_close = float(complete.iloc[-1]["close"])
+        if not math.isclose(latest_close, prop.reference_price, rel_tol=1e-6, abs_tol=1e-6):
+            self._invalidate(store, prop, cyc, "DATA_CHANGED", "the decision-bar price differs from the proposal's reference price")
+        portfolio = self._portfolio(registry)
+        if self.portfolio_fingerprint(portfolio) != prop.portfolio_fingerprint:
+            self._invalidate(store, prop, cyc, "PORTFOLIO_CHANGED", "cash or positions changed since the proposal")
+        prior = store.intent_for_bar(cfg.experiment_id, prop.symbol, prop.decision_bar)
+        if prior is not None and prior.client_order_id != prop.client_order_id:
+            self._invalidate(store, prop, cyc, "DUPLICATE_ORDER", "an order for this decision bar already exists")
+        signal = signal_from_record(prop.signal)
+        try:
+            if signal.direction is SignalDirection.FLAT:
+                decision = self._risk.decide_close(signal, portfolio)
+            else:
+                decision = self._risk.decide(signal, portfolio, entry_price=prop.reference_price, stop_price=prop.stop_price)
+            ok = bool(decision.approved) and float(decision.final_approved_quantity) + 1e-9 >= prop.quantity
+        except Exception:  # noqa: BLE001
+            ok = False
+        if not ok:
+            self._invalidate(store, prop, cyc, "RISK_CHANGED", "the risk controls no longer approve this proposal")
+
     # ================================================================== recovery
     def _recover_locked(self, store: PaperStore, registry) -> list[CycleRecord]:
         """Resolve unfinished intents from authoritative recorded state, never by blind resubmission."""
@@ -714,4 +920,11 @@ class PaperTradingRuntime:
             status = CycleStatus.ORDER_FILLED if intent.state is IntentState.APPLIED else CycleStatus.ORDER_REJECTED
             self._finish(store, cycle, status, "RECOVERED", "finalised by recovery from recorded intent state")
             out.append(cycle)
+        # a proposal whose approval crashed mid-flight stays APPROVING until its order is resolved; once the cycle it
+        # produced is terminal the proposal is EXECUTED. Without this it would block every later cycle.
+        for prop in store.list_proposals(exp, (ProposalStatus.APPROVING,)):
+            cyc = store.get_cycle(prop.cycle_id)
+            if cyc is not None and cyc.intent_id and cyc.status not in NON_TERMINAL_CYCLE:
+                store.set_proposal_status(prop.proposal_id, ProposalStatus.EXECUTED, expect=(ProposalStatus.APPROVING,),
+                                          decided_at=self._clock().isoformat(), reason=f"cycle ended {cyc.status.value} (recovered)")
         return out

@@ -27,7 +27,7 @@ from typing import Any, Callable, Sequence
 
 from src.paper.config import PaperConfigError, PaperRunConfig
 from src.paper.models import CheckStatus, CycleStatus
-from src.paper.runtime import PaperLockedError, PaperSetupError, PaperTradingRuntime
+from src.paper.runtime import PaperLockedError, PaperProposalError, PaperSetupError, PaperTradingRuntime
 from src.paper.store import DEFAULT_DB_PATH as DEFAULT_PAPER_DB
 from src.paper.store import PaperStore, PaperStoreError
 
@@ -38,6 +38,8 @@ _RUN_EXIT = {
     CycleStatus.ORDER_FILLED: EXIT_OK, CycleStatus.AWAITING_EXECUTION: EXIT_ATTENTION,
     CycleStatus.ORDER_REJECTED: EXIT_ATTENTION, CycleStatus.RECONCILIATION_REQUIRED: EXIT_ATTENTION,
     CycleStatus.BLOCKED: EXIT_BLOCKED, CycleStatus.FAILED: EXIT_FAILED, CycleStatus.STARTED: EXIT_FAILED,
+    CycleStatus.AWAITING_APPROVAL: EXIT_ATTENTION, CycleStatus.PROPOSAL_REJECTED: EXIT_OK,
+    CycleStatus.PROPOSAL_EXPIRED: EXIT_ATTENTION, CycleStatus.PROPOSAL_INVALIDATED: EXIT_ATTENTION,
 }
 
 
@@ -60,6 +62,13 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--once", action="store_true", help="required: run exactly one cycle (there is no loop)")
     sp.add_argument("--monitor-db", default=None, help="monitoring database (default data/monitoring/monitoring.db)")
     sp.add_argument("--no-monitoring", action="store_true", help="skip the post-cycle monitoring run")
+    sp = sub.add_parser("proposals", help="list trade proposals awaiting a human decision (read-only)")
+    common(sp)
+    sp = sub.add_parser("approve", help="approve ONE persisted proposal (re-validated; then one paper order)")
+    common(sp); sp.add_argument("--proposal", required=True, help="the exact proposal id")
+    sp.add_argument("--monitor-db", default=None); sp.add_argument("--no-monitoring", action="store_true")
+    sp = sub.add_parser("reject", help="reject ONE persisted proposal (no order)")
+    common(sp); sp.add_argument("--proposal", required=True)
     sp = sub.add_parser("reconcile", help="re-run paper-broker vs portfolio reconciliation")
     common(sp)
     sp = sub.add_parser("status", help="read-only inspection")
@@ -101,11 +110,11 @@ def run_paper(argv: Sequence[str] | None = None, *, market_data: Any = None, mon
     registry = args.registry or _default_registry()
     paper_db = Path(args.paper_db) if args.paper_db else DEFAULT_PAPER_DB
 
-    if market_data is None and args.command in ("preflight", "run"):
+    if market_data is None and args.command in ("preflight", "run", "approve"):
         from src.data.service import MarketDataService
         market_data = MarketDataService()
     mon = None
-    if args.command in ("preflight", "run") and not getattr(args, "no_monitoring", False):
+    if args.command in ("preflight", "run", "approve") and not getattr(args, "no_monitoring", False):
         mon = monitor_factory or _default_monitor_factory(cfg, registry, getattr(args, "monitor_db", None))
     kwargs: dict[str, Any] = {}
     if clock is not None:
@@ -143,6 +152,9 @@ def run_paper(argv: Sequence[str] | None = None, *, market_data: Any = None, mon
                     emit(f"paper run: preflight FAIL {c.name}: {c.detail}")
                 return EXIT_CONFIG
             rec = runtime.run_cycle()
+            if rec.status is CycleStatus.AWAITING_APPROVAL and not args.json:
+                emit("  a trade PROPOSAL awaits your decision; NO order exists. "
+                     "Review it with `paper proposals`, then `paper approve --proposal <id>` or `paper reject --proposal <id>`.")
             payload = rec.to_dict()
             payload["exit_code"] = _RUN_EXIT[rec.status]
             payload["filled"] = rec.status is CycleStatus.ORDER_FILLED
@@ -160,6 +172,26 @@ def run_paper(argv: Sequence[str] | None = None, *, market_data: Any = None, mon
                 if rec.monitoring:
                     emit(f"  monitoring: {rec.monitoring}")
                 emit("  (a zero exit does not mean a trade filled -- see the status above)")
+            return _RUN_EXIT[rec.status]
+        if args.command == "proposals":
+            props = runtime.list_proposals()
+            if args.json:
+                emit(json.dumps([p.to_dict() for p in props], indent=2, default=str))
+            else:
+                for p in props:
+                    emit(f"  {p.proposal_id} {p.status.value:<11} {p.side} {p.quantity:g} {p.symbol} ref {p.reference_price:g} "
+                         f"bar {p.decision_bar} expires {p.expires_at}")
+                emit(f"{len(props)} proposal(s); listing is read-only")
+            return EXIT_OK
+        if args.command in ("approve", "reject"):
+            try:
+                rec = (runtime.approve_proposal(args.proposal) if args.command == "approve"
+                       else runtime.reject_proposal(args.proposal, "rejected from the command line"))
+            except PaperProposalError as exc:
+                emit(f"paper {args.command}: refused [{exc.code}] {exc}; nothing was submitted")
+                return EXIT_BLOCKED
+            emit(json.dumps(rec.to_dict(), indent=2, default=str) if args.json
+                 else f"cycle {rec.cycle_id}: {rec.status.value}" + (f" [{rec.reason_code}]" if rec.reason_code else ""))
             return _RUN_EXIT[rec.status]
         if args.command == "reconcile":
             rec = runtime.reconcile_now()

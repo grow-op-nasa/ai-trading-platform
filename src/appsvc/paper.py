@@ -12,14 +12,15 @@ import json
 import re
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from src.appsvc.paths import AppPaths
 from src.appsvc.strategies import eligible_names
 from src.paper.config import PaperConfigError, PaperRunConfig
-from src.paper.models import CheckStatus, CycleRecord, CycleStatus, PreflightReport
-from src.paper.runtime import PaperLockedError, PaperSetupError, PaperTradingRuntime
+from src.paper.models import CheckStatus, CycleRecord, CycleStatus, PreflightReport, ProposalRecord, ProposalStatus
+from src.paper.runtime import PaperLockedError, PaperProposalError, PaperSetupError, PaperTradingRuntime
 from src.paper.store import PaperStore, PaperStoreError
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -31,7 +32,72 @@ DEFAULT_FORM = {
     "execution": {"timing": "SIGNAL_BAR_CLOSE", "slippage_bps": 5.0, "fee_bps": 5.0, "fixed_fee": 0.0},
 }
 
+# Sprint 20 policy for the integrated Run: a fresh preflight (incl. one market-data request) must be clean for the checks that
+# protect capital. FAIL always blocks. BLOCKED blocks too, except `unresolved_intents`/`reconciliation`, which the runtime's own
+# gates handle deterministically (recovery, then a persisted RECONCILIATION_REQUIRED cycle). NOT_EVALUABLE blocks only for the
+# safety-critical checks below; for monitoring/alerting/duplicate-run it is a visible warning, never a pass.
+RUNTIME_HANDLED = frozenset({"unresolved_intents", "reconciliation"})
+SAFETY_CRITICAL = frozenset({"configuration", "paper_only_execution", "paper_broker", "registry", "portfolio", "strategy",
+                             "instrument_and_timeframe", "risk_and_execution_settings", "paper_database", "paper_account",
+                             "persistence_writable", "market_data", "reconciliation"})
+
+
+def blocking_checks(report: PreflightReport) -> list:
+    out = []
+    for c in report.checks:
+        if c.status is CheckStatus.PASS:
+            continue
+        if c.status is CheckStatus.FAIL:
+            out.append(c)
+        elif c.status is CheckStatus.BLOCKED and c.name not in RUNTIME_HANDLED:
+            out.append(c)
+        elif c.status is CheckStatus.NOT_EVALUABLE and c.name in SAFETY_CRITICAL:
+            out.append(c)
+    return out
+
+
+def warning_checks(report: PreflightReport) -> list:
+    block = {c.name for c in blocking_checks(report)}
+    return [c for c in report.checks if c.status is not CheckStatus.PASS and c.name not in block]
+
+
+def stages_from_record(rec: CycleRecord, *, preflight_ran: bool = True) -> list[dict]:
+    """Progress/audit stages derived ONLY from what the persisted cycle record proves (never from the UI's expectations)."""
+    st = rec.status.value
+    out: list[dict] = []
+    add = lambda n, s, d="": out.append({"stage": n, "status": s, "detail": d})  # noqa: E731
+    if preflight_ran:
+        add("Preconditions and fresh preflight", "DONE", "passed before the cycle started")
+    add("Market data retrieved and validated", "DONE" if rec.dataset else ("BLOCKED" if st == "BLOCKED" else "NOT_REACHED"),
+        f"{(rec.dataset or {}).get('provider', '')} bars={ (rec.dataset or {}).get('bars_used', '') } decision bar {rec.decision_bar or ''}".strip()
+        if rec.dataset else (rec.reason or ""))
+    evaluated = bool(rec.decision_bar and rec.dataset) and not (st == "FAILED" and rec.reason_code in ("STRATEGY_ERROR", "SIGNAL_SYMBOL_MISMATCH")) \
+        and not (st == "BLOCKED" and rec.reason_code == "AMBIGUOUS_SIGNALS")
+    add("Strategy evaluated", "DONE" if evaluated else ("FAILED" if st == "FAILED" else "NOT_REACHED"),
+        "signal recorded" if rec.signal else ("no signal at the decision bar" if st == "NO_ACTION" and rec.reason_code == "NO_SIGNAL" else rec.reason or ""))
+    add("Risk controls applied", "DONE" if rec.risk_decision else "NOT_REACHED",
+        ("approved" if (rec.risk_decision or {}).get("approved") else "rejected") if rec.risk_decision else "")
+    if st == "AWAITING_APPROVAL":
+        add("Proposal created", "DONE", "persisted; awaiting your decision (no order exists)")
+        add("Order submitted", "NOT_REACHED", "requires explicit approval")
+    elif st in ("PROPOSAL_REJECTED", "PROPOSAL_EXPIRED", "PROPOSAL_INVALIDATED"):
+        add("Proposal created", "DONE", "")
+        add("Order submitted", "NOT_REACHED", st.replace("PROPOSAL_", "proposal ").lower() + "; no order")
+    elif rec.client_order_id:
+        add("Proposal approved", "DONE", "")
+        add("Order submitted and recorded", "DONE" if rec.fill else "UNCERTAIN", "fill recorded" if rec.fill else "outcome not yet conclusive")
+        add("Reconciled", rec.reconciliation_status or "NOT_REACHED", "")
+    mon = (rec.monitoring or {}).get("outcome")
+    add("Post-cycle monitoring", {"COMPLETED": "DONE", "FAILED": "FAILED", "PENDING": "PENDING"}.get(mon, "SKIPPED" if mon else "NOT_RECORDED"),
+        (rec.monitoring or {}).get("reason") or (rec.monitoring or {}).get("error") or (f"run {(rec.monitoring or {}).get('run_id')}" if mon == "COMPLETED" else ""))
+    return out
+
+
 OUTCOME_MEANING = {
+    "AWAITING_APPROVAL": "A proposed paper order is awaiting your decision. No order has been submitted.",
+    "PROPOSAL_REJECTED": "You rejected the proposal. No order was submitted.",
+    "PROPOSAL_EXPIRED": "The proposal expired before approval and cannot be approved. No order was submitted. Run a fresh cycle.",
+    "PROPOSAL_INVALIDATED": "Conditions changed after the proposal, so it cannot be approved. No order was submitted. Run a fresh cycle.",
     "NO_ACTION": "A valid outcome: the strategy gave no actionable signal (or the position already matched). No order was created.",
     "NO_NEW_BAR": "No new completed bar to decide on yet. Nothing was recorded or changed.",
     "RISK_REJECTED": "The risk engine declined the proposed trade. No order was created.",
@@ -61,6 +127,8 @@ class RunOutcome:
     error: str | None = None                # an exception escaped the service; durable state may exist
     locked: bool = False
     reused_token: bool = False
+    preflight: dict | None = None             # the fresh preflight that gated this run (Sprint 20)
+    proposal_error: str | None = None         # machine code of a refused proposal decision (nothing was submitted)
 
     @property
     def ran(self) -> bool:
@@ -249,6 +317,106 @@ class PaperService:
                 return RunOutcome(refused=str(exc)[:300])
             except PaperLockedError as exc:
                 return RunOutcome(refused=str(exc)[:300], locked=True)
+            except Exception as exc:  # noqa: BLE001
+                return RunOutcome(error=f"{type(exc).__name__}: {str(exc)[:300]}")
+
+    # ------------------------------------------------------------------ Sprint 20: integrated run, proposals
+    def run_with_preflight(self, cfg: PaperRunConfig, *, request_token: str | None = None, monitoring: bool = True,
+                           progress: Callable[[str, str, str], None] | None = None) -> RunOutcome:
+        """The routine "Run Paper Cycle": a FRESH preflight (one market-data request, reused by the cycle) gates ONE bounded
+        cycle through the authoritative runtime. Failed or unevaluable safety checks block; nothing is executed then. An
+        actionable, risk-approved signal ends as a persisted PROPOSAL -- never an order. `progress(stage, status, detail)`
+        is called only after the underlying call returns."""
+        say = progress or (lambda *_: None)
+        with self._lock:
+            if request_token is not None and request_token in self._tokens:
+                prior = self._tokens[request_token]
+                return RunOutcome(prior.record, prior.refused, prior.refused_checks, prior.error, prior.locked, True,
+                                  prior.preflight, prior.proposal_error)
+            outcome = self._run_integrated(cfg, monitoring, say)
+            if request_token is not None:
+                self._tokens[request_token] = outcome
+            return outcome
+
+    def _run_integrated(self, cfg: PaperRunConfig, monitoring: bool, say) -> RunOutcome:
+        try:
+            rt = self.runtime(cfg, monitoring=monitoring)
+            rep = rt.preflight(check_data=True)
+            block = blocking_checks(rep)
+            say("preflight", "BLOCKED" if block else "PASSED", f"{len(block)} blocking check(s)" if block else "all safety-critical checks passed")
+            if block:
+                return RunOutcome(refused="the fresh preflight found blocking problems; nothing was executed",
+                                  refused_checks=[c.to_dict() for c in block], preflight=rep.to_dict())
+            rec = rt.run_cycle()
+            say("cycle", rec.status.value, rec.reason_code or "")
+            return RunOutcome(record=rec, preflight=rep.to_dict())
+        except (PaperSetupError, PaperStoreError) as exc:
+            say("cycle", "REFUSED", str(exc)[:120])
+            return RunOutcome(refused=str(exc)[:300])
+        except PaperLockedError as exc:
+            say("cycle", "LOCKED", str(exc)[:120])
+            return RunOutcome(refused=str(exc)[:300], locked=True)
+        except Exception as exc:  # noqa: BLE001 -- surfaced, never reported as success; the cycle record may exist
+            say("cycle", "ERROR", type(exc).__name__)
+            return RunOutcome(error=f"{type(exc).__name__}: {str(exc)[:300]}")
+
+    def _proposal_runtime(self, proposal: ProposalRecord, *, monitoring: bool = True) -> PaperTradingRuntime:
+        cfg = PaperRunConfig.from_dict(proposal.config) if proposal.config else None
+        if cfg is None:
+            raise PaperSetupError("the proposal does not carry the configuration it was made under; run a fresh cycle")
+        return self.runtime(cfg, monitoring=monitoring)
+
+    def proposals(self, experiment_id: int, *, pending_only: bool = False, limit: int = 50) -> list[dict]:
+        """READ-ONLY proposal rows with an EFFECTIVE status: a PENDING proposal past its expiry is shown EXPIRED (the stored
+        state is only written by the next explicit action; viewing mutates nothing)."""
+        s = self.store()
+        if s is None:
+            return []
+        clock = self._runtime_kwargs.get("clock")
+        now = datetime.now(timezone.utc) if clock is None else clock()
+        out = []
+        for p in s.list_proposals(experiment_id, (ProposalStatus.PENDING, ProposalStatus.APPROVING) if pending_only else None, limit):
+            eff = p.status.value
+            if p.status is ProposalStatus.PENDING and datetime.fromisoformat(p.expires_at) <= now:
+                eff = "EXPIRED"
+            if pending_only and eff == "EXPIRED":
+                continue
+            out.append({"proposal": p, "effective_status": eff})
+        return out
+
+    def approve_proposal(self, proposal_id: str, experiment_id: int, *, monitoring: bool = True) -> RunOutcome:
+        """Approve ONE exact persisted proposal. All conditions are re-validated by the runtime; the order (if any) goes through
+        the ordinary durable-intent -> PaperBroker path. Idempotent."""
+        with self._lock:
+            s = self.store()
+            prop = s.get_proposal(proposal_id) if s else None
+            if prop is None or prop.experiment_id != experiment_id:
+                return RunOutcome(refused="that proposal does not exist for the selected account", proposal_error="NOT_FOUND")
+            try:
+                return RunOutcome(record=self._proposal_runtime(prop, monitoring=monitoring).approve_proposal(proposal_id))
+            except PaperProposalError as exc:
+                return RunOutcome(refused=str(exc), proposal_error=exc.code)
+            except (PaperSetupError, PaperStoreError) as exc:
+                return RunOutcome(refused=str(exc)[:300], proposal_error="SETUP")
+            except PaperLockedError as exc:
+                return RunOutcome(refused=str(exc)[:300], locked=True, proposal_error="LOCKED")
+            except Exception as exc:  # noqa: BLE001
+                return RunOutcome(error=f"{type(exc).__name__}: {str(exc)[:300]}")
+
+    def reject_proposal(self, proposal_id: str, experiment_id: int) -> RunOutcome:
+        with self._lock:
+            s = self.store()
+            prop = s.get_proposal(proposal_id) if s else None
+            if prop is None or prop.experiment_id != experiment_id:
+                return RunOutcome(refused="that proposal does not exist for the selected account", proposal_error="NOT_FOUND")
+            try:
+                return RunOutcome(record=self._proposal_runtime(prop, monitoring=False).reject_proposal(proposal_id, "rejected by user in the app"))
+            except PaperProposalError as exc:
+                return RunOutcome(refused=str(exc), proposal_error=exc.code)
+            except (PaperSetupError, PaperStoreError) as exc:
+                return RunOutcome(refused=str(exc)[:300], proposal_error="SETUP")
+            except PaperLockedError as exc:
+                return RunOutcome(refused=str(exc)[:300], locked=True, proposal_error="LOCKED")
             except Exception as exc:  # noqa: BLE001
                 return RunOutcome(error=f"{type(exc).__name__}: {str(exc)[:300]}")
 

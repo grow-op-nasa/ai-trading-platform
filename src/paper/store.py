@@ -24,6 +24,8 @@ from src.paper.models import (
     IntentRecord,
     IntentState,
     ReconRecord,
+    ProposalRecord,
+    ProposalStatus,
     ReconStatus,
     UNRESOLVED_INTENT,
 )
@@ -66,6 +68,14 @@ CREATE TABLE IF NOT EXISTS paper_broker_fills (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     client_order_id TEXT NOT NULL UNIQUE,
     experiment_id INTEGER NOT NULL,
+    record_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS paper_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    cycle_id TEXT NOT NULL,
+    experiment_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
     record_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS paper_reconciliations (
@@ -292,6 +302,68 @@ class PaperStore:
                             (experiment_id,)):
             rec = FillRecord.from_dict(json.loads(r["record_json"])); rec.seq = r["seq"]; out.append(rec)
         return out
+
+    # ------------------------------------------------------------------ proposals (Sprint 20)
+    # The table is additive to schema v1. Databases created before Sprint 20 get it on the first WRITE (an explicit run);
+    # every read tolerates its absence, so viewing never mutates the file.
+    def _ensure_proposals(self, conn: sqlite3.Connection) -> None:
+        conn.execute("CREATE TABLE IF NOT EXISTS paper_proposals (proposal_id TEXT PRIMARY KEY, cycle_id TEXT NOT NULL, "
+                     "experiment_id INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, record_json TEXT NOT NULL)")
+
+    def _read_proposals(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        try:
+            return self._read(sql, params)
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                return []
+            raise
+
+    def _proposal_from(self, row: sqlite3.Row) -> ProposalRecord:
+        rec = ProposalRecord.from_dict(json.loads(row["record_json"]))
+        rec.status = ProposalStatus(row["status"])
+        return rec
+
+    def add_proposal_and_cycle(self, proposal: ProposalRecord, cycle: CycleRecord) -> bool:
+        """The proposal row and the cycle's AWAITING_APPROVAL state in ONE transaction. False if the proposal id exists."""
+        try:
+            with self._tx() as conn:
+                self._ensure_proposals(conn)
+                conn.execute("INSERT INTO paper_proposals VALUES (?,?,?,?,?,?)",
+                             (proposal.proposal_id, proposal.cycle_id, proposal.experiment_id, proposal.status.value,
+                              proposal.created_at, json.dumps(proposal.to_dict())))
+                self.save_cycle(cycle, conn)
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def get_proposal(self, proposal_id: str) -> ProposalRecord | None:
+        rows = self._read_proposals("SELECT * FROM paper_proposals WHERE proposal_id=?", (proposal_id,))
+        return self._proposal_from(rows[0]) if rows else None
+
+    def list_proposals(self, experiment_id: int, statuses: tuple[ProposalStatus, ...] | None = None,
+                       limit: int = 50) -> list[ProposalRecord]:
+        sql, params = "SELECT * FROM paper_proposals WHERE experiment_id=?", [experiment_id]
+        if statuses:
+            sql += f" AND status IN ({','.join('?' * len(statuses))})"; params.extend(s.value for s in statuses)
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"; params.append(limit)
+        return [self._proposal_from(r) for r in self._read_proposals(sql, tuple(params))]
+
+    def set_proposal_status(self, proposal_id: str, new: ProposalStatus, *, expect: tuple[ProposalStatus, ...],
+                           decided_at: str, reason: str | None = None) -> ProposalRecord | None:
+        """Compare-and-set: only moves a proposal currently in one of `expect`. Returns the updated record, or None when the
+        proposal is missing or no longer in an expected state (so two concurrent decisions cannot both win)."""
+        with self._tx() as conn:
+            self._ensure_proposals(conn)
+            row = conn.execute("SELECT * FROM paper_proposals WHERE proposal_id=?", (proposal_id,)).fetchone()
+            if row is None or ProposalStatus(row["status"]) not in expect:
+                return None
+            rec = json.loads(row["record_json"])
+            rec["status"], rec["decided_at"] = new.value, decided_at
+            if reason is not None:
+                rec["decision_reason"] = reason[:400]
+            conn.execute("UPDATE paper_proposals SET status=?, record_json=? WHERE proposal_id=?",
+                         (new.value, json.dumps(rec), proposal_id))
+            return ProposalRecord.from_dict(rec)
 
     # ------------------------------------------------------------------ reconciliations
     def add_reconciliation(self, rec: ReconRecord) -> ReconRecord:

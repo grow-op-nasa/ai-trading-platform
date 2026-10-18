@@ -5115,3 +5115,38 @@ Historical cycles with `monitoring = null` stay truthfully unlinked (state NOT_R
 
 **Consequence.** Two Sprint 18 test assertions (`NO_ACTION`/risk rejection did not call monitoring) encoded the defect and were changed. `rec.monitoring["status"]`
 keeps its old meaning (run status or ERROR) for compatibility; `outcome` is the new authority.
+
+
+## ADR-0056: Sprint 20 -- Guided paper trading: homepage, persisted account, integrated preflight, human trade approval, activity timeline (2026-10-17)
+
+**Context.** The Sprint 19 app made the operator click a separate preflight, defaulted to a thin Overview, forgot the chosen account on refresh, and let one click turn a
+risk-approved signal straight into a simulated order. The brief: a guided, safe, paper-only workflow where a human decides every trade.
+
+**Decisions.**
+1. **Homepage.** `Home` is the default view (`appsvc.home.build`, read-only): selected account (PAPER label), stored cash/positions (labelled stored, equity needs an
+   explicit valuation), latest cycle with a deterministic plain-English meaning (`appsvc.explain`), pending approvals, unresolved intents/reconciliation, monitoring
+   findings, alert-delivery status, calendar-only data freshness (`appsvc.freshness`; no data request) and a required/optional setup checklist. One contextual primary
+   action from a fixed decision order (setup -> select account -> initialise -> reconciliation -> pending proposal -> failed cycle -> go to Paper Trading); it only navigates.
+   Optional AI/e-mail/monitoring are never "unhealthy" merely for being off.
+2. **Persisted account.** `appsvc.prefs` stores only `{schema_version, last_account_id, updated_at}` at `data/app/preferences.json` (temp file + fsync + `os.replace`, mode 600).
+   Restored only if still an eligible account; SAVED_MISSING / MALFORMED / NO_ACCOUNTS / NONE_SAVED are surfaced with a warning and a user choice. The file is never repaired
+   or overwritten by reading; selection mutates no portfolio, creates no account and runs nothing.
+3. **Integrated Run.** `PaperService.run_with_preflight`: a fresh authoritative preflight (one data request, memoised once and reused by the cycle) then one bounded cycle.
+   `blocking_checks` (FAIL; BLOCKED except runtime-handled; NOT_EVALUABLE on safety-critical checks) block with inline explanations; the runtime still enforces its own gates.
+   Request-token and cycle-key idempotency prevent duplicates. "Preflight only" remains, read-only.
+4. **Human approval.** `approval_required` defaults to True. An actionable, risk-approved signal becomes a persisted `ProposalRecord` (lazy additive `paper_proposals` table;
+   the cycle ends `AWAITING_APPROVAL`; no intent, order or fill exists). The proposal stores the exact config, decision bar, reference price, portfolio fingerprint and a
+   30-minute expiry. Approve/Reject act on the exact proposal id: compare-and-set status, final revalidation (config/strategy hash, fresh data and decision bar, price,
+   portfolio fingerprint, duplicate order, risk), then the ordinary durable-intent -> PaperBroker path with deterministic ids. Expired/rejected/invalidated proposals never trade;
+   silence never trades; double approval and restart are idempotent; a crash mid-approval is resolved by lookup. A pending proposal blocks stacking a second one (replay). No AI or
+   notification path can approve (static test). CLI: `paper proposals|approve|reject`.
+5. **Activity timeline.** `appsvc.activity` merges real stored records (cycles, proposals, intents, fills, reconciliations, monitoring runs, findings, alert events, deliveries).
+   Relationships are only the ids that are really stored; no timestamp inference. Filters only hide rows.
+6. **Honest progress.** Run progress callbacks fire after the underlying call returns; stage tables are derived from the persisted cycle (`stages_from_record`).
+
+**Bug found by the validation script and fixed.** A crash during approval left the proposal `APPROVING`; recovery resolved the order but never closed the proposal, so the pending-proposal gate
+replayed the old cycle forever. `_recover_locked` now sets such proposals `EXECUTED` once their cycle is terminal (regression test added).
+
+**Consequences.** Sprint 18/19 tests that expected immediate fills now go through propose -> approve (helpers added; `World.runtime` keeps `approval_required=False` for runtime-level fixtures only).
+CLI `paper run` exits 1 (attention) for AWAITING_APPROVAL. New `CycleStatus` members and the lazy table are additive; old databases open unchanged. Limitations: one pending proposal per account;
+long-running expiry is evaluated on the next action (viewing shows the effective status without writing); daily bars only; simulated fills only; no live path exists.

@@ -1190,6 +1190,12 @@ environment-only failures, 17 skipped. **Confirmed via real `pytest` on
 the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 `origin/main` (`1b43a93..0c19c69`).
 
+## Sprint 20 -- Guided Paper Trading, Integrated Preflight & UX Refinement (implemented; real-machine verification pending, see PROJECT_STATE.md)
+
+- Done: Home landing page and setup checklist, persisted last-used account, one-click Run with a fresh preflight, persisted human trade approval (proposals), activity timeline,
+  plain-English explanations, calendar freshness, CLI `paper proposals|approve|reject` (ADR-0056).
+- Deliberately not built: auto-approval, live execution, AI/notification approval, multiple concurrent proposals, background loops, intraday bars, in-app config editing.
+
 ## Sprint 19 -- Local MVP UI, Guided Setup & Operational Hardening (implemented; verified on the dev machine, see PROJECT_STATE.md)
 
 - Done: seven-page local app over `src/appsvc`, explicit paper preflight/one-cycle controls, stored-vs-valued portfolio views, monitoring and alert

@@ -44,6 +44,16 @@ def service_for(world: World, **kw) -> PaperService:
                         "allowed_strategy_prefixes": ("src.strategies", "tests.test_paper_runtime")}, **kw)
 
 
+def approved_fill(svc, w, token="t1"):
+    """Sprint 20: a cycle ends as a PROPOSAL; a human approves the exact id; only then does the paper order exist."""
+    out = svc.run_cycle(w.config(), request_token=token)
+    assert out.record.status is CycleStatus.AWAITING_APPROVAL
+    pid = svc.proposals(w.exp, pending_only=True)[0]["proposal"].proposal_id
+    done = svc.approve_proposal(pid, w.exp)
+    assert done.record is not None, done.refused
+    return done
+
+
 # ------------------------------------------------------------------ paths and system status
 def test_status_on_an_empty_directory_creates_nothing_and_reports_unknown_honestly(tmp_path):
     paths = AppPaths.under(tmp_path / "nothing")
@@ -161,7 +171,7 @@ def test_a_fixture_fill_is_recorded_traced_and_applied_to_the_stored_portfolio(t
     w = World(tmp_path)
     w.script(WED, "LONG")
     svc = service_for(w)
-    out = svc.run_cycle(w.config(), request_token="t1")
+    out = approved_fill(svc, w)
     assert out.record.status is CycleStatus.ORDER_FILLED
     info = svc.inspect(w.exp)
     assert len(info["fills"]) == 1 and len(info["intents"]) == 1 and info["unresolved"] == []
@@ -181,7 +191,8 @@ def test_one_submission_runs_once_and_a_rerun_with_the_same_token_does_not_call_
     first = svc.run_cycle(w.config(), request_token="tok")
     again = svc.run_cycle(w.config(), request_token="tok")
     assert again.reused_token and again.record.cycle_id == first.record.cycle_id
-    assert len(w.store().list_cycles(w.exp)) == 1 and len(w.monitor_calls) == 1
+    assert len(w.store().list_cycles(w.exp)) == 1 and len(w.store().list_proposals(w.exp)) == 1
+    assert w.monitor_calls == [] and w.store().list_fills(w.exp) == []             # pending approval: no order, not yet monitored
 
 
 def test_a_new_submission_for_the_same_bar_is_a_backend_replay_never_a_second_order(tmp_path):
@@ -190,8 +201,8 @@ def test_a_new_submission_for_the_same_bar_is_a_backend_replay_never_a_second_or
     svc = service_for(w)
     svc.run_cycle(w.config(), request_token="a")
     second = svc.run_cycle(w.config(), request_token="b")
-    assert second.record.replayed is True and second.record.status is CycleStatus.ORDER_FILLED
-    assert len(w.store().list_fills(w.exp)) == 1 and len(w.store().list_intents(w.exp)) == 1
+    assert second.record.replayed is True and second.record.status is CycleStatus.AWAITING_APPROVAL
+    assert len(w.store().list_proposals(w.exp)) == 1 and w.store().list_fills(w.exp) == [] and w.store().list_intents(w.exp) == []
 
 
 def test_failed_preflight_refuses_to_run_and_records_nothing(tmp_path):
@@ -241,7 +252,7 @@ def test_the_ui_service_cannot_reach_a_live_broker_or_an_llm():
 def test_valuation_with_an_unpriced_open_position_leaves_equity_undefined_not_partial_or_zero(tmp_path):
     w = World(tmp_path)
     w.script(WED, "LONG")
-    service_for(w).run_cycle(w.config())
+    approved_fill(service_for(w), w)
     paths = AppPaths.under(tmp_path)
     snap, ts = pf.value_now(paths, w.exp, price_lookup=lambda s: None)
     assert snap.equity.value is None and snap.equity.status.value == "undefined" and ts
@@ -396,3 +407,109 @@ def test_trace_resolves_the_monitoring_state_from_stored_data_and_monitor_cycle_
     bad = svc.monitor_cycle(w.config(), "nope")
     assert bad.refused and "not found" in bad.refused
     assert len(svc.store().list_cycles(w.exp)) == 1 and svc.store().list_fills(w.exp) == []
+
+
+# ------------------------------------------------------------------ Sprint 20: integrated run, blocking policy, proposals
+def test_blocking_policy_blocks_failures_and_unevaluable_safety_checks_but_only_warns_for_optional_ones():
+    from src.appsvc.paper import blocking_checks, warning_checks
+    from src.paper.models import CheckStatus as CS, PreflightCheck as PC, PreflightReport as PR
+    rep = PR([PC("configuration", CS.PASS), PC("market_data", CS.NOT_EVALUABLE, "x"), PC("monitoring", CS.NOT_EVALUABLE),
+              PC("duplicate_run_protection", CS.NOT_EVALUABLE), PC("unresolved_intents", CS.BLOCKED), PC("reconciliation", CS.BLOCKED),
+              PC("strategy", CS.FAIL), PC("alerting", CS.PASS)])
+    assert {c.name for c in blocking_checks(rep)} == {"market_data", "strategy"}          # unevaluable safety check blocks; failures block
+    assert {c.name for c in warning_checks(rep)} == {"monitoring", "duplicate_run_protection", "unresolved_intents", "reconciliation"}
+
+
+def test_run_with_preflight_runs_fresh_checks_then_one_cycle_and_ends_as_a_proposal(tmp_path):
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = service_for(w)
+    seen = []
+    out = svc.run_with_preflight(w.config(), request_token="r1", progress=lambda *a: seen.append(a))
+    assert out.record.status is CycleStatus.AWAITING_APPROVAL and out.preflight["ready"] is True
+    assert [s[0] for s in seen] == ["preflight", "cycle"] and seen[0][1] == "PASSED" and seen[1][1] == "AWAITING_APPROVAL"
+    assert w.store().list_fills(w.exp) == [] and w.store().list_intents(w.exp) == []
+    assert svc.run_with_preflight(w.config(), request_token="r1").reused_token                      # same click, same token
+    again = svc.run_with_preflight(w.config(), request_token="r2")
+    assert again.record.replayed and len(w.store().list_proposals(w.exp)) == 1
+
+
+def test_a_failed_fresh_preflight_blocks_execution_and_records_nothing(tmp_path):
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = service_for(w)
+    from src.data.fault_injection import Fault, FaultKind
+    w.provider.set_script([Fault(FaultKind.TIMEOUT)])
+    before = fingerprint(w.store_path)
+    out = svc.run_with_preflight(w.config(), request_token="x")
+    assert out.record is None and out.refused and any(c["name"] == "market_data" for c in out.refused_checks)
+    assert out.preflight["overall"] != "PASS"
+    assert fingerprint(w.store_path) == before and w.monitor_calls == []
+
+
+def test_the_integrated_run_reuses_the_preflight_dataset_instead_of_fetching_twice(tmp_path):
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = service_for(w)
+    calls = []
+    real = w.provider.fetch_candles
+    w.provider.fetch_candles = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+    svc.run_with_preflight(w.config(), request_token="one")
+    assert len(calls) == 1
+
+
+def test_proposals_view_is_read_only_and_shows_effective_expiry_without_writing(tmp_path):
+    from datetime import timedelta
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = service_for(w)
+    svc.run_with_preflight(w.config(), request_token="p")
+    [row] = svc.proposals(w.exp)
+    assert row["effective_status"] == "PENDING" and row["proposal"].quantity > 0
+    before = fingerprint(w.store_path)
+    w.now[0] = w.now[0] + timedelta(seconds=1801)
+    [row2] = svc.proposals(w.exp)
+    assert row2["effective_status"] == "EXPIRED" and svc.proposals(w.exp, pending_only=True) == []
+    assert fingerprint(w.store_path) == before                    # viewing an expired proposal wrote nothing
+    out = svc.approve_proposal(row["proposal"].proposal_id, w.exp)
+    assert out.proposal_error == "EXPIRED" and out.record is None and w.store().list_fills(w.exp) == []
+
+
+def test_service_approve_and_reject_are_exact_idempotent_and_account_scoped(tmp_path):
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = service_for(w)
+    svc.run_with_preflight(w.config(), request_token="p")
+    pid = svc.proposals(w.exp)[0]["proposal"].proposal_id
+    assert svc.approve_proposal("nope", w.exp).proposal_error == "NOT_FOUND"
+    assert svc.approve_proposal(pid, w.exp + 1).proposal_error == "NOT_FOUND"                # wrong account
+    first = svc.approve_proposal(pid, w.exp)
+    again = svc.approve_proposal(pid, w.exp)
+    assert first.record.status is CycleStatus.ORDER_FILLED and again.record.replayed
+    assert len(w.store().list_fills(w.exp)) == 1 and len(w.store().list_intents(w.exp)) == 1
+    assert svc.reject_proposal(pid, w.exp).proposal_error == "NOT_PENDING"                   # an executed proposal cannot be rejected
+
+
+def test_service_reject_places_no_order(tmp_path):
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = service_for(w)
+    svc.run_with_preflight(w.config(), request_token="p")
+    pid = svc.proposals(w.exp)[0]["proposal"].proposal_id
+    out = svc.reject_proposal(pid, w.exp)
+    assert out.record.status is CycleStatus.PROPOSAL_REJECTED
+    assert svc.approve_proposal(pid, w.exp).proposal_error == "REJECTED"
+    assert w.store().list_fills(w.exp) == [] and w.store().list_intents(w.exp) == []
+
+
+def test_stages_come_only_from_the_persisted_record(tmp_path):
+    from src.appsvc.paper import stages_from_record
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = service_for(w)
+    rec = svc.run_with_preflight(w.config(), request_token="p").record
+    names = {s["stage"]: s["status"] for s in stages_from_record(rec)}
+    assert names["Proposal created"] == "DONE" and names["Order submitted"] == "NOT_REACHED"
+    done = svc.approve_proposal(svc.proposals(w.exp)[0]["proposal"].proposal_id, w.exp).record
+    names = {s["stage"]: s["status"] for s in stages_from_record(done)}
+    assert names["Order submitted and recorded"] == "DONE" and names["Reconciled"] == "MATCH" and names["Post-cycle monitoring"] == "DONE"

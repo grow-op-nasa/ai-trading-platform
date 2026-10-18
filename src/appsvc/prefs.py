@@ -48,6 +48,9 @@ def _read(path: Path) -> tuple[dict | None, str | None]:
     acct = data.get("last_account_id")
     if acct is not None and (isinstance(acct, bool) or not isinstance(acct, int)):
         return None, "the saved account id is not an integer"
+    sym = data.get("last_symbol")
+    if sym is not None and not isinstance(sym, str):
+        return None, "the saved symbol is not text"
     return data, None
 
 
@@ -74,14 +77,34 @@ def resolve_account(paths: AppPaths, eligible_ids: list[int]) -> AccountResoluti
                              "It was not recreated or replaced; choose an account.", saved)
 
 
+def saved_symbol(paths: AppPaths) -> str | None:
+    """The remembered instrument symbol, or None. It is a UI convenience: it is revalidated at the next Run and is independent
+    of the selected account."""
+    data, _ = _read(paths.prefs_file)
+    sym = (data or {}).get("last_symbol")
+    return sym if isinstance(sym, str) and sym else None
+
+
 def save_account(paths: AppPaths, account_id: int) -> None:
     """Persist an EXPLICIT selection atomically. Never touches the financial stores."""
     if isinstance(account_id, bool) or not isinstance(account_id, int):
         raise ValueError("account id must be an integer")
+    _write(paths, last_account_id=account_id)
+
+
+def save_symbol(paths: AppPaths, symbol: str) -> None:
+    """Remember a syntactically valid symbol (the caller normalises). Keeps the saved account untouched."""
+    if not isinstance(symbol, str) or not symbol.strip() or symbol != symbol.strip():
+        raise ValueError("symbol must be a non-empty trimmed string")
+    _write(paths, last_symbol=symbol)
+
+
+def _write(paths: AppPaths, **changes) -> None:
     target = paths.prefs_file
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"schema_version": SCHEMA_VERSION, "last_account_id": account_id,
-               "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    current, _ = _read(target)
+    payload = {"schema_version": SCHEMA_VERSION, **{k: v for k, v in (current or {}).items() if k in ("last_account_id", "last_symbol")},
+               **changes, "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     fd, tmp = tempfile.mkstemp(prefix=".prefs-", suffix=".tmp", dir=target.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:

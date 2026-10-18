@@ -11,6 +11,10 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 21 -- 2026-10-18, Paper Trading instrument selector (ADR-0057)
+
+Added `appsvc.instruments` (shared catalogue, `Custom…`, symbol normalisation), instrument dropdown with a revealed custom field on Paper Trading, remembered `last_symbol` in `preferences.json` (independent of the account), Run disabled while a pending proposal for another symbol exists. Validation of a custom symbol stays with the existing preflight (`market_data`). Tests: service tests in `tests/test_sprint20_services.py`, AppTest cases in `tests/test_dashboard_smoke.py`. Verification: see PROJECT_STATE.md.
+
 ## Sprint 20 -- 2026-10-17, Guided paper trading (ADR-0056)
 
 Added: `Home` landing page (read-only) with required/optional setup checklist and a contextual primary action; persisted last-used paper account

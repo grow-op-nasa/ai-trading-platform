@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import streamlit as st
 
-from src.appsvc import explain, freshness, strategies
+from src.appsvc import explain, freshness, instruments, prefs, strategies
 from src.appsvc.paper import DEFAULT_FORM, OUTCOME_MEANING, PaperConfigError, PaperService, stages_from_record
 from src.appsvc.paths import AppPaths
 from src.dashboard import proposals_ui, shell, ui
@@ -56,6 +56,58 @@ def render(paths: AppPaths, svc: PaperService, account: int | None) -> None:
 
 
 # --------------------------------------------------------------------------------------------- run
+def _remember_symbol(paths: AppPaths) -> None:
+    """on_change callback for the instrument widgets: remember a VALID symbol only. Runs nothing and touches no portfolio."""
+    sym, _ = _effective_symbol()
+    if sym is None:
+        return
+    try:
+        prefs.save_symbol(paths, sym)
+    except OSError:
+        st.session_state["_pref_error"] = "Could not save your instrument choice; it applies to this session only."
+
+
+def _effective_symbol() -> tuple[str | None, str | None]:
+    choice = st.session_state.get("paper_symbol_choice")
+    if choice is None:
+        return None, "Select an instrument."
+    if choice == instruments.CUSTOM:
+        return instruments.normalize_symbol(st.session_state.get("paper_symbol_custom", st.session_state.get("_custom_kept", "")))
+    return choice, None
+
+
+def _symbol_selector(paths: AppPaths, col) -> str | None:
+    """Preset dropdown + Custom…. Selecting changes nothing but this widget state (and, for a valid symbol, the remembered
+    preference); it never runs a preflight or a cycle. Invalid custom input is reported, never replaced by a default."""
+    if "paper_symbol_choice" not in st.session_state:                   # first load: restore, never guess
+        saved = prefs.saved_symbol(paths)
+        if saved in instruments.symbols():
+            st.session_state["paper_symbol_choice"] = saved
+        elif saved:
+            st.session_state["paper_symbol_choice"] = instruments.CUSTOM
+            st.session_state["_custom_kept"] = saved
+            st.session_state["_symbol_restored"] = saved
+    col.selectbox("Instrument", instruments.options(), index=None, placeholder="Select an instrument", key="paper_symbol_choice",
+                  format_func=instruments.display, on_change=_remember_symbol, args=(paths,),
+                  help="Presets are suggestions. Whether a symbol has usable data is only established by the preflight.")
+    if st.session_state.get("paper_symbol_choice") == instruments.CUSTOM:
+        col.text_input("Custom ticker symbol", value=st.session_state.get("_custom_kept", ""), key="paper_symbol_custom",
+                       placeholder="e.g. TSLA", on_change=_remember_symbol, args=(paths,),
+                       help="Trimmed and upper-cased. Existence, data and strategy support are checked by the preflight, not here.")
+        st.session_state["_custom_kept"] = st.session_state.get("paper_symbol_custom", "")
+        if st.session_state.get("_symbol_restored") and st.session_state["_custom_kept"] == st.session_state["_symbol_restored"]:
+            col.caption(f"Restored your last-used symbol {st.session_state['_symbol_restored']}. It is revalidated by the next preflight/run.")
+    sym, problem = _effective_symbol()
+    if st.session_state.get("paper_symbol_choice") == instruments.CUSTOM and sym is None:
+        if st.session_state.get("_custom_kept"):
+            col.error(problem)
+        else:
+            col.info(problem)
+    elif sym is not None and instruments.lookup(sym) is None:
+        col.caption(f"{sym} is a custom symbol: support is unverified until the preflight confirms market data for it.")
+    return sym
+
+
 def _selection(paths: AppPaths, svc: PaperService, sidebar_account: int | None):
     """Step 1: the visible selectors. Returns the validated config, or None with an explanation already shown."""
     st.subheader("1. Choose what to run")
@@ -76,11 +128,8 @@ def _selection(paths: AppPaths, svc: PaperService, sidebar_account: int | None):
         account = None
         c2.warning("No paper account exists yet: no experiment has a saved portfolio. Create a new paper account below "
                    "(explicit; nothing is created for you).")
-    symbols = sorted({r.symbol for r in rows if r.symbol})
     c3, c4 = st.columns(2)
-    picked = c3.selectbox("Instrument (from saved experiments)", symbols, index=None, placeholder="Select or type below", key="paper_symbol") if symbols else None
-    typed = c3.text_input("Or type an instrument symbol", key="paper_symbol_text", help="Used if filled in; otherwise the selection above.")
-    symbol = (typed.strip().upper() if typed and typed.strip() else picked) or None
+    symbol = _symbol_selector(paths, c3)
     interval = c4.selectbox("Timeframe", ["1d"], key="paper_interval", help="The paper runtime supports completed daily bars only.")
 
     with st.expander("Risk, stop and cost settings (review these; they are part of what preflight approves)"):
@@ -165,9 +214,13 @@ def _run_tab(paths: AppPaths, svc: PaperService, sidebar_account: int | None) ->
                "(a trade becomes a proposal you approve) and starts no background loop.")
     monitoring = st.checkbox("Run post-cycle monitoring (records a monitoring run; may queue alert events only if alerting is enabled)", value=True, key="paper_monitoring")
     c_run, c_pre = st.columns(2)
+    other = [r["proposal"] for r in svc.proposals(cfg.experiment_id, pending_only=True) if r["proposal"].symbol != cfg.symbol]
     if not initialised:
         st.caption("Run is disabled until the paper account is initialised (explicit step above).")
-    if c_run.button("Run paper cycle", key="btn_run", type="primary", disabled=not initialised):
+    if other:
+        st.warning(f"A pending proposal exists for {other[0].symbol} ({other[0].side} {other[0].approved_quantity:g}). It keeps its own symbol and "
+                   f"cannot be approved as {cfg.symbol}. Decide it on the Approvals tab (or let it expire) before running {cfg.symbol}.")
+    if c_run.button("Run paper cycle", key="btn_run", type="primary", disabled=not initialised or bool(other)):
         token = st.session_state.setdefault("run_token", uuid4().hex)
         with st.status("Running paper cycle...", expanded=True) as box:
             def progress(stage: str, status: str, detail: str) -> None:
@@ -249,7 +302,7 @@ def _init_form(svc: PaperService, cfg) -> None:
 
 
 def _show_outcome(svc: PaperService, out) -> None:
-    st.subheader("Result of the last submission")
+    st.subheader("Result of the last submission" + (f" ({out.record.symbol})" if out.record is not None and out.record.symbol else ""))
     if out.reused_token:
         st.info("This submission had already been executed; the earlier result is shown. Nothing was run again.")
     if out.refused:

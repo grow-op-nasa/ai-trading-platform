@@ -130,7 +130,7 @@ def part_b(work: Path, exp: int) -> None:
     def pick(a):
         a.selectbox(key="paper_strategy").set_value("ema_cross").run(timeout=t)
         a.selectbox(key="paper_account").set_value(exp).run(timeout=t)
-        a.text_input(key="paper_symbol_text").set_value("QQQ").run(timeout=t)
+        a.selectbox(key="paper_symbol_choice").set_value("QQQ").run(timeout=t)
 
     at = fresh()
     check("app starts with no exception", not at.exception, str([e.message for e in at.exception]))

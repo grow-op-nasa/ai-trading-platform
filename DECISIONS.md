@@ -5150,3 +5150,18 @@ replayed the old cycle forever. `_recover_locked` now sets such proposals `EXECU
 **Consequences.** Sprint 18/19 tests that expected immediate fills now go through propose -> approve (helpers added; `World.runtime` keeps `approval_required=False` for runtime-level fixtures only).
 CLI `paper run` exits 1 (attention) for AWAITING_APPROVAL. New `CycleStatus` members and the lazy table are additive; old databases open unchanged. Limitations: one pending proposal per account;
 long-running expiry is evaluated on the next action (viewing shows the effective status without writing); daily bars only; simulated fills only; no live path exists.
+
+
+## ADR-0057: Paper Trading instrument selector -- shared catalogue, Custom… entry, remembered symbol (2026-10-18)
+
+**Context.** Paper Trading required typing a ticker. Goal: a populated dropdown plus a Custom… option, without a new instrument subsystem or a second validation engine.
+
+**Decisions.**
+1. `appsvc.instruments` is the single shared source: typed `Instrument(symbol, label, category, timeframes, note)` rows (QQQ, SPY, IWM, DIA, AAPL, MSFT, NVDA, AMD), `CUSTOM = "Custom…"` appended last, `display()` and `normalize_symbol()`. The list is a **suggestion list, not a support guarantee**; every row is daily-only (the runtime's only timeframe). Adding an instrument is one row.
+2. `normalize_symbol` is syntax only: trim, upper-case, reject empty or malformed (`^[A-Z0-9^][A-Z0-9.\-=]{0,14}$`, covering BRK-B, ^GSPC, EURUSD=X). Invalid input never falls back to a default; with no valid symbol there is no configuration, so Run does not appear.
+3. Support is established only by the existing authoritative path: `PaperService.run_with_preflight` / "Preflight only" -> runtime `market_data` check (provider errors, no data, invalid or stale data) and the strategy/instrument/timeframe checks. No UI validation engine. An unsupported symbol fails as a blocking `market_data` check and nothing is written.
+4. Selection is inert: the widgets only set widget state and (for a valid symbol) the preference. The symbol is part of `PaperRunConfig.identity_hash`, so a stale standalone preflight can never match another symbol. A typed custom value is kept in `_custom_kept` so it survives switching to a preset and back.
+5. A pending proposal keeps the symbol it was created with (it stores its own config); Run is disabled with an explanation while a pending proposal exists for a different symbol, and approval always uses the proposal's own config.
+6. Persistence reuses `preferences.json` (`last_symbol`, same atomic writer, merged with `last_account_id`, so the two are independent). Only a valid normalised symbol is saved. A restored custom symbol is shown as restored and is revalidated by the next preflight/run; restoring touches no portfolio and runs nothing.
+
+**Limitations.** The experiment's saved portfolio/spec still names its original instrument; the runtime does not require the Run symbol to equal it (unchanged). The new-account form's symbol is still free text. yfinance symbol validity can only be learned by a data request.

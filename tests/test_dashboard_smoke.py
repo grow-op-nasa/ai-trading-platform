@@ -295,12 +295,23 @@ def paper_world(workdir):
     return w, svc, at
 
 
+def _pick_symbol(at, symbol):
+    """Operate the instrument widgets as a user does: a preset, or Custom… plus the text field."""
+    from src.appsvc import instruments
+    if symbol in instruments.symbols():
+        at.selectbox(key="paper_symbol_choice").set_value(symbol).run(timeout=_RUN_TIMEOUT)
+    else:
+        at.selectbox(key="paper_symbol_choice").set_value(instruments.CUSTOM).run(timeout=_RUN_TIMEOUT)
+        at.text_input(key="paper_symbol_custom").set_value(symbol).run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+
+
 def _select_all(at, w, symbol="QQQ"):
     """Operate the visible selectors exactly as a user does (no profile, no service-side setup)."""
     from tests.test_paper_runtime import STRAT
     at.selectbox(key="paper_strategy").set_value(STRAT).run(timeout=_RUN_TIMEOUT)
     at.selectbox(key="paper_account").set_value(w.exp).run(timeout=_RUN_TIMEOUT)
-    at.text_input(key="paper_symbol_text").set_value(symbol).run(timeout=_RUN_TIMEOUT)
+    _pick_symbol(at, symbol)
     _assert_no_exception(at)
 
 
@@ -382,7 +393,7 @@ def test_changing_a_selection_never_reuses_an_earlier_standalone_preflight(paper
     _go(at, "Paper Trading")
     _select_all(at, w)
     at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
-    at.text_input(key="paper_symbol_text").set_value("SPY").run(timeout=_RUN_TIMEOUT)
+    _pick_symbol(at, "SPY")
     assert any("different selections" in x.value for x in at.caption)
 
 
@@ -731,3 +742,111 @@ def test_activity_page_links_records_only_through_stored_ids(paper_world):
     assert "client_order_id=" in fill_row["Linked ids"] and "cycle_id" not in fill_row["Linked ids"]
     at.multiselect(key="act_cats").set_value(["Fill"]).run(timeout=_RUN_TIMEOUT)
     assert set(at.dataframe[0].value["Type"]) == {"Fill"}
+
+
+# ---------------------------------------------------------------------------
+# Sprint 21: instrument selector (presets + Custom…)
+# ---------------------------------------------------------------------------
+
+
+def test_symbol_dropdown_lists_the_shared_presets_with_custom_last(paper_world):
+    from src.appsvc import instruments
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    sel = at.selectbox(key="paper_symbol_choice")
+    assert list(sel.options)[-1] == instruments.CUSTOM and sel.value is None       # nothing silently preselected
+    shown = " ".join(sel.options)
+    assert all(sym in shown for sym in ("QQQ", "SPY", "IWM", "DIA", "AAPL", "MSFT", "NVDA", "AMD"))
+    assert not any(t.key == "paper_symbol_custom" for t in at.text_input)             # hidden until Custom…
+
+
+def test_custom_reveals_the_field_normalises_and_rejects_bad_input_without_substituting(paper_world):
+    from src.appsvc import instruments
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    at.selectbox(key="paper_symbol_choice").set_value(instruments.CUSTOM).run(timeout=_RUN_TIMEOUT)
+    assert any(t.key == "paper_symbol_custom" for t in at.text_input)
+    at.text_input(key="paper_symbol_custom").set_value("  tsla ").run(timeout=_RUN_TIMEOUT)
+    assert any("TSLA" in c.value and "unverified" in c.value for c in at.caption)
+    for bad in ("", "   ", "TS LA", "T$LA", "A" * 30):
+        at.text_input(key="paper_symbol_custom").set_value(bad).run(timeout=_RUN_TIMEOUT)
+        _assert_no_exception(at)
+        assert not any(b.label == "Run paper cycle" for b in at.button), bad          # no config: nothing can run
+    assert not AppPaths().prefs_file.exists() or "TS LA" not in AppPaths().prefs_file.read_text()
+
+
+def test_the_entered_custom_value_survives_switching_to_a_preset_and_back(paper_world):
+    from src.appsvc import instruments
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    at.selectbox(key="paper_symbol_choice").set_value(instruments.CUSTOM).run(timeout=_RUN_TIMEOUT)
+    at.text_input(key="paper_symbol_custom").set_value("tsla").run(timeout=_RUN_TIMEOUT)
+    at.selectbox(key="paper_symbol_choice").set_value("SPY").run(timeout=_RUN_TIMEOUT)
+    at.selectbox(key="paper_symbol_choice").set_value(instruments.CUSTOM).run(timeout=_RUN_TIMEOUT)
+    assert at.text_input(key="paper_symbol_custom").value == "tsla"
+
+
+def test_changing_the_symbol_runs_nothing_and_orders_nothing(paper_world, monkeypatch):
+    w, svc, at = paper_world
+    calls = []
+    for name in ("preflight", "run_cycle", "run_with_preflight", "approve_proposal"):
+        real = getattr(svc, name)
+        monkeypatch.setattr(svc, name, lambda *a, _n=name, _r=real, **k: (calls.append(_n), _r(*a, **k))[1])
+    _go(at, "Paper Trading")
+    _select_all(at, w)
+    for sym in ("SPY", "AAPL", "TSLA", "QQQ"):
+        _pick_symbol(at, sym)
+    at.run(timeout=_RUN_TIMEOUT)
+    assert calls == [] and w.store().list_cycles(w.exp) == [] and w.store().list_intents(w.exp) == [] and w.store().list_fills(w.exp) == []
+
+
+def test_the_symbol_is_remembered_independently_of_the_account_and_restoring_it_mutates_nothing(paper_world):
+    import json
+    from src.appsvc import prefs
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    _pick_symbol(at, "SPY")
+    at.sidebar.selectbox(key="account_id").set_value(w.exp).run(timeout=_RUN_TIMEOUT)
+    data = json.loads(AppPaths().prefs_file.read_text())
+    assert data["last_symbol"] == "SPY" and data["last_account_id"] == w.exp          # both kept, neither overwrote the other
+    snapshot = (w.reg_path.read_bytes(), w.store_path.read_bytes())
+    at2 = AppTest.from_file(APP_PATH)
+    at2.session_state["_paper_service"] = svc
+    at2.run(timeout=_RUN_TIMEOUT)
+    _go(at2, "Paper Trading")
+    assert at2.selectbox(key="paper_symbol_choice").value == "SPY"
+    assert (w.reg_path.read_bytes(), w.store_path.read_bytes()) == snapshot and w.store().list_cycles(w.exp) == []
+
+
+def test_a_saved_custom_symbol_is_restored_visibly_and_not_trusted(paper_world):
+    from src.appsvc import instruments, prefs
+    w, svc, _ = paper_world
+    prefs.save_symbol(AppPaths(), "ZZZZ")
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["_paper_service"] = svc
+    at.run(timeout=_RUN_TIMEOUT)
+    _go(at, "Paper Trading")
+    assert at.selectbox(key="paper_symbol_choice").value == instruments.CUSTOM
+    assert at.text_input(key="paper_symbol_custom").value == "ZZZZ"
+    assert any("revalidated" in c.value for c in at.caption)
+    assert w.store().list_cycles(w.exp) == []
+
+
+def test_a_custom_symbol_flows_through_preflight_and_the_cycle_identity(paper_world):
+    w, svc, at = paper_world
+    _go(at, "Paper Trading")
+    _select_all(at, w, symbol="TSLA")
+    _run(at)
+    cyc = w.store().list_cycles(w.exp)[0]
+    assert cyc.symbol == "TSLA"
+
+
+def test_a_pending_proposal_for_another_symbol_blocks_run_and_keeps_its_identity(paper_world):
+    w, svc, at = paper_world
+    svc.run_with_preflight(w.config(), request_token="seed")                         # QQQ proposal
+    pid = _pending(svc, w)[0]["proposal"].proposal_id
+    _go(at, "Paper Trading")
+    _select_all(at, w, symbol="SPY")
+    assert _button(at, "Run paper cycle").disabled is True
+    assert any("pending proposal exists for QQQ" in x.value for x in at.warning)
+    assert _pending(svc, w)[0]["proposal"].proposal_id == pid and _pending(svc, w)[0]["proposal"].symbol == "QQQ"

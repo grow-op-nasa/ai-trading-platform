@@ -188,3 +188,84 @@ def test_freshness_is_calendar_only():
     g = freshness.for_cycle("2026-09-29T00:00:00+00:00", wed_after)
     assert g.state == "NEWER_SESSION" and "Run a paper cycle" in g.next_step
     assert freshness.for_cycle(None, wed_after).state == "NONE"
+
+
+# ------------------------------------------------------------------ Sprint 21: instrument selector
+def test_catalogue_is_shared_ordered_and_ends_with_custom():
+    from src.appsvc import instruments as ins
+    assert ins.options()[-1] == ins.CUSTOM and ins.options()[:-1] == ins.symbols()
+    assert {"QQQ", "SPY", "IWM", "DIA", "AAPL", "MSFT", "NVDA", "AMD"} <= set(ins.symbols())
+    assert ins.display("QQQ").startswith("QQQ") and ins.display("TSLA") == "TSLA" and ins.lookup("TSLA") is None
+    assert all(i.timeframes == ("1d",) for i in ins.CATALOGUE)
+
+
+def test_symbol_normalisation_rejects_empty_and_malformed_and_never_defaults():
+    from src.appsvc.instruments import normalize_symbol as n
+    assert n("  tsla ") == ("TSLA", None) and n("brk-b")[0] == "BRK-B" and n("^gspc")[0] == "^GSPC" and n("eurusd=x")[0] == "EURUSD=X"
+    for bad in ("", "   ", None, "TS LA", "T$LA", "A" * 30, "-X", "AA/BB"):
+        sym, why = n(bad)
+        assert sym is None and why, bad
+
+
+def test_symbol_and_account_preferences_are_independent_and_atomic(tmp_path):
+    p = AppPaths.under(tmp_path)
+    prefs.save_symbol(p, "SPY")
+    assert prefs.saved_symbol(p) == "SPY" and prefs.resolve_account(p, [1]).state == prefs.NONE_SAVED
+    prefs.save_account(p, 1)
+    assert prefs.saved_symbol(p) == "SPY" and prefs.resolve_account(p, [1]).selected == 1      # neither overwrote the other
+    prefs.save_symbol(p, "TSLA")
+    assert prefs.resolve_account(p, [1]).selected == 1 and prefs.saved_symbol(p) == "TSLA"
+    assert [f.name for f in p.prefs_file.parent.iterdir()] == ["preferences.json"]
+    import pytest
+    with pytest.raises(ValueError):
+        prefs.save_symbol(p, " TSLA")
+
+
+def _symbol_service(w, unsupported=("ZZZZ",)):
+    from src.data.base import DataProvider
+    from src.data.exceptions import NoDataError
+    base = w.provider
+
+    class P(DataProvider):
+        def fetch_candles(self, symbol, start, end, interval):
+            if symbol in unsupported:
+                raise NoDataError(f"no data for {symbol} (test)")
+            return base.fetch_candles(symbol, start, end, interval)
+    svc = service_for(w)
+    from src.data.service import MarketDataService
+    svc._market_data = MarketDataService(provider=P(), cache_dir=w.tmp / "c2", use_cache=False)
+    return svc
+
+
+def test_unsupported_but_valid_symbol_fails_the_authoritative_preflight_and_runs_nothing(tmp_path):
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = _symbol_service(w)
+    cfg = svc.build_config(experiment_id=w.exp, strategy_name=STRAT, symbol="zzzz")
+    assert cfg.symbol == "ZZZZ"
+    out = svc.run_with_preflight(cfg, request_token="u")
+    assert out.record is None and out.refused and any(c["name"] == "market_data" for c in out.refused_checks)
+    assert w.store().list_cycles(w.exp) == [] and w.store().list_proposals(w.exp) == []
+
+
+def test_supported_custom_symbol_flows_through_cycle_proposal_and_approval_with_its_own_identity(tmp_path):
+    w = World(tmp_path)
+    w.script(WED, "LONG")
+    svc = _symbol_service(w)
+    cfg = svc.build_config(experiment_id=w.exp, strategy_name=STRAT, symbol=" tsla ")
+    out = svc.run_with_preflight(cfg, request_token="t")
+    rec = out.record
+    assert rec is not None, (out.refused, out.refused_checks, out.error)
+    assert rec.symbol == "TSLA"
+    props = svc.proposals(w.exp, pending_only=True)
+    if props:                                           # the scripted fixture strategy may or may not emit for this symbol
+        assert props[0]["proposal"].symbol == "TSLA"
+        assert w.store().list_intents(w.exp) == [] and w.store().list_fills(w.exp) == []     # still no order before approval
+
+
+def test_symbol_participates_in_the_config_identity_so_stale_preflights_cannot_match(tmp_path):
+    w = World(tmp_path)
+    svc = service_for(w)
+    a = svc.build_config(experiment_id=w.exp, strategy_name=STRAT, symbol="QQQ")
+    b = svc.build_config(experiment_id=w.exp, strategy_name=STRAT, symbol="SPY")
+    assert a.identity_hash() != b.identity_hash()

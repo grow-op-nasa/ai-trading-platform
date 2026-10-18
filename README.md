@@ -209,7 +209,7 @@ There is no live adapter and no AI in this path.
 ### Guided flow (Sprint 20)
 
 Open the app on **Home**: it shows the selected paper account, what needs attention, a setup checklist (required vs optional) and one suggested next step. Your last-used
-account is remembered (`data/app/preferences.json`) and restored after a refresh; nothing is created or run by selecting it. On **Paper Trading**, *Run paper cycle* performs a fresh
+account is remembered (`data/app/preferences.json`) and restored after a refresh; nothing is created or run by selecting it. On **Paper Trading** pick an instrument from the dropdown (presets are suggestions) or choose *Custom…* and type a ticker such as TSLA; whether it has usable data is checked by the preflight, not by the field, and your last symbol is remembered separately from the account. *Run paper cycle* performs a fresh
 preflight and one cycle in a single click. If the strategy finds a risk-approved trade, it becomes a **proposal** -- no order exists until you approve that exact proposal on the
 *Approvals* tab (it expires after 30 minutes; rejecting or ignoring it places nothing). CLI equivalents: `paper proposals`, `paper approve --proposal ID`, `paper reject --proposal ID`.
 **Activity** shows a read-only timeline of cycles, proposals, orders, fills, reconciliations, monitoring and alerts. Paper only; fills are simulated.

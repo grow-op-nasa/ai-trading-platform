@@ -11,6 +11,14 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 22 follow-up -- 2026-10-19, DATA_STALE root cause: yfinance exclusive `end` (ADR-0060)
+
+- Fixed: `YFinanceProvider` now translates the platform's inclusive `end` date to yfinance's exclusive one (`vendor_request_range`), so the scan date's bar is requested. Previously every weekday scan after the close saw the prior session as the latest bar and was `DATA_STALE` (scans `fd09ba5333bb4508`, `352e05239e72474b`).
+- Fixed: the scan engine uses one `as_of` for all symbols in a scan (it read the clock per symbol).
+- Added: `data.request` on each scan result; `scripts/freshness_probe.py` (read-only freshness diagnostic); `tests/test_data_freshness.py` (deterministic, no network).
+- Unchanged: grace period, staleness rule, history contract, strategy rules, replay guarantees, historical records.
+- Extension Cost: 3 file(s) changed: src/data/yfinance_provider.py, src/data/base.py (docstring), src/scanner/engine.py.
+
 ## Sprint 22 -- 2026-10-18, Reliability, reproducible research & continuous integration (ADR-0059)
 
 Added: GitHub Actions CI (`.github/workflows/ci.yml`), `requirements-dev.txt` (pinned Ruff), `[tool.ruff.lint]`; `src/strategies/history.py` (typed `HistoryRequirement`, derivation helpers, lookup/assessment) with declarations on `ema_cross`, `ema_cross_vol_filter`, `rsi_mean_reversion`, `ai_signal`; `src/snapshots/` (content-addressed, integrity-verified, exact-round-trip snapshot store; `AppPaths.snapshots_dir`); `src/scanner/replay.py`, `src/scanner/replay_context.py`, `ScannerService.replay`, `scripts/replay_scan.py` (offline data / strategy / risk-classification replay); scanner "Reproducibility" panel with an explicit *Replay this scan offline* button.

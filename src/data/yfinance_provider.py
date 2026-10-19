@@ -8,7 +8,7 @@ signature -- nothing else in the codebase should need to change.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import yfinance as yf
@@ -16,6 +16,17 @@ from loguru import logger
 
 from src.data.base import REQUIRED_COLUMNS, DataProvider, Interval
 from src.data.exceptions import DataProviderError, NoDataError
+
+
+def vendor_request_range(start: date, end: date) -> tuple[date, date]:
+    """Translate the platform's INCLUSIVE `[start, end]` calendar-date range into yfinance's `[start, end)` one.
+
+    `DataProvider.fetch_candles` promises that `end` is the last day to include (`MarketDataService` slices inclusively
+    and the scanner/paper runtime pass today's date expecting today's session bar to be eligible). yfinance treats
+    `end` as EXCLUSIVE, so passing it through unchanged silently dropped the bar for `end` itself: every weekday scan
+    after the close saw the previous session as the latest bar and was classified DATA_STALE (Sprint 22 follow-up).
+    """
+    return start, end + timedelta(days=1)
 
 
 class YFinanceProvider(DataProvider):
@@ -36,11 +47,12 @@ class YFinanceProvider(DataProvider):
             end,
         )
 
+        vendor_start, vendor_end = vendor_request_range(start, end)
         try:
             ticker = yf.Ticker(symbol)
             raw = ticker.history(
-                start=start,
-                end=end,
+                start=vendor_start,
+                end=vendor_end,
                 interval=interval.value,
                 auto_adjust=True,
             )

@@ -162,11 +162,14 @@ class ScanEngine:
         with _ACTIVE_LOCK:
             _ACTIVE.add(rec.scan_id)
         total, done = len(rec.symbols), 0
+        # ONE timezone-aware reference time for the whole scan: every symbol's request range, completed-bar selection and
+        # freshness decision use it, so a scan that straddles a grace boundary cannot classify identical data differently.
+        as_of = self._clock()
         try:
             def work(pos_sym: tuple[int, str]) -> ScanResult:
                 pos, sym = pos_sym
                 try:
-                    res = self._evaluate(rec, sym, pos, risk)
+                    res = self._evaluate(rec, sym, pos, risk, as_of)
                 except Exception as exc:  # noqa: BLE001 - one symbol can never abort the scan
                     res = self._result(rec, sym, pos, ResultStatus.ERROR, "UNEXPECTED_ERROR",
                                        "An unexpected error occurred while evaluating this symbol.", error=safe_error_text(exc))
@@ -216,14 +219,14 @@ class ScanEngine:
         return ScanResult(scan_id=rec.scan_id, symbol=sym, status=status, reason_code=code, reason=reason, position=pos,
                           evaluated_at=self._clock().isoformat(timespec="seconds"), **kw)
 
-    def _evaluate(self, rec: ScanRecord, sym: str, pos: int, risk: RiskContext | None) -> ScanResult:
+    def _evaluate(self, rec: ScanRecord, sym: str, pos: int, risk: RiskContext | None, as_of: datetime) -> ScanResult:
         R = ResultStatus
         try:
             instance, _ = resolve_strategy(rec.strategy_name, sym, rec.strategy_params, self._prefixes)
         except StrategyResolutionError as exc:
             return self._result(rec, sym, pos, R.ERROR, "STRATEGY_UNAVAILABLE", "The strategy could not be built for this symbol.",
                                 error=safe_error_text(exc))
-        now = self._clock()
+        now = as_of
         end = now.date()
         start = end - timedelta(days=rec.lookback_days)
         try:
@@ -236,7 +239,8 @@ class ScanEngine:
                                 "The data provider returned no usable data for this symbol.", error=safe_error_text(exc))
         data = {"provider": getattr(ds, "provider", None), "content_hash": getattr(ds, "content_hash", None),
                 "bars": int(len(ds.candles)), "dataset_end": str(getattr(ds, "dataset_end", "")),
-                "as_of": now.isoformat(), "environment": environment_fingerprint()}
+                "as_of": now.isoformat(), "request": {"start": str(start), "end": str(end)},
+                "environment": environment_fingerprint()}
         # The exact normalised dataset this decision is made on is stored BEFORE it is used, and read back and verified.
         # If that cannot be done the symbol is an honest ERROR: a decision whose inputs were not preserved is not reported.
         if self._snapshots is not None:

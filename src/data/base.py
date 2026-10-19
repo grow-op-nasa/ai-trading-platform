@@ -54,6 +54,10 @@ class DataProvider(ABC):
     ) -> pd.DataFrame:
         """Fetch raw candles for `symbol` between `start` and `end`.
 
+        `start` and `end` are INCLUSIVE calendar dates: a bar belonging to `end` is eligible and must be returned if the
+        vendor has it (it may be a still-forming bar; `src.paper.bars` decides completeness, not the provider). A vendor
+        whose API treats `end` as exclusive must translate it (see `yfinance_provider.vendor_request_range`).
+
         Implementations must return a DataFrame that:
           - is indexed by a `DatetimeIndex` named "timestamp", either
             timezone-naive (treated as already representing UTC -- the

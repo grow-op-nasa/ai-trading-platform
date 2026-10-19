@@ -695,6 +695,7 @@ def test_selecting_an_account_persists_it_and_a_new_session_restores_it(paper_wo
 
 
 def test_a_missing_or_malformed_preference_warns_and_is_never_replaced_silently(paper_world, workdir):
+    from src.appsvc import prefs
     w, svc, _ = paper_world
     prefs.save_account(AppPaths(), 999)
     at = AppTest.from_file(APP_PATH)
@@ -806,7 +807,6 @@ def test_changing_the_symbol_runs_nothing_and_orders_nothing(paper_world, monkey
 
 def test_the_symbol_is_remembered_independently_of_the_account_and_restoring_it_mutates_nothing(paper_world):
     import json
-    from src.appsvc import prefs
     w, svc, at = paper_world
     _go(at, "Paper Trading")
     _pick_symbol(at, "SPY")

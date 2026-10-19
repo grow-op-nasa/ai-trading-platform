@@ -17,7 +17,6 @@ from src.appsvc.scanner import ScannerService, explain_result, trace_of
 from src.calendar.nyse import NYSECalendar
 from src.data.fault_injection import SyntheticCandleProvider
 from src.data.service import MarketDataService
-from src.paper import bars
 from src.paper.evaluation import evaluate_at_bar, prepare_bars, resolve_strategy
 from src.scanner.models import ResultStatus, RiskState
 from tests.test_scanner import _risk_world, make, scan_of as _fixture_scan  # noqa: F401

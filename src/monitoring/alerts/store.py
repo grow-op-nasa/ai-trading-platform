@@ -220,9 +220,11 @@ class AlertStore:
         sql, params = f"SELECT {_EVENT_COLS} FROM alert_events", []
         clauses = []
         if finding_id:
-            clauses.append("finding_id=?"); params.append(finding_id)
+            clauses.append("finding_id=?")
+            params.append(finding_id)
         if run_id:
-            clauses.append("run_id=?"); params.append(run_id)
+            clauses.append("run_id=?")
+            params.append(run_id)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY seq DESC LIMIT ?"
@@ -239,11 +241,14 @@ class AlertStore:
               "JOIN alert_events e ON e.event_id = d.event_id"
         clauses, params = [], []
         if status:
-            clauses.append("d.status=?"); params.append(status.value)
+            clauses.append("d.status=?")
+            params.append(status.value)
         if event_id:
-            clauses.append("d.event_id=?"); params.append(event_id)
+            clauses.append("d.event_id=?")
+            params.append(event_id)
         if finding_id:
-            clauses.append("e.finding_id=?"); params.append(finding_id)
+            clauses.append("e.finding_id=?")
+            params.append(finding_id)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY e.seq DESC, d.channel LIMIT ?"
@@ -345,9 +350,11 @@ class AlertStore:
                   "updated_at=? WHERE status='FAILED'"
             params: list[Any] = [ts(now), ts(now)]
             if delivery_id:
-                sql += " AND delivery_id=?"; params.append(delivery_id)
+                sql += " AND delivery_id=?"
+                params.append(delivery_id)
             if event_id:
-                sql += " AND event_id=?"; params.append(event_id)
+                sql += " AND event_id=?"
+                params.append(event_id)
             with conn:
                 return conn.execute(sql, tuple(params)).rowcount
         return self._run(op)

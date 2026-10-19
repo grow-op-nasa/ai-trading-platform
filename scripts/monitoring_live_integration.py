@@ -122,7 +122,6 @@ def main(argv=None) -> int:
         return finish(result, work, 1)
     store = MonitoringStore(mon_db)
     persisted = store.list_findings(limit=50)
-    cli_fids = {f.finding_id for f in persisted}
     nev = [c for c in rep3["checks"] if c["status"] == "NOT_EVALUABLE"]
     ph3 = {
         "exit_code": rc3, "run_id": rep3["run_id"], "status": rep3["status"],

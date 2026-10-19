@@ -15,7 +15,7 @@ from src.backtesting.models import Trade
 from src.experiments.registry import ExperimentRegistry
 from src.experiments.spec import ExperimentSpec
 from src.portfolio.models import Portfolio
-from src.portfolio.position import Position, PositionSide
+from src.portfolio.position import PositionSide
 from src.research.models import Finding, ResearchFindings, ResearchReport
 from src.signals.models import Signal, SignalDirection
 

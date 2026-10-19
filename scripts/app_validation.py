@@ -99,7 +99,8 @@ def part_a(work: Path) -> None:
         try:
             code = proc.wait(timeout=20)
         except subprocess.TimeoutExpired:
-            proc.kill(); code = None
+            proc.kill()
+            code = None
         text = proc.stdout.read() if proc.stdout else ""
     print("  startup output:\n" + "\n".join("    " + line for line in text.splitlines()[:12]))
     check("startup output states paper mode and the local URL", "paper mode only" in text and f":{port}" in text)
@@ -205,7 +206,8 @@ def part_b(work: Path, exp: int) -> None:
     elif cyc.status.value in ("NO_ACTION", "NO_NEW_BAR", "RISK_REJECTED"):
         print("  REAL-DATA approval path NOT observed: the real strategy gave no actionable signal today (honest, nothing manufactured).")
         check("no order or fill was manufactured", store.list_fills(exp) == [] and cyc.client_order_id is None)
-    at.run(timeout=t); at.run(timeout=t)
+    at.run(timeout=t)
+    at.run(timeout=t)
     check("page reruns did not repeat the cycle", len(store.list_cycles(exp)) == 1)
 
     print("-- fresh session (restart simulation): persisted record, repeated submission --")

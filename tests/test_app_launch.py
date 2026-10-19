@@ -77,7 +77,8 @@ def test_workdir_selects_the_data_root_and_must_exist(ok_env, tmp_path):
 
 def test_a_busy_port_is_reported_not_crashed(ok_env):
     with socket.socket() as s:
-        s.bind(("127.0.0.1", 0)); s.listen(1)
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
         port = s.getsockname()[1]
         out = []
         assert launch.main(["--port", str(port)], environ={}, run=lambda a: 0, emit=out.append) == 3
@@ -109,7 +110,8 @@ def test_env_loader_never_overrides_existing_values_and_never_returns_them(tmp_p
 
 def test_env_loader_warns_about_a_world_readable_file_and_tolerates_absence(tmp_path):
     p = tmp_path / ".env"
-    p.write_text("A=1\n"); p.chmod(0o644)
+    p.write_text("A=1\n")
+    p.chmod(0o644)
     _, warnings = load_env_file(p, {})
     assert warnings and "chmod 600" in warnings[0]
     assert load_env_file(tmp_path / "missing", {}) == ([], [])

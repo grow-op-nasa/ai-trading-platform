@@ -47,7 +47,7 @@ from src.monitoring.alerts.models import (
     TransportResult,
 )
 from src.monitoring.alerts.sink import SmtpSink
-from src.monitoring.alerts.transports import SmtpTransport, build_transport
+from src.monitoring.alerts.transports import SmtpTransport
 from src.monitoring.models import CheckResult, CheckStatus, FindingCandidate
 
 REPO = Path(__file__).resolve().parent.parent
@@ -171,10 +171,13 @@ def test_escalation_creates_an_event_only_for_a_real_rise_and_each_rise_is_disti
     svc, _, store, _ = service(chk)
     svc.run_once()                                   # NEW (WARNING)
     svc.run_once()                                   # unchanged
-    chk.mode = "critical"; svc.run_once()            # ESCALATED #1
+    chk.mode = "critical"
+    svc.run_once()  # ESCALATED #1
     svc.run_once()                                   # unchanged CRITICAL: no event
-    chk.mode = "warning"; svc.run_once()             # de-escalation: no event
-    chk.mode = "critical"; svc.run_once()            # ESCALATED #2 (a genuinely new rise)
+    chk.mode = "warning"
+    svc.run_once()  # de-escalation: no event
+    chk.mode = "critical"
+    svc.run_once()  # ESCALATED #2 (a genuinely new rise)
     kinds = [(e.event_type.value, e.severity.value) for e in events(store)]
     assert kinds == [("NEW", "WARNING"), ("ESCALATED", "CRITICAL"), ("ESCALATED", "CRITICAL")]
     esc = [e for e in events(store) if e.event_type == AlertEventType.ESCALATED]
@@ -186,7 +189,10 @@ def test_resolution_creates_exactly_one_resolved_event():
     chk = SevCheck()
     svc, _, store, _ = service(chk)
     svc.run_once()
-    chk.mode = "good"; svc.run_once(); svc.run_once(); svc.run_once()
+    chk.mode = "good"
+    svc.run_once()
+    svc.run_once()
+    svc.run_once()
     assert [e.event_type.value for e in events(store)] == ["NEW", "RESOLVED"]
     res = events(store)[1]
     assert res.finding_status == FindingStatus.RESOLVED and "no longer detected" in render_message(res, cfg_smtp()).body
@@ -196,10 +202,13 @@ def test_unevaluable_run_never_creates_a_false_resolution_event():
     chk = SevCheck()
     svc, _, store, _ = service(chk)
     svc.run_once()
-    chk.mode = "unknown"; svc.run_once(); svc.run_once()
+    chk.mode = "unknown"
+    svc.run_once()
+    svc.run_once()
     assert [e.event_type.value for e in events(store)] == ["NEW"]
     assert store.list_findings(status="OPEN")                     # still open
-    chk.mode = "good"; svc.run_once()
+    chk.mode = "good"
+    svc.run_once()
     assert [e.event_type.value for e in events(store)] == ["NEW", "RESOLVED"]
 
 
@@ -207,8 +216,10 @@ def test_reappearance_after_resolution_is_a_new_finding_with_its_own_new_event()
     chk = SevCheck()
     svc, _, store, _ = service(chk)
     svc.run_once()
-    chk.mode = "good"; svc.run_once()
-    chk.mode = "critical"; svc.run_once()
+    chk.mode = "good"
+    svc.run_once()
+    chk.mode = "critical"
+    svc.run_once()
     ev = events(store)
     assert [e.event_type.value for e in ev] == ["NEW", "RESOLVED", "NEW"]
     assert ev[0].finding_id != ev[2].finding_id and ev[0].idempotency_key != ev[2].idempotency_key
@@ -231,11 +242,14 @@ def test_baseline_policy_does_not_announce_findings_that_were_already_open():
     svc_off, _, _, clock = service(chk, store, AlertEventSettings())
     svc_off.run_once()                                       # opened while alerting was off
     svc_on, _, _, _ = service(chk, store, EMAIL_SETTINGS, clock)
-    svc_on.run_once(); svc_on.run_once()
+    svc_on.run_once()
+    svc_on.run_once()
     assert events(store) == [] and store.alerts.is_initialized()
     assert store.alerts.initialized_info()["initial_policy"] == "baseline"
-    chk.mode = "critical"; svc_on.run_once()                 # but later changes ARE announced
-    chk.mode = "good"; svc_on.run_once()
+    chk.mode = "critical"
+    svc_on.run_once()  # but later changes ARE announced
+    chk.mode = "good"
+    svc_on.run_once()
     assert [e.event_type.value for e in events(store)] == ["ESCALATED", "RESOLVED"]
 
 
@@ -319,7 +333,8 @@ def test_events_and_flags_survive_a_process_restart(tmp_path):
 # B. dispatcher, retries, claims, ordering
 # =====================================================================================
 def test_delivered_only_after_the_transport_confirms_and_never_resent():
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     d, clock = dispatcher(store)
     s = d.dispatch()
     assert (s.attempted, s.delivered) == (1, 1)
@@ -329,7 +344,8 @@ def test_delivered_only_after_the_transport_confirms_and_never_resent():
 
 
 def test_retryable_failure_keeps_the_same_event_and_backs_off_then_recovers():
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     ev_id = events(store)[0].event_id
     t = FakeTransport([TransportResult.retryable("timeout"), TransportResult.retryable("timeout")])
     d, clock = dispatcher(store, t)
@@ -339,10 +355,12 @@ def test_retryable_failure_keeps_the_same_event_and_backs_off_then_recovers():
     assert dv.status == DeliveryStatus.RETRY_PENDING and dv.attempt_count == 1 and dv.last_error == "timeout"
     assert dv.next_attempt_at == clock.t + timedelta(seconds=60)
     assert d.dispatch().attempted == 0                      # not eligible yet: no flooding of a down transport
-    clock.advance(61); d.dispatch()                          # attempt 2 fails: backoff doubles
+    clock.advance(61)
+    d.dispatch()  # attempt 2 fails: backoff doubles
     (dv,) = store.alerts.list_deliveries()
     assert dv.next_attempt_at == clock.t + timedelta(seconds=120)
-    clock.advance(121); d.dispatch()                         # transport recovered
+    clock.advance(121)
+    d.dispatch()  # transport recovered
     (dv,) = store.alerts.list_deliveries()
     assert dv.status == DeliveryStatus.DELIVERED and dv.event_id == ev_id
     assert store.alerts.counts()["events"] == 1             # retries never create logical events
@@ -354,24 +372,29 @@ def test_retryable_failure_keeps_the_same_event_and_backs_off_then_recovers():
 def test_backoff_is_capped_and_exhaustion_becomes_failed_but_inspectable():
     d, _ = dispatcher(MonitoringStore(":memory:"), backoff_base_seconds=100.0, backoff_max_seconds=250.0)
     assert [d.backoff_seconds(n) for n in (1, 2, 3, 4)] == [100, 200, 250, 250]
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     t = FakeTransport([TransportResult.retryable("down")] * 5)
     d, clock = dispatcher(store, t, max_attempts=3)
     for _ in range(6):
-        d.dispatch(); clock.advance(400)
+        d.dispatch()
+        clock.advance(400)
     (dv,) = store.alerts.list_deliveries()
     assert dv.status == DeliveryStatus.FAILED and len(t.sent) == 3 and "down" in dv.last_error
     assert store.alerts.counts()["events"] == 1 and store.list_findings()      # finding untouched
 
 
 def test_permanent_failure_is_not_retried_and_manual_requeue_reuses_the_event():
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     ev_id = events(store)[0].event_id
     t = FakeTransport([TransportResult.permanent("auth failed")])
     d, clock = dispatcher(store, t)
-    d.dispatch(); clock.advance(10_000)
+    d.dispatch()
+    clock.advance(10_000)
     assert d.dispatch().attempted == 0
-    (dv,) = store.alerts.list_deliveries(); assert dv.status == DeliveryStatus.FAILED
+    (dv,) = store.alerts.list_deliveries()
+    assert dv.status == DeliveryStatus.FAILED
     assert store.alerts.requeue_failed(clock.t, delivery_id=dv.delivery_id) == 1
     d.dispatch()
     (dv,) = store.alerts.list_deliveries()
@@ -381,7 +404,8 @@ def test_permanent_failure_is_not_retried_and_manual_requeue_reuses_the_event():
 
 
 def test_a_transport_that_raises_is_a_redacted_retryable_failure_not_a_crash():
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     d, _ = dispatcher(store, FakeTransport([RuntimeError("boom hunter2")]), smtp_password="hunter2")
     s = d.dispatch()
     assert s.retry_scheduled == 1
@@ -390,7 +414,8 @@ def test_a_transport_that_raises_is_a_redacted_retryable_failure_not_a_crash():
 
 
 def test_unusable_transport_config_fails_before_any_attempt_is_consumed():
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     bad = AlertConfig(enabled=True, transport="smtp")            # no host/sender/recipients
     with pytest.raises(AlertConfigError):
         AlertDispatcher(store.alerts, SmtpTransport(bad), bad).dispatch()
@@ -399,7 +424,8 @@ def test_unusable_transport_config_fails_before_any_attempt_is_consumed():
 
 
 def test_two_dispatchers_cannot_both_claim_one_delivery_and_expired_leases_are_recoverable():
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     clock = Clock()
     first = store.alerts.claim_next("email", clock.t, 300.0)
     assert first is not None and first[0].status == DeliveryStatus.IN_PROGRESS
@@ -413,31 +439,38 @@ def test_two_dispatchers_cannot_both_claim_one_delivery_and_expired_leases_are_r
 
 def test_crash_after_claim_resends_after_lease_expiry_documented_at_least_once(tmp_path):
     db = tmp_path / "m.db"
-    svc, _, store, clock = service(store=MonitoringStore(db)); svc.run_once()
+    svc, _, store, clock = service(store=MonitoringStore(db))
+    svc.run_once()
     claimed = store.alerts.claim_next("email", clock.t, 300.0)           # process dies right after the claim
     assert claimed is not None
     restarted = MonitoringStore(db)
-    t = FakeTransport(); d = AlertDispatcher(restarted.alerts, t, cfg_smtp(), clock=Clock(clock.t + timedelta(seconds=400)))
+    t = FakeTransport()
+    d = AlertDispatcher(restarted.alerts, t, cfg_smtp(), clock=Clock(clock.t + timedelta(seconds=400)))
     assert d.dispatch().delivered == 1 and len(t.sent) == 1
 
 
 def test_events_for_one_fingerprint_are_delivered_in_order():
     chk = SevCheck("warning")
-    svc, _, store, _ = service(chk); svc.run_once()
-    chk.mode = "critical"; svc.run_once()
+    svc, _, store, _ = service(chk)
+    svc.run_once()
+    chk.mode = "critical"
+    svc.run_once()
     t = FakeTransport([TransportResult.retryable("temporary")])
     d, clock = dispatcher(store, t)
     d.dispatch()                                                          # NEW fails -> RETRY_PENDING (future)
     assert len(t.sent) == 1 and t.sent[0].subject.split(" ")[1] == "NEW"  # ESCALATED did not overtake it
-    clock.advance(61); d.dispatch()
+    clock.advance(61)
+    d.dispatch()
     types = [m.subject.split(" ")[1] for m in t.sent]
     assert types == ["NEW", "NEW", "ESCALATED"]
 
 
 def test_a_permanently_failed_earlier_event_does_not_block_later_ones():
     chk = SevCheck("warning")
-    svc, _, store, _ = service(chk); svc.run_once()
-    chk.mode = "critical"; svc.run_once()
+    svc, _, store, _ = service(chk)
+    svc.run_once()
+    chk.mode = "critical"
+    svc.run_once()
     t = FakeTransport([TransportResult.permanent("rejected")])
     d, _ = dispatcher(store, t)
     s = d.dispatch()
@@ -447,7 +480,8 @@ def test_a_permanently_failed_earlier_event_does_not_block_later_ones():
 def test_batch_limit_and_time_budget_bound_one_dispatch_pass():
     store = MonitoringStore(":memory:")
     for sym in "ABCDE":
-        svc, _, _, _ = service(SevCheck("critical", sym), store); svc.run_once()
+        svc, _, _, _ = service(SevCheck("critical", sym), store)
+        svc.run_once()
     d, clock = dispatcher(store)
     s = d.dispatch(limit=2)
     assert (s.attempted, s.stopped_reason) == (2, "batch_limit")
@@ -472,7 +506,7 @@ def test_delivery_outcome_cannot_change_monitoring_results():
     d.dispatch()
     assert (store.get_run(run.run_id).status, store.list_findings()[0].severity) == before
     assert before[0].value == "CRITICAL"                    # a delivered email does not make it healthy
-    d2, _ = dispatcher(store, FakeTransport([TransportResult.permanent("x")])); 
+    d2, _ = dispatcher(store, FakeTransport([TransportResult.permanent("x")]))
     run2 = svc.run_once()
     assert run2.status.value == "CRITICAL"                  # and a failed one does not either
 
@@ -576,7 +610,8 @@ def deliver_via(sink, store, **cfg_kw):
 
 
 def test_full_message_reaches_the_local_sink_with_correct_headers_and_body():
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     with SmtpSink() as sink:
         d, _ = deliver_via(sink, store, recipients=("ops@example.com", "oncall@example.com"))
         assert d.dispatch().delivered == 1
@@ -593,34 +628,45 @@ def test_full_message_reaches_the_local_sink_with_correct_headers_and_body():
 
 
 def test_sink_failures_are_classified_and_a_recovered_server_receives_the_same_event():
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     ev_id = events(store)[0].event_id
     with SmtpSink() as sink:
         d, clock = deliver_via(sink, store)
         sink.fail_next("temp")
-        d.dispatch(); (dv,) = store.alerts.list_deliveries()
+        d.dispatch()
+        (dv,) = store.alerts.list_deliveries()
         assert dv.status == DeliveryStatus.RETRY_PENDING and "451" in dv.last_error or "SMTP 4" in dv.last_error
-        clock.advance(61); sink.fail_next("drop")
-        d.dispatch(); (dv,) = store.alerts.list_deliveries()
+        clock.advance(61)
+        sink.fail_next("drop")
+        d.dispatch()
+        (dv,) = store.alerts.list_deliveries()
         assert dv.status == DeliveryStatus.RETRY_PENDING and dv.attempt_count == 2
         clock.advance(121)                                   # server recovered
-        d.dispatch(); (dv,) = store.alerts.list_deliveries()
+        d.dispatch()
+        (dv,) = store.alerts.list_deliveries()
         assert dv.status == DeliveryStatus.DELIVERED and len(sink.messages) == 1
     assert dv.event_id == ev_id and store.alerts.counts()["events"] == 1
 
 
 def test_permanent_server_rejection_marks_failed_without_retrying():
-    svc, _, store, _ = service(); svc.run_once()
+    svc, _, store, _ = service()
+    svc.run_once()
     with SmtpSink() as sink:
         d, clock = deliver_via(sink, store)
         sink.fail_next("reject_rcpt")
-        d.dispatch(); clock.advance(10_000); d.dispatch()
+        d.dispatch()
+        clock.advance(10_000)
+        d.dispatch()
         (dv,) = store.alerts.list_deliveries()
     assert dv.status == DeliveryStatus.FAILED and dv.attempt_count == 1 and sink.messages == []
 
 
 def test_connection_refused_is_retryable():
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()   # nothing listens
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()  # nothing listens
     t = SmtpTransport(cfg_smtp(port))
     r = t.send(AlertMessage("s", "b", "e1"))
     assert r.outcome == "retryable"
@@ -717,7 +763,8 @@ def populated_db(tmp_path, n_symbols=1):
     db = tmp_path / "m.db"
     store = MonitoringStore(db)
     for sym in "ABC"[:n_symbols]:
-        svc, _, _, _ = service(SevCheck("critical", sym), store); svc.run_once()
+        svc, _, _, _ = service(SevCheck("critical", sym), store)
+        svc.run_once()
     return db, store
 
 
@@ -753,7 +800,8 @@ def test_status_reports_exit_codes_for_clean_pending_and_failed_states(tmp_path)
     rc, out = cli(["--db", str(db), "status", "--json"])
     data = json.loads(out)
     assert rc == EXIT_FAILED and data["counts"]["FAILED"] == 1 and data["deliveries"][0]["last_error"] == "nope"
-    store.alerts.requeue_failed(clock.t); d.dispatch()
+    store.alerts.requeue_failed(clock.t)
+    d.dispatch()
     rc, out = cli(["--db", str(db), "status"])
     assert rc == EXIT_OK and "delivered=1" in out
 
@@ -798,7 +846,8 @@ def test_dispatch_exit_codes_distinguish_pending_retry_from_permanent_failure(tm
 
 def test_retry_requeues_failed_deliveries_without_new_events(tmp_path):
     db, store = populated_db(tmp_path)
-    d, clock = dispatcher(store, FakeTransport([TransportResult.permanent("bad")])); d.dispatch()
+    d, clock = dispatcher(store, FakeTransport([TransportResult.permanent("bad")]))
+    d.dispatch()
     rc, out = cli(["--db", str(db), "retry", "--all-failed"])
     assert rc == EXIT_OK and "requeued 1" in out
     assert store.alerts.counts()["events"] == 1 and store.alerts.counts()["RETRY_PENDING"] == 1
@@ -842,7 +891,7 @@ def test_monitor_once_reports_queued_alerts_without_delivering_them(tmp_path):
     svc, _, store, _ = service()
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        rc = run_monitor(["--once"], service_factory=lambda e, d: svc)
+        run_monitor(["--once"], service_factory=lambda e, d: svc)
     assert "Alerts: 1 event(s) recorded for this run (queued, NOT delivered)" in buf.getvalue()
     assert store.alerts.counts()["PENDING"] == 1
     buf = io.StringIO()
@@ -862,7 +911,8 @@ def test_monitor_json_has_no_alerts_key_when_alerting_is_off():
 
 def test_monitor_once_fails_clearly_when_alerting_is_enabled_but_invalid():
     old = {k: os.environ.get(k) for k in ("ATP_ALERTS_ENABLED", "ATP_ALERT_SMTP_HOST")}
-    os.environ["ATP_ALERTS_ENABLED"] = "true"; os.environ.pop("ATP_ALERT_SMTP_HOST", None)
+    os.environ["ATP_ALERTS_ENABLED"] = "true"
+    os.environ.pop("ATP_ALERT_SMTP_HOST", None)
     try:
         from src.cli.monitor import _default_service
         with pytest.raises(AlertConfigError):
@@ -887,7 +937,7 @@ def test_scheduled_runs_produce_one_event_and_the_dispatch_hook_runs_each_tick_w
     sched.run_forever()
     assert store.alerts.counts()["events"] == 1                       # NEW once, not per tick
     assert len(d._transport.sent) == 1
-    assert sum("alerts dispatch:" in l for l in lines) == 3
+    assert sum("alerts dispatch:" in ln for ln in lines) == 3
 
 
 def test_a_failing_dispatch_hook_never_changes_the_scheduler_outcome():
@@ -904,7 +954,7 @@ def test_a_failing_dispatch_hook_never_changes_the_scheduler_outcome():
                                 wait=lambda s: (clock.advance(s), False)[1], emit=lines.append, after_run=boom)
     summary = sched.run_forever()
     assert summary.completed == 2 and summary.errors == 0 and summary.infrastructure_errors == 0
-    assert any("ALERT-DISPATCH-ERROR" in l and "unaffected" in l for l in lines)
+    assert any("ALERT-DISPATCH-ERROR" in ln and "unaffected" in ln for ln in lines)
     assert all(a.outcome == "COMPLETED" for a in ss.list_attempts("s1"))
 
 
@@ -981,9 +1031,11 @@ def test_the_agent_gains_no_alerting_or_sending_capability():
 
 
 def test_alert_creation_and_dispatch_never_modify_findings_or_runs():
-    svc, _, store, _ = service(); run = svc.run_once()
+    svc, _, store, _ = service()
+    run = svc.run_once()
     snap = [(f.finding_id, f.status, f.severity, f.occurrence_count) for f in store.list_findings()]
-    d, _ = dispatcher(store); d.dispatch()
+    d, _ = dispatcher(store)
+    d.dispatch()
     assert snap == [(f.finding_id, f.status, f.severity, f.occurrence_count) for f in store.list_findings()]
     assert store.get_run(run.run_id).persisted
 

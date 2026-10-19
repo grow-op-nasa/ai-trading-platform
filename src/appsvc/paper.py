@@ -20,7 +20,7 @@ from src.snapshots import SnapshotStore
 from src.appsvc.paths import AppPaths
 from src.appsvc.strategies import eligible_names
 from src.paper.config import PaperConfigError, PaperRunConfig
-from src.paper.models import CheckStatus, CycleRecord, CycleStatus, PreflightReport, ProposalRecord, ProposalStatus
+from src.paper.models import CheckStatus, CycleRecord, PreflightReport, ProposalRecord, ProposalStatus
 from src.paper.runtime import PaperLockedError, PaperProposalError, PaperSetupError, PaperTradingRuntime
 from src.paper.store import PaperStore, PaperStoreError
 

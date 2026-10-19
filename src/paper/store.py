@@ -211,10 +211,13 @@ class PaperStore:
                     statuses: tuple[CycleStatus, ...] | None = None) -> list[CycleRecord]:
         sql, params = "SELECT record_json FROM paper_cycles WHERE 1=1", []
         if experiment_id is not None:
-            sql += " AND experiment_id=?"; params.append(experiment_id)
+            sql += " AND experiment_id=?"
+            params.append(experiment_id)
         if statuses:
-            sql += f" AND status IN ({','.join('?' * len(statuses))})"; params.extend(s.value for s in statuses)
-        sql += " ORDER BY started_at DESC, rowid DESC LIMIT ?"; params.append(limit)
+            sql += f" AND status IN ({','.join('?' * len(statuses))})"
+            params.extend(s.value for s in statuses)
+        sql += " ORDER BY started_at DESC, rowid DESC LIMIT ?"
+        params.append(limit)
         return [CycleRecord.from_dict(json.loads(r[0])) for r in self._read(sql, tuple(params))]
 
     # ------------------------------------------------------------------ intents
@@ -255,7 +258,8 @@ class PaperStore:
         if unresolved_only:
             sql += f" AND state IN ({','.join('?' * len(UNRESOLVED_INTENT))})"
             params.extend(s.value for s in UNRESOLVED_INTENT)
-        sql += " ORDER BY created_at ASC, rowid ASC LIMIT ?"; params.append(limit)
+        sql += " ORDER BY created_at ASC, rowid ASC LIMIT ?"
+        params.append(limit)
         return [self._intent_from(r) for r in self._read(sql, tuple(params))]
 
     def set_intent_state(self, intent_id: str, state: IntentState, reason: str | None = None) -> None:
@@ -284,7 +288,8 @@ class PaperStore:
             fill.seq = cur.lastrowid
             row = conn.execute("SELECT record_json, state FROM paper_intents WHERE intent_id=?", (intent_id,)).fetchone()
             if row is not None and row["state"] == IntentState.INTENT_RECORDED.value:
-                rec = json.loads(row["record_json"]); rec["state"] = IntentState.FILLED_AT_BROKER.value
+                rec = json.loads(row["record_json"])
+                rec["state"] = IntentState.FILLED_AT_BROKER.value
                 conn.execute("UPDATE paper_intents SET state=?, record_json=? WHERE intent_id=?",
                              (IntentState.FILLED_AT_BROKER.value, json.dumps(rec), intent_id))
             return fill
@@ -293,14 +298,17 @@ class PaperStore:
         rows = self._read("SELECT seq, record_json FROM paper_broker_fills WHERE client_order_id=?", (client_order_id,))
         if not rows:
             return None
-        rec = FillRecord.from_dict(json.loads(rows[0]["record_json"])); rec.seq = rows[0]["seq"]
+        rec = FillRecord.from_dict(json.loads(rows[0]["record_json"]))
+        rec.seq = rows[0]["seq"]
         return rec
 
     def list_fills(self, experiment_id: int) -> list[FillRecord]:
         out = []
         for r in self._read("SELECT seq, record_json FROM paper_broker_fills WHERE experiment_id=? ORDER BY seq ASC",
                             (experiment_id,)):
-            rec = FillRecord.from_dict(json.loads(r["record_json"])); rec.seq = r["seq"]; out.append(rec)
+            rec = FillRecord.from_dict(json.loads(r["record_json"]))
+            rec.seq = r["seq"]
+            out.append(rec)
         return out
 
     # ------------------------------------------------------------------ proposals (Sprint 20)
@@ -344,8 +352,10 @@ class PaperStore:
                        limit: int = 50) -> list[ProposalRecord]:
         sql, params = "SELECT * FROM paper_proposals WHERE experiment_id=?", [experiment_id]
         if statuses:
-            sql += f" AND status IN ({','.join('?' * len(statuses))})"; params.extend(s.value for s in statuses)
-        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"; params.append(limit)
+            sql += f" AND status IN ({','.join('?' * len(statuses))})"
+            params.extend(s.value for s in statuses)
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
+        params.append(limit)
         return [self._proposal_from(r) for r in self._read_proposals(sql, tuple(params))]
 
     def set_proposal_status(self, proposal_id: str, new: ProposalStatus, *, expect: tuple[ProposalStatus, ...],
@@ -376,7 +386,9 @@ class PaperStore:
         return rec
 
     def _recon_from(self, row: sqlite3.Row) -> ReconRecord:
-        d = json.loads(row["record_json"]); d["status"] = ReconStatus(d["status"]); d["recon_id"] = row["recon_id"]
+        d = json.loads(row["record_json"])
+        d["status"] = ReconStatus(d["status"])
+        d["recon_id"] = row["recon_id"]
         return ReconRecord(**d)
 
     def latest_reconciliation(self, experiment_id: int) -> ReconRecord | None:
@@ -389,5 +401,6 @@ class PaperStore:
         sql, params = "SELECT * FROM paper_reconciliations WHERE experiment_id=?", [experiment_id]
         if only_problems:
             sql += " AND status != 'MATCH'"
-        sql += " ORDER BY recon_id DESC LIMIT ?"; params.append(limit)
+        sql += " ORDER BY recon_id DESC LIMIT ?"
+        params.append(limit)
         return [self._recon_from(r) for r in self._read(sql, tuple(params))]

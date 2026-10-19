@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import streamlit as st
 
-from src.appsvc import explain, freshness, instruments, prefs, strategies
+from src.appsvc import explain, instruments, prefs, strategies
 from src.appsvc.paper import DEFAULT_FORM, OUTCOME_MEANING, PaperConfigError, PaperService, stages_from_record
 from src.appsvc.paths import AppPaths
 from src.dashboard import proposals_ui, shell, ui

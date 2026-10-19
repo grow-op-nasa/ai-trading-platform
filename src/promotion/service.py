@@ -42,7 +42,6 @@ from src.ai.agents.strategy_dev.safety import validate_candidate_source
 from src.ai.agents.strategy_dev.workspace import (
     CandidateRegistry,
     CandidateWorkspace,
-    InvalidTransitionError,
     sha256_text,
 )
 from src.signals.models import Signal, SignalDirection

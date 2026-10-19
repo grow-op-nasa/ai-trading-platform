@@ -29,7 +29,6 @@ from src.ai.agents.provider import (
 )
 from src.ai.agents.session import AgentSession
 from src.ai.agents.tools import (
-    AgentTool,
     ToolRegistry,
     ToolResult,
     validate_arguments,

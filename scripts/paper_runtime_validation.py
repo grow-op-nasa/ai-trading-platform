@@ -111,10 +111,12 @@ def cli(work: Path, *args: str) -> subprocess.CompletedProcess:
 # ------------------------------------------------------------------------------------------------ part 1
 def part1(root: Path) -> None:
     print("\n=== PART 1: EXTERNAL DATA (real CLI process, yfinance, registered strategy ema_cross) ===")
-    work = root / "external"; (work / "data").mkdir(parents=True)
+    work = root / "external"
+    (work / "data").mkdir(parents=True)
     reg_path, paper_db, mon_db = work / "data/experiments.db", work / "data/paper/paper_runtime.db", work / "data/mon.db"
     exp = seed(ExperimentRegistry(reg_path))
-    cfg = work / "paper.json"; cfg.write_text(json.dumps(config_dict(exp)))
+    cfg = work / "paper.json"
+    cfg.write_text(json.dumps(config_dict(exp)))
     base = ["--config", str(cfg), "--registry", str(reg_path), "--paper-db", str(paper_db)]
     print("  cmd: python -m src.cli paper init|preflight|run --once|status --config <cfg> --registry <reg> --paper-db <db>")
     r = cli(work, "init", *base, "--label", "sprint18 external-data validation (disposable)")
@@ -189,11 +191,13 @@ class CraftedProvider(DataProvider):
 
 def part2(root: Path) -> None:
     print("\n=== PART 2: SYNTHETIC FIXTURE (crafted candles; real ema_cross, risk, PaperBroker, registry, monitoring) ===")
-    work = root / "fixture"; work.mkdir()
+    work = root / "fixture"
+    work.mkdir()
     reg_path, paper_db, mon_db = work / "experiments.db", work / "paper" / "paper.db", work / "monitoring.db"
     registry = ExperimentRegistry(reg_path)
     exp = seed(registry, exposure_ceiling=0.001)          # monitoring ceiling far below the position -> a genuine finding
-    cfg = work / "paper.json"; cfg.write_text(json.dumps(config_dict(exp)))
+    cfg = work / "paper.json"
+    cfg.write_text(json.dumps(config_dict(exp)))
     clock = {"now": datetime(2026, 10, 7, 22, 0, tzinfo=timezone.utc)}
     provider = {"p": CraftedProvider(date(2026, 10, 7), [140.0])}
     out: list[str] = []
@@ -262,7 +266,8 @@ def part2(root: Path) -> None:
     check("cycle 2 FLAT signal is a PROPOSAL first", p2.status.value == "AWAITING_APPROVAL")
     pid2 = store.list_proposals(exp, (__import__("src.paper.models", fromlist=["x"]).ProposalStatus.PENDING,))[0].proposal_id
     try:
-        rt.approve_proposal(pid2); crashed = False
+        rt.approve_proposal(pid2)
+        crashed = False
     except SimulatedCrash:
         crashed = True
     check("simulated process death after broker commit", crashed)

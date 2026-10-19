@@ -212,7 +212,7 @@ def test_a_failing_run_is_recorded_and_the_schedule_continues():
     assert first.error.startswith("RuntimeError: boom") and "\n" not in first.error and len(first.error) < 260
     assert second.outcome == "COMPLETED"
     assert s.errors == 1 and s.completed == 1 and s.infrastructure_errors == 1
-    assert any("SCHEDULER-ERROR" in l for l in lines)
+    assert any("SCHEDULER-ERROR" in ln for ln in lines)
 
 
 def test_an_unpersisted_monitoring_run_is_an_error_never_a_success():
@@ -232,7 +232,7 @@ def test_attempt_recording_failures_abort_rather_than_run_unrecorded():
     s = sched.run_forever()
     assert s.stopped_reason == "persistence_unavailable"
     assert s.record_failures == MAX_CONSECUTIVE_RECORD_FAILURES and svc.n == MAX_CONSECUTIVE_RECORD_FAILURES
-    assert any("could not record attempt" in l for l in lines)
+    assert any("could not record attempt" in ln for ln in lines)
 
 
 # ------------------------------------------------------------------ shutdown

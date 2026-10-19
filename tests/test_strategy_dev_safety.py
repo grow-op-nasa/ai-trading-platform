@@ -11,7 +11,6 @@ dependencies (`safety.py` imports only `ast` and stdlib dataclasses).
 from __future__ import annotations
 
 from src.ai.agents.strategy_dev.safety import (
-    ALLOWED_PLATFORM_MODULES,
     ALLOWED_STDLIB_MODULES,
     ALLOWED_THIRDPARTY_MODULES,
     MAX_FUNCTIONS_PER_CLASS,
@@ -214,7 +213,7 @@ def test_allows_every_declared_allowlist_module():
 
 
 def test_too_many_imports_is_rejected():
-    imports = "\n".join(f"import math" for _ in range(MAX_IMPORTS + 5))
+    imports = "\n".join("import math" for _ in range(MAX_IMPORTS + 5))
     source = f"""\
 {imports}
 from src.strategies.sdk import BaseStrategy

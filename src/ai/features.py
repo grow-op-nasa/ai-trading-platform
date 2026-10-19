@@ -33,7 +33,7 @@ under an ambiguous name like "EMA/RSI/ATR model".
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 
 import pandas as pd
 

@@ -37,14 +37,11 @@ from src.ai.agents.strategy_dev.models import (
 from src.ai.agents.strategy_dev.runner import PrecomputedSignalStrategy, run_candidate
 from src.ai.agents.strategy_dev.safety import validate_candidate_source
 from src.ai.agents.strategy_dev.workspace import (
-    CandidateImmutableError,
     CandidateRegistry,
     CandidateWorkspace,
     InvalidTransitionError,
 )
 from src.ai.agents.tools import (
-    PERMISSION_EXPERIMENT_READS,
-    PERMISSION_MODEL_READS,
     ToolRegistry,
     ToolResult,
 )

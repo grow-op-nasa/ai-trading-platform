@@ -8,11 +8,8 @@ fill seen here is a SIMULATED fixture fill, never a real-market observation.
 from __future__ import annotations
 
 import json
-import re
-from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from src.appsvc import monitoring as mon
@@ -24,7 +21,7 @@ from src.appsvc.system import DISABLED, FAIL, OK, UNKNOWN, WARN, collect_status
 from src.data.service import MarketDataService
 from src.monitoring import MonitoringService, MonitoringStore, PlatformState, StaticStateSource
 from src.monitoring.alerts.config import AlertConfigError
-from src.monitoring.alerts.models import AlertEventSettings, DeliveryStatus, TransportResult
+from src.monitoring.alerts.models import AlertEventSettings, TransportResult
 from src.paper.config import PaperConfigError
 from src.paper.models import CycleStatus
 from tests.test_alerts import GOOD_ENV, SevCheck, Clock, FakeTransport, T0, _Ticking  # noqa: F401
@@ -82,7 +79,7 @@ def test_valid_alert_configuration_is_not_reported_as_working_delivery(tmp_path)
 
 
 def test_scheduler_lock_probe_detects_a_held_lock_without_writing(tmp_path):
-    fcntl = pytest.importorskip("fcntl")
+    pytest.importorskip("fcntl")
     from src.appsvc.system import scheduler_locks
     from src.monitoring.scheduler import SchedulerLock
     d = tmp_path / "monitoring"
@@ -298,8 +295,13 @@ def test_monitoring_views_read_persisted_findings_and_keep_delivery_separate_fro
 def test_viewing_monitoring_state_sends_nothing_and_runs_nothing(tmp_path):
     paths, store = _monitoring_world(tmp_path)
     before = fingerprint(paths.monitoring_db)
-    mon.runs(paths); mon.findings(paths); mon.alert_events(paths); mon.deliveries(paths); mon.alert_counts(paths)
-    mon.scheduler_attempts(paths); mon.open_findings(paths)
+    mon.runs(paths)
+    mon.findings(paths)
+    mon.alert_events(paths)
+    mon.deliveries(paths)
+    mon.alert_counts(paths)
+    mon.scheduler_attempts(paths)
+    mon.open_findings(paths)
     assert fingerprint(paths.monitoring_db) == before
 
 

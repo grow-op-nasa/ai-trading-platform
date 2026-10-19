@@ -117,7 +117,6 @@ def main(argv=None) -> int:
              "--registry", str(reg_path), "--db", str(db_path), "--schedule-id", "fixture"]
 
     print("\n== 1. two scheduled cycles (real CLI process, no AI key in env) ==")
-    t0 = time.monotonic()
     r = cli(work, *sched, "--max-runs", "2", timeout=180)
     print(r.stdout.strip()[-1500:])
     check("exit code 0 (clean shutdown, no infrastructure errors)", r.returncode == 0, f"rc={r.returncode} {r.stderr[-300:]}")
@@ -149,7 +148,8 @@ def main(argv=None) -> int:
         out, _ = proc.communicate(timeout=60)
         rc = proc.returncode
     except subprocess.TimeoutExpired:
-        proc.kill(); out, rc = proc.communicate()[0], -9
+        proc.kill()
+        out, rc = proc.communicate()[0], -9
     print(out.strip()[-800:])
     check("SIGTERM -> exit code 0", rc == 0, f"rc={rc}")
     r2 = cli(work, *sched, "--max-runs", "1", timeout=120)

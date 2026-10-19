@@ -203,7 +203,8 @@ def test_valid_configuration_has_a_stable_identity_that_changes_with_material_se
     a = PaperRunConfig.from_dict(base_config())
     assert a.identity_hash() == PaperRunConfig.from_dict(base_config()).identity_hash()
     assert a.identity_hash() != PaperRunConfig.from_dict(base_config(strategy_params={"x": 1})).identity_hash()
-    b = base_config(); b["execution"] = {**b["execution"], "fee_bps": 5.0}
+    b = base_config()
+    b["execution"] = {**b["execution"], "fee_bps": 5.0}
     assert a.identity_hash() != PaperRunConfig.from_dict(b).identity_hash()
 
 
@@ -231,7 +232,8 @@ def test_invalid_or_ambiguous_configuration_is_rejected_with_a_clear_reason(patc
 
 def test_missing_required_sections_are_rejected_not_defaulted():
     for key in ("execution_mode", "experiment_id", "strategy_name", "symbol", "risk", "stop", "execution"):
-        raw = base_config(); raw.pop(key)
+        raw = base_config()
+        raw.pop(key)
         with pytest.raises(PaperConfigError, match="missing required"):
             PaperRunConfig.from_dict(raw)
 
@@ -447,9 +449,11 @@ def test_flat_with_no_position_is_a_noop_and_a_flat_close_follows_the_close_path
     assert rec.status is CycleStatus.NO_ACTION and rec.reason_code == "ALREADY_FLAT"
     assert rec.risk_decision["is_close"] is True
     # open, then close on the next bar
-    world.script(date(2026, 10, 8), "LONG"); world.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
+    world.script(date(2026, 10, 8), "LONG")
+    world.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
     assert world.runtime().run_cycle().status is CycleStatus.ORDER_FILLED
-    world.script(date(2026, 10, 9), "FLAT"); world.advance(date(2026, 10, 9), datetime(2026, 10, 9, 22, 0, tzinfo=timezone.utc))
+    world.script(date(2026, 10, 9), "FLAT")
+    world.advance(date(2026, 10, 9), datetime(2026, 10, 9, 22, 0, tzinfo=timezone.utc))
     closing = world.runtime().run_cycle()
     assert closing.status is CycleStatus.ORDER_FILLED and closing.risk_decision["is_close"] is True
     assert closing.fill["side"] == "SELL" and not world.portfolio().positions
@@ -461,7 +465,8 @@ def test_close_is_not_blocked_by_entry_exposure_limits(tmp_path):
     w.script(WED, "LONG")
     assert w.runtime().run_cycle().status is CycleStatus.ORDER_FILLED
     w.cfg_dict["risk"] = {"allocation_per_trade_pct": 0.10, "max_portfolio_exposure_pct": 0.01, "risk_pct_per_trade": 0.01}
-    w.script(date(2026, 10, 8), "FLAT"); w.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
+    w.script(date(2026, 10, 8), "FLAT")
+    w.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
     assert w.runtime().run_cycle().status is CycleStatus.ORDER_FILLED      # exposure already above the new limit
 
 
@@ -479,7 +484,8 @@ def test_execution_costs_are_applied_once_recorded_and_flow_into_portfolio_cash(
     assert w.portfolio().cash == pytest.approx(10_000.0 - notional - f.fee)    # fee debited exactly once
     assert w.store().latest_reconciliation(w.exp).status is ReconStatus.MATCH  # broker ledger agrees
     # a round trip: total cash effect = gross pnl - both fees (net is not confused with gross)
-    w.script(date(2026, 10, 8), "FLAT"); w.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
+    w.script(date(2026, 10, 8), "FLAT")
+    w.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
     assert w.runtime().run_cycle().status is CycleStatus.ORDER_FILLED
     fills = w.store().list_fills(w.exp)
     gross = fills[0].quantity * (fills[1].fill_price - fills[0].fill_price)
@@ -779,7 +785,8 @@ def test_post_cycle_monitoring_uses_the_real_service_and_alert_events_follow_gen
     events = store.alerts.list_events(limit=50)
     assert [e.event_type.value for e in events].count("NEW") >= 1
     n = len(events)
-    factory().run_once(); factory().run_once()                       # unchanged condition: no duplicate alerts
+    factory().run_once()
+    factory().run_once()  # unchanged condition: no duplicate alerts
     assert len(store.alerts.list_events(limit=50)) == n
     assert store.alerts.counts()["DELIVERED"] == 0                   # the runtime never dispatches or sends anything
 

@@ -19,7 +19,7 @@ from src.ai.agents.models import AgentRunStatus
 from src.ai.agents.policy import ResearchAgentPolicy
 from src.ai.agents.provider import FakeLLMProvider, LLMResponse, LLMToolCall, ProviderError
 from src.ai.agents.store import AgentRunStore
-from src.ai.agents.tools import ToolRegistry, ToolResult, default_tool_registry
+from src.ai.agents.tools import ToolRegistry, default_tool_registry
 from src.data.base import Interval
 from src.data.models import CandleDataset, SessionPolicy, ValidationReport
 from src.experiments.registry import ExperimentRegistry

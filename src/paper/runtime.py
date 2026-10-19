@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -307,7 +306,8 @@ class PaperTradingRuntime:
             lock = SchedulerLock(self._store_path.parent, f"paper-{self._config.experiment_id}")
             if self._store_path.parent.exists():
                 try:
-                    lock.acquire(); lock.release()
+                    lock.acquire()
+                    lock.release()
                     add("duplicate_run_protection", CheckStatus.PASS, "no other paper run holds the lock")
                 except SchedulerLockError as exc:
                     add("duplicate_run_protection", CheckStatus.BLOCKED, str(exc))

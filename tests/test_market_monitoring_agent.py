@@ -250,7 +250,7 @@ def test_scenario_3_findings_are_cited_and_sections_are_separated():
     assert rep.observed_facts and rep.hypotheses and rep.suggested_investigations
     assert holder["agent_run_finding"] in rep.finding_ids
     assert holder["agent_run_finding"] in rep.evidence_references
-    assert not any("unverified" in l for l in rep.limitations)
+    assert not any("unverified" in ln for ln in rep.limitations)
     assert "snapshot, not live." in rep.limitations
 
 
@@ -260,7 +260,7 @@ def test_scenario_4_max_steps_budget_is_enforced_in_code():
     run = agent.run("loop forever")
     assert run.status == "BUDGET_EXHAUSTED" and run.step_count == 3
     assert provider.calls and len(provider.calls) == 3
-    assert any("Budget exhausted" in l for l in run.final_report.limitations)
+    assert any("Budget exhausted" in ln for ln in run.final_report.limitations)
 
 
 def test_scenario_5_max_monitoring_runs_budget_is_enforced_in_code():
@@ -310,14 +310,14 @@ def test_scenario_8_provider_failure_is_recorded_as_failed_with_an_audit_trail(t
 def test_answering_without_any_tool_is_flagged_as_unbacked():
     agent, _, _ = make_agent([final("Observed: everything is fine.")])
     run = agent.run("hi")
-    assert any("No monitoring tool was called" in l for l in run.final_report.limitations)
+    assert any("No monitoring tool was called" in ln for ln in run.final_report.limitations)
 
 
 def test_uncited_ids_in_observed_facts_are_flagged_as_unverified():
     fake = "a" * 32
     agent, _, _ = make_agent([call("run_monitoring_checks"), final(f"Observed: finding {fake} is critical.")])
     run = agent.run("x")
-    assert any(fake in l and "unverified" in l for l in run.final_report.limitations)
+    assert any(fake in ln and "unverified" in ln for ln in run.final_report.limitations)
 
 
 def test_inspecting_a_stored_unknown_run_still_carries_the_code_derived_limitations():
@@ -342,7 +342,7 @@ def test_market_data_health_tool_also_carries_not_evaluable_limitations():
 
 def test_audit_record_has_provenance_and_no_hidden_reasoning(tmp_path):
     agent, _, _ = make_agent([call("run_monitoring_checks"), final("Summary: done.")], tmp_path=tmp_path)
-    run = agent.run("g")
+    agent.run("g")
     raw = json.loads(next((tmp_path / "runs").glob("*.json")).read_text())
     for key in ("system_prompt_version", "tool_schema_version", "policy_hash", "tool_calls", "monitoring_run_ids"):
         assert raw[key]
@@ -373,7 +373,7 @@ def test_report_never_contains_empty_items():
     agent, _, _ = make_agent([final("Summary: s\nObserved:\nHypothesis:\nSuggested investigation:\nLimitation:\n")])
     rep = agent.run("x").final_report
     assert not rep.observed_facts and not rep.hypotheses and not rep.suggested_investigations
-    assert all(l.strip() for l in rep.limitations)
+    assert all(ln.strip() for ln in rep.limitations)
 
 
 # ------------------------------------------------------------------ read-only boundary
@@ -461,8 +461,8 @@ def test_monitoring_agent_package_has_no_dynamic_execution_or_mutating_calls():
         for b in banned:
             if b in text and path.name != "prompts.py":
                 # policy.py/tools.py docstrings may mention names; only real calls count
-                lines = [l for l in text.splitlines() if b in l and not l.strip().startswith(("#", '"', "'"))
-                         and "never" not in l.lower()]
+                lines = [ln for ln in text.splitlines() if b in ln and not ln.strip().startswith(("#", '"', "'"))
+                         and "never" not in ln.lower()]
                 assert not lines, (path.name, b, lines)
 
 
@@ -530,13 +530,13 @@ def test_truncated_final_report_is_flagged_by_code_not_left_to_the_model():
     cut = LLMResponse(text="Summary: partial", stop_reason="max_tokens")
     agent, _, _ = make_agent([cut], svc)
     run = agent.run("x")
-    assert any("truncated by the output-token limit" in l for l in run.final_report.limitations)
+    assert any("truncated by the output-token limit" in ln for ln in run.final_report.limitations)
 
 
 def test_complete_final_report_has_no_truncation_limitation():
     agent, _, _ = make_agent([final("Summary: ok")], make_service())
     run = agent.run("x")
-    assert not any("truncated" in l for l in run.final_report.limitations)
+    assert not any("truncated" in ln for ln in run.final_report.limitations)
 
 
 def test_listed_only_findings_that_were_never_fetched_still_carry_a_code_derived_limitation():
@@ -546,7 +546,7 @@ def test_listed_only_findings_that_were_never_fetched_still_carry_a_code_derived
     svc.run_once()  # stored outside the agent
     agent, _, _ = make_agent([call("list_findings", {}), final("Summary: exposure breach.")], svc)
     run = agent.run("x")
-    assert any("get_finding not called" in l for l in run.final_report.limitations)
+    assert any("get_finding not called" in ln for ln in run.final_report.limitations)
     assert not any(c.initiated_by == "runtime" for c in run.tool_calls)
 
 
@@ -566,7 +566,7 @@ def test_fetching_each_finding_removes_the_unfetched_limitation():
     agent, _, _ = make_agent([call("run_monitoring_checks"), *fetches, final("Summary: done.")], svc)
     run = agent.run("x")
     assert n >= 1 and len(holder["ids"]) == n
-    assert not any("get_finding not called" in l for l in run.final_report.limitations)
+    assert not any("get_finding not called" in ln for ln in run.final_report.limitations)
 
 
 def test_abbreviated_ids_in_observed_facts_are_flagged_by_code():
@@ -574,9 +574,9 @@ def test_abbreviated_ids_in_observed_facts_are_flagged_by_code():
     agent, _, _ = make_agent([call("run_monitoring_checks"),
                               final("Summary: x.\nObserved: finding 7b64a476... is CRITICAL.")], svc)
     run = agent.run("x")
-    assert any("abbreviate ids" in l and "7b64a476" in l for l in run.final_report.limitations)
+    assert any("abbreviate ids" in ln and "7b64a476" in ln for ln in run.final_report.limitations)
 
 
 def test_full_ids_are_not_flagged_as_abbreviated():
     agent, _, _ = make_agent([final("Summary: x.\nObserved: run " + "a" * 32 + " ok.")], make_service())
-    assert not any("abbreviate" in l for l in agent.run("x").final_report.limitations)
+    assert not any("abbreviate" in ln for ln in agent.run("x").final_report.limitations)

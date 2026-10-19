@@ -9,6 +9,7 @@ an intent or touches a portfolio: `PortfolioRiskEngine.decide/decide_close` only
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -26,8 +27,6 @@ def signal_to_record(signal: Signal) -> dict[str, Any]:
             "direction": signal.direction.value, "confidence": signal.confidence,
             "metadata": jsonable(signal.metadata)}
 
-
-import re
 
 _SECRET = re.compile(r"(sk-ant-[A-Za-z0-9_\-]+|(?i:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*\S+)")
 

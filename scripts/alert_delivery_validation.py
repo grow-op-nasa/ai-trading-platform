@@ -121,7 +121,6 @@ def main(argv=None) -> int:
         check("NEW event(s) recorded", len(new_events) >= 1, ", ".join(f"{e.event_id[:8]}:{e.rule_id}" for e in new_events))
         check("deliveries are PENDING and the sink received nothing", all(d.status.value == "PENDING" for d in store.alerts.list_deliveries()) and not sink.messages)
         n_events = len(evs)
-        status_before = (run1.status, sorted(f.severity.value for f in store.list_findings()))
 
         print("== 2. dispatch -> sink receives the message ==")
         s = dispatcher().dispatch()
@@ -133,10 +132,11 @@ def main(argv=None) -> int:
               msg["X-ATP-Alert-Event-ID"] in {e.event_id for e in evs}
               and run1.finding_ids[0] in body and "stored paper-portfolio snapshot" in body)
         print("    subject:", msg["Subject"])
-        print("\n".join("    | " + l for l in body.splitlines()[:14]))
+        print("\n".join("    | " + ln for ln in body.splitlines()[:14]))
 
         print("== 3. repeat runs create no further events or mail ==")
-        monitor(); monitor()
+        monitor()
+        monitor()
         check("no new events", MonitoringStore(db).alerts.counts()["events"] == n_events)
         check("dispatch is a no-op", dispatcher().dispatch().attempted == 0 and len(sink.messages) == n_events)
 
@@ -158,9 +158,9 @@ def main(argv=None) -> int:
         s2 = dispatcher().dispatch()                                # NEW dispatcher object = restart; still within failure budget
         check("second attempt after restart still honours persisted backoff state", True, s2.one_line())
         clock.t += timedelta(seconds=200)
-        s3 = dispatcher().dispatch()
+        dispatcher().dispatch()
         clock.t += timedelta(seconds=200)
-        s4 = dispatcher().dispatch()
+        dispatcher().dispatch()
 
         print("== 5. recovery ==")
         final = MonitoringStore(db).alerts

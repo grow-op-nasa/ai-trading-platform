@@ -236,9 +236,9 @@ def verify(run, expected: dict[str, str], store: MonitoringStore, agent_store: M
                 all(cid.lower() in lims for cid in not_eval),
                 f"not evaluable per tools: {not_eval or 'none'}")
         rep.add("no 'unverified id' limitation was triggered",
-                not any("unverified" in l for l in report.limitations), "", required=True)
-        model_lims = [l for l in report.limitations if "was not evaluable" not in l and "unverified" not in l
-                      and "No monitoring tool" not in l and "is UNKNOWN" not in l]
+                not any("unverified" in ln for ln in report.limitations), "", required=True)
+        model_lims = [ln for ln in report.limitations if "was not evaluable" not in ln and "unverified" not in ln
+                      and "No monitoring tool" not in ln and "is UNKNOWN" not in ln]
         rep.add("model itself stated at least one limitation of its own", bool(model_lims),
                 f"{len(model_lims)} model-authored", required=False)
         rep.add("no trade/order advice in report",

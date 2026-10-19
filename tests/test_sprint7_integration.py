@@ -329,7 +329,7 @@ def test_existing_positions_affect_new_trade_approval_for_the_same_symbol_limit(
     # engine -> PaperBroker -> apply_fill_to_portfolio pipeline.
     starting_cash = 1_000_000.0
     portfolio = Portfolio(cash=starting_cash)
-    broker = PaperBroker(starting_cash=starting_cash)
+    PaperBroker(starting_cash=starting_cash)
     for symbol in ("SPY", "QQQ"):
         portfolio.open_position(
             symbol=symbol, side=PositionSide.LONG, quantity=20.0, entry_price=100.0,

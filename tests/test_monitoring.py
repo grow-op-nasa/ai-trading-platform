@@ -7,7 +7,7 @@ provider), in-memory stores. No LLM is involved anywhere in this file.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pandas as pd

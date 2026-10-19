@@ -51,7 +51,7 @@ on its own, as a claim that arbitrary hostile code is safe to run.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 __all__ = [
     "ValidationResult",

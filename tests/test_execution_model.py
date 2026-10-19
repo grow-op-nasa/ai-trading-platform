@@ -16,7 +16,6 @@ import pandas as pd
 import pytest
 
 from src.backtesting.execution_model import (
-    INSUFFICIENT_CASH_FOR_FEE,
     NO_EXECUTION_BAR,
     ExecutionConfig,
     ExecutionModel,

@@ -361,11 +361,13 @@ def test_standalone_preflight_is_read_only_and_runs_only_on_an_explicit_click(pa
     monkeypatch.setattr(svc, "preflight", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
     _go(at, "Paper Trading")
     _select_all(at, w)
-    at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)
     assert calls == []
     at.button(key="btn_preflight").click().run(timeout=_RUN_TIMEOUT)
     assert len(calls) == 1
-    at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)          # reruns never repeat it
+    at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)  # reruns never repeat it
     assert len(calls) == 1
     assert w.store().list_cycles(w.exp) == [] and w.store().list_proposals(w.exp) == []     # it changed nothing
 
@@ -383,7 +385,8 @@ def test_run_performs_its_own_fresh_preflight_and_ends_as_a_proposal_not_an_orde
     assert w.store().list_intents(w.exp) == [] and w.store().list_fills(w.exp) == []      # NO order yet
     assert any("AWAITING_APPROVAL" in x.value for x in at.warning)
     assert any("NOT placed" in x.value for x in at.warning)
-    at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)               # reruns never repeat the cycle
+    at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)  # reruns never repeat the cycle
     assert len(w.store().list_cycles(w.exp)) == 1 and len(_pending(svc, w)) == 1
 
 
@@ -421,7 +424,8 @@ def test_approving_the_exact_proposal_places_one_simulated_order_and_reruns_neve
     assert len(w.store().list_cycles(w.exp)) == 1 and len(w.store().list_fills(w.exp)) == 1 and len(w.store().list_intents(w.exp)) == 1
     assert any("ORDER_FILLED" in x.value for x in at.success)
     assert svc.proposals(w.exp)[0]["effective_status"] == "EXECUTED" and _pending(svc, w) == []
-    at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)
     assert len(w.store().list_fills(w.exp)) == 1 and len(w.monitor_calls) == 1
     at2 = AppTest.from_file(APP_PATH)                                     # a brand-new session (refresh) runs and approves nothing
     at2.session_state["_paper_service"] = svc
@@ -592,7 +596,8 @@ def test_monitoring_only_button_runs_monitoring_once_without_a_new_cycle_order_o
     stored = svc.store().get_cycle(cid)
     assert stored.monitoring["outcome"] == "COMPLETED" and stored.monitoring["late"] is True
     assert len(svc.store().list_cycles(w.exp)) == 1 and svc.store().list_fills(w.exp) == [] and svc.store().list_intents(w.exp) == []
-    at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)
     assert len(w.monitor_calls) == 1                                    # reruns never repeat it
 
 
@@ -665,7 +670,8 @@ def test_home_is_read_only_and_requests_nothing(paper_world, monkeypatch):
     before = (len(w.store().list_cycles(w.exp)), len(w.provider.calls) if hasattr(w.provider, "calls") else None)
     at.sidebar.selectbox(key="account_id").set_value(w.exp).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
-    at.run(timeout=_RUN_TIMEOUT); at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)
+    at.run(timeout=_RUN_TIMEOUT)
     assert calls == [] and len(w.store().list_cycles(w.exp)) == before[0]
     if before[1] is not None:
         assert len(w.provider.calls) == before[1]
@@ -689,7 +695,6 @@ def test_selecting_an_account_persists_it_and_a_new_session_restores_it(paper_wo
 
 
 def test_a_missing_or_malformed_preference_warns_and_is_never_replaced_silently(paper_world, workdir):
-    from src.appsvc import prefs
     w, svc, _ = paper_world
     prefs.save_account(AppPaths(), 999)
     at = AppTest.from_file(APP_PATH)

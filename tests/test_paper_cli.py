@@ -13,7 +13,7 @@ from src.data.fault_injection import Fault, FaultKind
 from src.data.service import MarketDataService
 from src.paper.faults import SimulatedCrash
 from src.portfolio.models import Portfolio
-from tests.test_paper_runtime import (AFTER_CLOSE, NEXT_DAY_AFTER_CLOSE, STRAT, WED, ScriptedStrategy, World,
+from tests.test_paper_runtime import (NEXT_DAY_AFTER_CLOSE, WED, ScriptedStrategy, World,
                                       _reset_script, state_fp)  # noqa: F401  (autouse fixture must be in scope)
 
 PREFIXES = ("src.strategies", "tests.test_paper_runtime", "test_paper_runtime")
@@ -104,7 +104,8 @@ def test_no_action_and_risk_rejection_are_distinct_zero_exit_statuses_without_a_
     assert cli.run("run", "--once", "--json") == EXIT_OK
     d = cli.json()
     assert d["status"] == "NO_ACTION" and d["filled"] is False
-    cli.w.script(date(2026, 10, 8), "SHORT"); cli.w.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
+    cli.w.script(date(2026, 10, 8), "SHORT")
+    cli.w.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
     assert cli.run("run", "--once", "--json") == EXIT_OK
     d = cli.json()
     assert d["status"] == "RISK_REJECTED" and d["filled"] is False and d["client_order_id"] is None
@@ -123,7 +124,8 @@ def test_exit_codes_distinguish_blocked_failed_and_attention(cli):
     assert cli.run("run", "--once") == EXIT_ATTENTION and cli.approve_pending() == EXIT_OK
     good = cli.w.portfolio()
     cli.w.registry.save_portfolio(cli.w.exp, Portfolio.reconstruct(cash=good.cash + 50, positions=list(good.positions.values())))
-    cli.w.script(date(2026, 10, 8), "FLAT"); cli.w.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
+    cli.w.script(date(2026, 10, 8), "FLAT")
+    cli.w.advance(date(2026, 10, 8), NEXT_DAY_AFTER_CLOSE)
     assert cli.run("run", "--once", "--json") == EXIT_ATTENTION
     assert cli.json()["status"] == "RECONCILIATION_REQUIRED"
     assert cli.run("reconcile", "--json") == EXIT_ATTENTION and cli.json()["status"] == "MISMATCH"

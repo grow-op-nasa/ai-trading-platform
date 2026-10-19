@@ -85,7 +85,8 @@ def main() -> int:
             if k + 1 < a.repeats:
                 time.sleep(a.sleep)
         if a.snapshot:
-            out = Path(a.snapshot); out.mkdir(parents=True, exist_ok=True)
+            out = Path(a.snapshot)
+            out.mkdir(parents=True, exist_ok=True)
             runs[0][1].to_csv(out / f"{sym}.csv", float_format="%.17g")
             print(f"snapshot saved: {out / (sym + '.csv')} (content_hash {runs[0][2][:12]})")
         if a.against:

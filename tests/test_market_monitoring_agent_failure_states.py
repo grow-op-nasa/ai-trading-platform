@@ -7,6 +7,9 @@ prove the read-only agent cannot launder failure states, not that any LLM interp
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -18,11 +21,25 @@ from src.ai.agents.monitoring.tools import default_monitoring_tool_registry
 from src.data.fault_injection import Fault, FaultInjectingProvider, FaultKind, SyntheticCandleProvider
 from src.data.service import MarketDataService
 from src.monitoring import MonitoringService, MonitoringStore, PlatformState, StaticStateSource
+from src.ai.agents.models import ToolCallRecord
+from src.ai.agents.monitoring import MarketMonitoringAgent, MonitoringAgentRunStore
+from src.ai.agents.monitoring.tools import (
+    GetExecutionSummaryTool,
+    GetFindingTool,
+    GetMarketDataHealthTool,
+    GetMonitoringRunTool,
+    GetPaperPortfolioSnapshotTool,
+    ListFindingsTool,
+    RunMonitoringChecksTool,
+)
+from src.ai.agents.provider import FakeLLMProvider, LLMResponse, LLMToolCall
+from src.ai.agents.tools import ToolRegistry, ToolResult
+from src.cli.market_monitor_agent import _print_run
 from src.monitoring.state import MarketDataTarget
 from src.data.base import Interval
 from src.portfolio.models import Portfolio
 from src.risk.models import RiskLimits
-from tests.test_market_monitoring_agent import NOW, _position, call, final, make_agent
+from tests.test_market_monitoring_agent import EXPECTED_TOOLS, NOW, _position, call, final, make_agent, make_service
 
 
 def failing_service(kind=FaultKind.TIMEOUT):
@@ -108,25 +125,6 @@ def test_policy_still_forbids_scheduler_style_capabilities():
 # =====================================================================================
 # Runtime-enforced finding-detail retrieval (Sprint 16 follow-up, ADR-0051)
 # =====================================================================================
-import contextlib
-import io
-import json
-
-from src.ai.agents.models import ToolCallRecord
-from src.ai.agents.monitoring import MarketMonitoringAgent, MonitoringAgentRunStore
-from src.ai.agents.monitoring.tools import (
-    GetExecutionSummaryTool,
-    GetFindingTool,
-    GetMarketDataHealthTool,
-    GetMonitoringRunTool,
-    GetPaperPortfolioSnapshotTool,
-    ListFindingsTool,
-    RunMonitoringChecksTool,
-)
-from src.ai.agents.provider import FakeLLMProvider, LLMResponse, LLMToolCall
-from src.ai.agents.tools import ToolRegistry, ToolResult
-from src.cli.market_monitor_agent import _print_run
-from tests.test_market_monitoring_agent import EXPECTED_TOOLS, make_service
 
 CLAIM = ("Summary: I already have the full evidence for all four findings (fetched via run/health output, "
          "each matching get_finding's content format).\nObserved: all four findings are OPEN.")
@@ -170,8 +168,8 @@ def test_live_failure_reproduced_model_claims_full_evidence_without_calling_get_
     assert all(isinstance(c.result_summary.get("evidence"), list) for c in fc)
     rep = run.final_report
     assert rep.evidence_complete and set(rep.findings_retrieved) == set(stored.finding_ids)
-    assert rep.findings_incomplete == () and not any("INCOMPLETE" in l for l in rep.limitations)
-    assert not any("get_finding not called" in l for l in rep.limitations)
+    assert rep.findings_incomplete == () and not any("INCOMPLETE" in ln for ln in rep.limitations)
+    assert not any("get_finding not called" in ln for ln in rep.limitations)
 
 
 # ---- 2 ordering: evidence is in the model's context BEFORE it can finish ---------------------------
@@ -199,7 +197,7 @@ def test_a_disabled_finding_reader_leaves_the_report_incomplete_and_the_claim_ca
     rep = run.final_report
     assert not rep.evidence_complete and len(rep.findings_incomplete) == 4
     assert all("POLICY_REJECTED" in r for r in rep.evidence_incomplete_reasons)
-    assert any("INCOMPLETE EVIDENCE" in l and "4 of 4" in l for l in rep.limitations)
+    assert any("INCOMPLETE EVIDENCE" in ln and "4 of 4" in ln for ln in rep.limitations)
     assert all(c.is_error for c in finding_calls(run))      # policy still applies to runtime calls
 
 
@@ -242,7 +240,7 @@ def test_a_run_with_zero_findings_triggers_no_lookups_and_is_complete():
 def test_no_monitoring_run_retrieved_means_evidence_is_not_complete():
     agent, _ = agent_for(make_service(), [final("Summary: nothing.")])
     rep = agent.run("x").final_report
-    assert not rep.evidence_complete and any("INCOMPLETE EVIDENCE" in l for l in rep.limitations)
+    assert not rep.evidence_complete and any("INCOMPLETE EVIDENCE" in ln for ln in rep.limitations)
 
 
 # ---- 5/6/7 failure handling with a misbehaving registered handler -------------------------------
@@ -275,7 +273,7 @@ def test_a_retrieval_error_is_reported_as_incomplete_not_success():
     assert not rep.evidence_complete and rep.findings_incomplete == (bad["id"],)
     assert rep.evidence_incomplete_reasons == (f"{bad['id']}: NOT_FOUND",)
     assert len(rep.findings_retrieved) == 3 and bad["id"] not in rep.findings_retrieved
-    assert any(l.startswith("INCOMPLETE EVIDENCE") and "1 of 4" in l for l in rep.limitations)
+    assert any(ln.startswith("INCOMPLETE EVIDENCE") and "1 of 4" in ln for ln in rep.limitations)
 
 
 def test_a_mismatched_returned_id_does_not_satisfy_the_requested_id():
@@ -338,7 +336,7 @@ def test_step_budget_exhaustion_is_reported_truthfully():
     agent, _ = agent_for(svc, [call("get_monitoring_run")], policy=pol)
     run = agent.run("inspect")
     assert run.status == "BUDGET_EXHAUSTED"
-    assert any("Budget exhausted" in l for l in run.final_report.limitations)
+    assert any("Budget exhausted" in ln for ln in run.final_report.limitations)
     assert run.final_report.evidence_complete in (True, False)     # derived from tool results either way
     assert set(run.final_report.findings_retrieved) == {c.arguments["finding_id"] for c in finding_calls(run)
                                                         if not c.is_error}
@@ -450,4 +448,4 @@ def test_model_cannot_remove_the_incomplete_status_by_writing_a_limitation_or_cl
     agent, _ = agent_for(svc, [call("get_monitoring_run"), final(text)], policy=pol)
     rep = agent.run("inspect").final_report
     assert rep.evidence_complete is False
-    assert any(l.startswith("INCOMPLETE EVIDENCE") for l in rep.limitations)
+    assert any(ln.startswith("INCOMPLETE EVIDENCE") for ln in rep.limitations)

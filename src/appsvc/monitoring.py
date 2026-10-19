@@ -108,7 +108,7 @@ def retry_failed(paths: AppPaths, *, delivery_id: str | None = None, clock: Call
 def dispatch_pending(paths: AppPaths, *, limit: int | None = None, env=None, transport_factory=None,
                      clock: Callable[[], datetime] | None = None):
     """Deliver eligible alerts once, via the existing dispatcher (retry/lease/ordering rules unchanged)."""
-    from src.monitoring.alerts.config import AlertConfig, AlertConfigError
+    from src.monitoring.alerts.config import AlertConfig
     from src.monitoring.alerts.dispatcher import AlertDispatcher
     from src.monitoring.alerts.transports import build_transport
     s = _store(paths)

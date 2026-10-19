@@ -16,7 +16,7 @@ immutability. No network, no LLM, no joblib/sklearn dependency --
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 

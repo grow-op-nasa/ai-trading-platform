@@ -73,7 +73,8 @@ def test_a_real_value_change_changes_the_hash_even_by_one_float_ulp_documented_s
     bumped.iloc[-1, bumped.columns.get_loc("close")] = np.nextafter(bumped.iloc[-1]["close"], np.inf)
     assert dataframe_fingerprint(bumped) != h                                  # bit-exact by design: a vendor revision is detectable
     assert dataframe_fingerprint(base.iloc[:-1]) != h                          # an extra/forming bar changes it
-    moved = base.copy(); moved.index = moved.index + pd.Timedelta(hours=1)
+    moved = base.copy()
+    moved.index = moved.index + pd.Timedelta(hours=1)
     assert dataframe_fingerprint(moved) != h
 
 

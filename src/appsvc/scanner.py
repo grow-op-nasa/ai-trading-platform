@@ -15,7 +15,7 @@ from src.appsvc.instruments import normalize_symbol
 from src.appsvc.paths import AppPaths
 from src.snapshots import SnapshotStore
 from src.scanner.engine import RiskContext, ScanEngine, ScanSetupError
-from src.scanner.models import (DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WATCHLIST_SYMBOLS, STARTER_NAME, STARTER_SYMBOLS,
+from src.scanner.models import (DEFAULT_CONCURRENCY, MAX_WATCHLIST_SYMBOLS, STARTER_NAME, STARTER_SYMBOLS,
                                 ResultStatus, RiskState, ScanRecord, ScanResult, ScanStatus, Watchlist)
 from src.scanner.store import DuplicateWatchlistName, ScannerStore, ScannerStoreError
 

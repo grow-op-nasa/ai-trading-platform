@@ -10,8 +10,7 @@ from datetime import date
 
 from src.appsvc.paths import AppPaths
 from src.scanner.models import ResultStatus
-from src.scanner.replay import (CORRUPT, DIFFERENT, MISMATCH, MISSING, NOT_CAPTURED, NOT_REPLAYABLE, REPRODUCED, VERIFIED,
-                                ReplayService)
+from src.scanner.replay import (CORRUPT, DIFFERENT, MISMATCH, MISSING, NOT_CAPTURED, NOT_REPLAYABLE, REPRODUCED, VERIFIED)
 from src.snapshots import SnapshotError, SnapshotStore
 from src.utils.hashing import dataframe_fingerprint
 from tests.test_scanner import (STRAT, ScanProvider, ScriptedScan, _reset, _risk_world, by_symbol, make,  # noqa: F401

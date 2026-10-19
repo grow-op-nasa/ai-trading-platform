@@ -147,8 +147,8 @@ def test_vwap_matches_manual_cumulative_calc():
     cum_vol = 0.0
     cum_turnover = 0.0
     expected = []
-    for h, l, c, v in zip(highs, lows, closes, volumes):
-        typical = (h + l + c) / 3
+    for h, lo, c, v in zip(highs, lows, closes, volumes):
+        typical = (h + lo + c) / 3
         cum_vol += v
         cum_turnover += typical * v
         expected.append(cum_turnover / cum_vol)

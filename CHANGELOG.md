@@ -11,6 +11,16 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 23 -- 2026-11-04, Strategy Research (ADR-0061)
+
+- Added: strategy catalogue with families/hypotheses/history requirements; `donchian_breakout` strategy and Donchian indicators; `src/strategy_research` (assumptions, chronological protocol with locked holdout, walk-forward, scorecards with gross/net/stress, regime breakdown, immutable store, reproduce, curated universe, comparison); `StrategyResearchService`; "Strategy Research" dashboard page; read-only AI research tools (opt-in); `scripts/run_strategy_research.py` (real-data run, run on the user's machine).
+- Fixed (before release): warm-up guard now runs the strategy over evaluable bars only, so immature-indicator signals cannot leave it 'already long' (found on the first real-data run).
+- Added: research records carry `engine.version`; a run made by an earlier engine (before the warm-up correction) is reported `ENGINE_CHANGED` on replay, is refused for holdout evaluation, and never counts toward a strategy's research state.
+- Changed: `scripts/run_strategy_research.py` prints exposure, Sharpe, max drawdown and net at 3x costs; DEBUG logs are quiet unless `--verbose`.
+- Changed: the OHLCV sanity error now names the offending bars (date and O/H/L/C), so a transient vendor glitch can be told from a real data problem (seen once on SPY, 2026-11-04; the same fetch passed minutes later).
+- Unchanged: scanner, paper runtime, promotion, existing strategies' identity hashes, the default 7-tool AI registry. Research never creates orders, intents or proposals and never promotes.
+- Extension Cost: existing files touched: src/indicators/formulas.py, src/strategies/__init__.py, src/appsvc/paths.py, src/dashboard/shell.py, src/dashboard/app.py, src/ai/agents/tools.py, src/cli/research_agent.py, tests/test_dashboard_smoke.py.
+
 ## Sprint 22 follow-up -- 2026-10-19, DATA_STALE root cause: yfinance exclusive `end` (ADR-0060)
 
 - Fixed: `YFinanceProvider` now translates the platform's inclusive `end` date to yfinance's exclusive one (`vendor_request_range`), so the scan date's bar is requested. Previously every weekday scan after the close saw the prior session as the latest bar and was `DATA_STALE` (scans `fd09ba5333bb4508`, `352e05239e72474b`).

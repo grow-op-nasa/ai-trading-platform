@@ -1190,6 +1190,10 @@ environment-only failures, 17 skipped. **Confirmed via real `pytest` on
 the dev machine: 1200 passed, 0 failed** (90.22s), pushed to
 `origin/main` (`1b43a93..0c19c69`).
 
+## Sprint 23 -- Strategy Expansion & Research Intelligence (implemented; sandbox-verified on synthetic data only, see PROJECT_STATE.md)
+
+- Catalogue and audit, Donchian breakout, chronological dev/validation/locked-holdout protocol, walk-forward, scorecards, immutable research store, Strategy Research page, read-only AI tools (ADR-0061). No real-market results recorded yet; run `scripts/run_strategy_research.py` on the dev machine. Sprint 24 (multi-strategy discovery) and 25 (intraday) follow `SPRINT_PLAN_23_25.md`.
+
 ## Sprint 22 -- Reliability, Reproducible Research & Continuous Integration (implemented; sandbox-verified, real-machine/CI verification pending, see PROJECT_STATE.md)
 
 - Done: CI quality gate (pytest, compileall, pinned Ruff, self-contained validations), strategy-declared typed history requirements replacing the scanner heuristic, content-addressed integrity-verified market-data snapshots, scanner and paper-cycle snapshot capture, offline replay (data / strategy / risk-classification) with CLI and audit-UI panel (ADR-0059).

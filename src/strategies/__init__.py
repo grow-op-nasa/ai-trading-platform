@@ -32,6 +32,7 @@ depends on this having happened at least once in the process.
 """
 
 from src.strategies.base import Strategy
+from src.strategies.donchian_breakout import DonchianBreakoutStrategy
 from src.strategies.ema_cross import EMACrossStrategy
 from src.strategies.ema_cross_vol_filter import EMACrossVolFilterStrategy
 from src.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
@@ -43,6 +44,7 @@ __all__ = [
     "EMACrossStrategy",
     "RSIMeanReversionStrategy",
     "EMACrossVolFilterStrategy",
+    "DonchianBreakoutStrategy",
 ]
 
 # Registered last: the approved-strategy package (ADR-0049). It imports

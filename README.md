@@ -232,6 +232,10 @@ python scripts/replay_scan.py --scan-id <SCAN_ID>          # or open a symbol's 
 
 The replay reports data, strategy and risk-classification separately and says `NOT_REPLAYABLE` for scans made before snapshots existed. Details and limits: `DECISIONS.md` ADR-0059.
 
+### Strategy Research (Sprint 23)
+
+The **Strategy Research** page and `scripts/run_strategy_research.py` evaluate daily-bar strategies (`ema_cross`, `rsi_mean_reversion`, `donchian_breakout`) under recorded cost assumptions with a chronological development / validation / locked-holdout split and optional walk-forward. Scorecards show gross and net results, benchmark (buy-and-hold, same window, adjusted prices), costs and sample-size flags; undefined metrics say why. Research never places orders, creates proposals or promotes a strategy. Limits: daily only, survivorship bias in the curated universe, small samples, early closes unmodelled. Real run: `python scripts/run_strategy_research.py --start 2015-01-01` (add `--holdout` to spend the one-time holdout).
+
 ### Opportunity Scanner (Sprint 21)
 
 Open **Opportunity Scanner**: create a watchlist (or press *Create the US Liquid Starter watchlist* once: QQQ, SPY, IWM, DIA, AAPL, MSFT, NVDA, AMD; up to 50 symbols per list), choose a registered strategy and press

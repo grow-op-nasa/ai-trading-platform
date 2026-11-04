@@ -11,13 +11,14 @@ from src.appsvc.paper import PaperService
 from src.appsvc.paths import AppPaths
 from src.appsvc.system import FAIL, OK, WARN, collect_status, overall
 
-PAGES = ("Home", "Opportunity Scanner", "Research & Experiments", "Strategies", "Paper Trading", "Portfolio & Execution",
+PAGES = ("Home", "Opportunity Scanner", "Research & Experiments", "Strategies", "Strategy Research", "Paper Trading", "Portfolio & Execution",
          "Activity", "Monitoring & Alerts", "Setup & System Status")
 DESCRIPTIONS = {
     "Home": "Your paper account, what needs attention, and the next safe step. Read-only: opening it runs nothing.",
     "Opportunity Scanner": "Run one registered strategy over a watchlist (daily bars) and see which symbols have a signal. Read-only: it never places orders or creates paper records.",
     "Activity": "One chronological view of stored cycles, proposals, orders, fills, reconciliations, monitoring and alerts. Read-only.",
     "Research & Experiments": "Saved historical backtests: identity, metrics, equity and comparison. Not paper trading, not live state.",
+    "Strategy Research": "Strategy families, historical experiments, scorecards and chronological out-of-sample validation. Historical only: no orders, no promotion.",
     "Strategies": "Strategies registered in the production registry (the only ones usable for paper runs) and development candidates for context.",
     "Paper Trading": "One-click guided run (fresh preflight included), human approval of proposed trades, and cycle inspection. Paper only.",
     "Portfolio & Execution": "Stored portfolio, explicit valuation, paper intents, fills, fees and reconciliation.",
@@ -40,6 +41,15 @@ def scanner_service(paths: AppPaths):
     if svc is None or svc.paths != paths:
         svc = ScannerService(paths, paper_service=paper_service(paths))
         st.session_state["_scanner_service"] = svc
+    return svc
+
+
+def research_service(paths: AppPaths):
+    from src.appsvc.strategy_research import StrategyResearchService
+    svc = st.session_state.get("_research_service")
+    if svc is None or svc.paths != paths:
+        svc = StrategyResearchService(paths)
+        st.session_state["_research_service"] = svc
     return svc
 
 

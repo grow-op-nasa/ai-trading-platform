@@ -16,6 +16,7 @@ import streamlit as st
 from src.appsvc.paper import PaperService
 from src.appsvc.paths import AppPaths
 from src.appsvc.strategy_research import (
+    ENGINE_VERSION,
     MAX_BATCH_SYMBOLS,
     POINT_IN_TIME_NOTE,
     StrategyResearchService,
@@ -34,7 +35,14 @@ _METRICS = [
     ("annualised_volatility", "Annualised volatility", "pct"), ("sharpe", "Sharpe ratio", "num"), ("sortino", "Sortino ratio", "num"),
     ("max_drawdown", "Maximum drawdown", "pct"), ("average_holding_days", "Average holding period (days)", "num"),
     ("turnover", "Turnover (annual traded notional / equity)", "num"), ("exposure_time", "Time invested", "pct"),
-    ("benchmark_return", "Buy-and-hold, same instrument and window", "pct"), ("excess_return", "Net return minus buy-and-hold", "pct"),
+    ("capital_utilisation_mean", "Average capital deployed (position value / equity)", "pct"),
+    ("capital_utilisation_max", "Peak capital deployed", "pct"),
+    ("benchmark_return", "FULL buy-and-hold, same instrument/window (fully invested)", "pct"),
+    ("benchmark_volatility", "Full buy-and-hold volatility", "pct"), ("benchmark_sharpe", "Full buy-and-hold Sharpe", "num"),
+    ("benchmark_max_drawdown", "Full buy-and-hold maximum drawdown", "pct"),
+    ("excess_return", "Net return minus FULL buy-and-hold (not like-for-like)", "pct"),
+    ("exposure_matched_return", "EXPOSURE-MATCHED buy-and-hold (held only when the strategy was; cash otherwise; retrospective)", "pct"),
+    ("excess_vs_exposure_matched", "Net return minus exposure-matched comparator", "pct"),
 ]
 
 
@@ -217,7 +225,13 @@ def _results(rs: StrategyResearchService) -> None:
     if ho is None:
         st.info("The holdout (the most recent 25% of evaluable bars) is locked. It can be evaluated once, on the configuration "
                 "already selected above.")
-        if st.button("Evaluate the holdout (one time only)", key=f"sr_ho_{chosen}"):
+        run_engine = rec.get("engine", {}).get("version", 1)
+        stale_engine = run_engine != ENGINE_VERSION
+        if stale_engine:
+            st.warning(f"This run was produced by research engine v{run_engine}; the current engine is v{ENGINE_VERSION}. Its "
+                       "holdout cannot be evaluated (that would mix two methodologies). Create a new run instead; this run's "
+                       "holdout stays untouched.")
+        if st.button("Evaluate the holdout (one time only)", key=f"sr_ho_{chosen}", disabled=stale_engine):
             try:
                 rs.evaluate_holdout(chosen)
                 st.rerun()

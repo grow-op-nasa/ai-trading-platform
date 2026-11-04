@@ -248,6 +248,43 @@ def test_weekly_and_monthly_intervals_are_not_gap_checked():
     assert report.gaps.count == 0
 
 
+def test_adjusted_price_float_noise_is_not_an_impossible_bar_but_a_real_error_still_is():
+    """Real case (DIA 2019-07-11, AAPL 2017-02-24): high equals close to the displayed precision, off by ~1e-13."""
+    df = valid_daily_candles([pd.Timestamp("2024-01-02")])
+    c = float(df.loc[df.index[0], "close"])
+    df.loc[df.index[0], "high"] = c * (1 - 1e-13)
+    df.loc[df.index[0], "open"] = c - 1.0
+    df.loc[df.index[0], "low"] = c - 2.0
+    validate_candles(df, symbol="DIA", interval=Interval.DAY_1)              # float noise: accepted
+    df.loc[df.index[0], "high"] = c * (1 - 1e-4)                             # a genuine 0.01% shortfall: still rejected
+    with pytest.raises(FinancialSanityError):
+        validate_candles(df, symbol="DIA", interval=Interval.DAY_1)
+
+
+def test_vendor_placeholder_rows_without_any_price_are_dropped_but_partial_nan_rows_are_kept():
+    """Observed 2026-11-04: Yahoo returned the newest session with volume but open/high/low/close all NaN."""
+    from src.data.yfinance_provider import _normalize
+
+    idx = pd.to_datetime(["2026-10-30", "2026-11-02", "2026-11-03"])
+    nan = float("nan")
+    raw = pd.DataFrame({"Open": [1.0, 2.0, nan], "High": [1.5, 2.5, nan], "Low": [0.5, 1.5, nan],
+                        "Close": [1.2, 2.2, nan], "Volume": [10, 20, 30]}, index=idx)
+    out = _normalize(raw, "SPY")
+    assert list(out.index) == list(idx[:2])                                   # the price-less placeholder is gone
+    partial = raw.copy()
+    partial.loc[idx[2], ["Open", "High", "Low"]] = [3.0, 3.5, 2.5]            # close still missing: genuinely malformed
+    assert len(_normalize(partial, "SPY")) == 3                               # kept, so validation will reject it
+    with pytest.raises(StructuralValidationError):
+        validate_candles(_normalize(partial, "SPY").tz_localize("UTC"), symbol="SPY", interval=Interval.DAY_1)
+
+
+def test_nan_error_names_the_offending_bars():
+    df = valid_daily_candles([pd.Timestamp("2024-01-02")])
+    df.loc[df.index[0], "close"] = float("nan")
+    with pytest.raises(StructuralValidationError, match="2024-01-02"):
+        validate_candles(df, symbol="SPY", interval=Interval.DAY_1)
+
+
 def test_financial_sanity_error_names_the_offending_bars():
     """The message must say WHICH bars broke the rule so a transient vendor glitch can be told from a real problem."""
     import pandas as pd

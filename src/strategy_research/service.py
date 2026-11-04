@@ -41,6 +41,14 @@ from src.strategy_research.protocol import (
     ValidationProtocol,
     walk_forward_folds,
 )
+from src.strategy_research.governance import (
+    ABORTED,
+    COMPLETED as LEDGER_COMPLETED,
+    canonical_spec,
+    spec_hash,
+    verify_spec,
+    HoldoutLedger,
+)
 from src.strategy_research.regimes import regime_breakdown
 from src.strategy_research.scorecard import Scorecard, build_scorecard, yearly_returns
 from src.strategy_research.store import HoldoutAlreadyEvaluated, ResearchStore
@@ -50,7 +58,9 @@ SCHEMA_VERSION = 1
 # Version of the research ENGINE (how signals are generated/attributed). 1 = original (strategy ran through warm-up and signals were
 # discarded afterwards); 2 = strategy runs over evaluable bars only (ADR-0061 correction). Runs made by another version are
 # never replayed or holdout-evaluated with this one: that would mix two methodologies in one run.
-ENGINE_VERSION = 2
+# 3 = equity curve is observed at fill time, not signal time (NEXT_BAR_OPEN entries/exits no longer book the signal-bar-close ->
+# next-open gap one bar early; Sprint 23 closeout, ADR-0061 amendment). Fills, trades and cash are identical to version 2.
+ENGINE_VERSION = 3
 MAX_CONFIGS = 5
 GAP_TOLERANCE = 0.02
 SUPPORTED_INTERVALS = (Interval.DAY_1.value,)
@@ -142,9 +152,11 @@ class _RunSet:
 
 class ResearchService:
     def __init__(self, data: DataSource, store: ResearchStore, snapshots: SnapshotStore | None = None,
-                 calendar: Any | None = None, clock: Any | None = None) -> None:
+                 calendar: Any | None = None, clock: Any | None = None, ledger: HoldoutLedger | None = None) -> None:
         self._data = data
         self._store = store
+        # Holdout consumption is tracked by instrument + locked bar range (not run id), beside the research database.
+        self._ledger = ledger or HoldoutLedger(store.path.with_name("holdout_ledger.db"))
         self._snapshots = snapshots
         self._calendar = calendar or NYSECalendar()
         self._clock = clock or (lambda: pd.Timestamp.now(tz="UTC").to_pydatetime())
@@ -302,6 +314,12 @@ class ResearchService:
             "holdout": {"status": "LOCKED", "note": "evaluated once, on the already-selected configuration"},
             "limitations": self._limitations(request, prov),
         }
+        # Freeze the research specification BEFORE any holdout bar is evaluated (hash re-verified at holdout time).
+        spec = canonical_spec(
+            strategy=record["strategy"], params=chosen_cfg, request=record["request"], assumptions=record["assumptions"],
+            engine_version=ENGINE_VERSION, provenance=record["provenance"], boundaries=boundaries,
+            holdout_hash=dataframe_fingerprint(candles.iloc[c:]), selection=record["selection"], configs=list(request.configs))
+        record["spec"], record["spec_hash"] = spec, spec_hash(spec)
         self._store.add_run(run_id, KIND_SINGLE, request.strategy_name, record["strategy"]["version"], request.symbol,
                             request.interval, COMPLETED, record)
         return ResearchOutcome(COMPLETED, run_id, record=record)
@@ -385,8 +403,17 @@ class ResearchService:
                              "be evaluated against it. Create a new run instead")
         if self._snapshots is None or not rec["provenance"].get("snapshot_id"):
             raise ValueError("this run has no stored data snapshot, so its holdout cannot be evaluated reproducibly")
+        verify_spec(rec)                                    # raises SpecMismatch before anything touches the holdout bars
         snap = self._snapshots.load(rec["provenance"]["snapshot_id"])
         candles = snap.candles
+        if dataframe_fingerprint(candles.iloc[int(rec["boundaries"]["holdout"]["start_pos"]) + int(rec["history"]["max_requirement_bars"]) - 1:]) \
+                != rec["spec"]["data"]["holdout_slice_hash"]:
+            raise ValueError("the stored data snapshot no longer matches the holdout slice frozen in the specification")
+        hb = rec["boundaries"]["holdout"]
+        # Consumption is keyed by instrument + locked bar range, not run id: another run over the same bars cannot re-open it.
+        reservation = self._ledger.reserve(
+            run_id=run_id, symbol=rec["request"]["symbol"], interval=rec["request"]["interval"], first_bar=hb["first_bar"],
+            last_bar=hb["last_bar"], holdout_hash=rec["spec"]["data"]["holdout_slice_hash"], spec_hash_=rec["spec_hash"])
         assumptions = ResearchAssumptions.from_dict(rec["assumptions"])
         first_valid_pos = int(rec["history"]["max_requirement_bars"]) - 1
         first_valid_bar = candles.index[first_valid_pos]
@@ -405,7 +432,16 @@ class ResearchService:
             "assessment": assess_out_of_sample(dev, selection_val, card),
             "data": {"snapshot_id": rec["provenance"]["snapshot_id"], "dataset_hash": rec["provenance"]["dataset_hash"]},
         }
-        self._store.add_holdout(run_id, payload)
+        try:
+            self._store.add_holdout(run_id, payload)
+        except HoldoutAlreadyEvaluated:
+            raise                                   # the figures exist: the holdout stays consumed
+        except Exception as exc:
+            # Computed but never persisted, returned or shown: discarding it is safe and a retry of the identical frozen
+            # spec reproduces the same numbers, so this (and only this) failure releases the reservation.
+            self._ledger.finish(reservation, ABORTED, f"{type(exc).__name__}: {exc}")
+            raise
+        self._ledger.finish(reservation, LEDGER_COMPLETED)
         return payload
 
     # ---------------------------------------------------------- walk-forward

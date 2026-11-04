@@ -91,6 +91,22 @@ def _normalize(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
     # (`src.data.canonical.canonicalize_candles`, `DECISIONS.md`
     # ADR-0041) rather than each provider converting its own way.
 
+    # Yahoo sometimes returns a placeholder row for a day with a volume but
+    # no price at all (observed 2026-11-04: every symbol's latest session had
+    # open/high/low/close all NaN). A row with NO price carries no candle
+    # information, so it is dropped here, loudly. A row with only SOME prices
+    # missing is a genuinely malformed candle and is left for validation to
+    # reject.
+    no_price = df[["open", "high", "low", "close"]].isna().all(axis=1)
+    if no_price.any():
+        logger.warning(
+            "Dropping {} price-less placeholder bar(s) for {}: {}",
+            int(no_price.sum()),
+            symbol,
+            ", ".join(str(ts.date()) if hasattr(ts, "date") else str(ts) for ts in df.index[no_price][:5]),
+        )
+        df = df[~no_price]
+
     df = df[~df.index.duplicated(keep="last")]
     df = df.sort_index()
 

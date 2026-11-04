@@ -58,6 +58,10 @@ class ResearchStore:
         with self._connect() as con:
             con.executescript(_SCHEMA)
 
+    @property
+    def path(self) -> Path:
+        return self._path
+
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(str(self._path))
         con.row_factory = sqlite3.Row

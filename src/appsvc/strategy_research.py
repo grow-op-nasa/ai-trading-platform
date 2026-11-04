@@ -25,6 +25,7 @@ from src.strategy_research import (
     research_state,
 )
 from src.strategy_research.compare import ComparisonRow, compare_runs
+from src.strategy_research.service import ENGINE_VERSION
 from src.strategy_research.universe import (
     MAX_BATCH_SYMBOLS,
     POINT_IN_TIME_NOTE,
@@ -35,7 +36,7 @@ from src.strategy_research.universe import (
 )
 
 
-__all__ = ["StrategyResearchService", "CatalogueView", "MAX_BATCH_SYMBOLS", "POINT_IN_TIME_NOTE", "default_assumptions"]
+__all__ = ["StrategyResearchService", "CatalogueView", "ENGINE_VERSION", "MAX_BATCH_SYMBOLS", "POINT_IN_TIME_NOTE", "default_assumptions"]
 
 
 def default_assumptions() -> ResearchAssumptions:

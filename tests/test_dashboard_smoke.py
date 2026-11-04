@@ -965,6 +965,25 @@ def test_strategy_research_run_inspect_holdout_and_no_trading_records(research_w
     assert not (research_world / "data" / "monitoring").exists()
 
 
+def test_holdout_button_is_disabled_for_a_run_from_an_earlier_engine_version(research_world, monkeypatch):
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Strategy Research")
+    at.selectbox(key="sr_strategy").select("donchian_breakout").run(timeout=_RUN_TIMEOUT)
+    at.text_input(key="sr_symbols").set_value("SPY").run(timeout=_RUN_TIMEOUT)
+    _button(at, "Run research").click().run(timeout=_RUN_TIMEOUT * 4)
+    _assert_no_exception(at)
+    run_id = at.selectbox(key="sr_inspect").options[0]
+    at.selectbox(key="sr_inspect").select(run_id).run(timeout=_RUN_TIMEOUT)
+    assert not _button(at, "Evaluate the holdout (one time only)").disabled          # a current-engine run: enabled
+    # Simulate the stored run being older than the engine by advancing the engine version the page compares against.
+    from src.appsvc.strategy_research import ENGINE_VERSION
+    monkeypatch.setattr("src.dashboard.page_strategy_research.ENGINE_VERSION", ENGINE_VERSION + 1)
+    at.selectbox(key="sr_inspect").select(run_id).run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert _button(at, "Evaluate the holdout (one time only)").disabled
+    assert any("holdout cannot be evaluated" in w.value for w in at.warning)
+
+
 def test_strategy_research_reports_an_unsupported_request_instead_of_a_result(research_world):
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     _go(at, "Strategy Research")

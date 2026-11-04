@@ -118,3 +118,19 @@ def volume_weighted_average_price(candles: pd.DataFrame) -> pd.Series:
     cumulative_volume = candles["volume"].cumsum()
     cumulative_turnover = (typical_price * candles["volume"]).cumsum()
     return (cumulative_turnover / cumulative_volume).rename("VWAP")
+
+
+@register_indicator("DONCHIAN_UPPER")
+def donchian_upper(candles: pd.DataFrame, period: int = 20) -> pd.Series:
+    """Highest high of the `period` bars *before* each bar (the decision bar is excluded).
+
+    Excluding the current bar means a close above this value is a genuine break of a channel that already
+    existed, not a comparison of the bar with itself. Undefined (NaN) until `period` prior bars exist.
+    """
+    return candles["high"].rolling(window=period).max().shift(1).rename(f"DONCHIAN_UPPER_{period}")
+
+
+@register_indicator("DONCHIAN_LOWER")
+def donchian_lower(candles: pd.DataFrame, period: int = 20) -> pd.Series:
+    """Lowest low of the `period` bars *before* each bar (the decision bar is excluded)."""
+    return candles["low"].rolling(window=period).min().shift(1).rename(f"DONCHIAN_LOWER_{period}")

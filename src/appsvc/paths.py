@@ -23,6 +23,7 @@ class AppPaths:
     prefs_file: Path = Path("data/app/preferences.json")
     scanner_db: Path = Path("data/scanner/scanner.db")
     snapshots_dir: Path = Path("data/snapshots")
+    research_db: Path = Path("data/research/research.db")
 
     @classmethod
     def under(cls, root: Path | str) -> "AppPaths":
@@ -31,7 +32,8 @@ class AppPaths:
         return cls(registry=r / "experiments.db", paper_db=r / "paper" / "paper_runtime.db",
                    monitoring_db=r / "monitoring" / "monitoring.db", candidates_dir=r / "strategy_candidates",
                    profiles_dir=r / "app" / "paper_profiles", prefs_file=r / "app" / "preferences.json",
-                   scanner_db=r / "scanner" / "scanner.db", snapshots_dir=r / "snapshots")
+                   scanner_db=r / "scanner" / "scanner.db", snapshots_dir=r / "snapshots",
+                   research_db=r / "research" / "research.db")
 
     def registry_exists(self) -> bool:
         return self.registry.is_file()

@@ -246,3 +246,21 @@ def test_weekly_and_monthly_intervals_are_not_gap_checked():
     df = valid_daily_candles([pd.Timestamp("2024-01-02"), pd.Timestamp("2024-02-02")])
     report = validate_candles(df, symbol="SPY", interval=Interval.WEEK_1, calendar=CALENDAR)
     assert report.gaps.count == 0
+
+
+def test_financial_sanity_error_names_the_offending_bars():
+    """The message must say WHICH bars broke the rule so a transient vendor glitch can be told from a real problem."""
+    import pandas as pd
+
+    from src.data.validation import _validate_financial_sanity
+
+    idx = pd.date_range("2026-11-02", periods=3, freq="D", tz="UTC")
+    df = pd.DataFrame(
+        {"open": [10.0, 10.0, 10.0], "high": [11.0, 9.5, 11.0], "low": [9.0, 9.0, 9.0],
+         "close": [10.5, 10.5, 10.5], "volume": [1, 1, 1]}, index=idx,
+    )
+    with pytest.raises(FinancialSanityError) as exc:
+        _validate_financial_sanity(df)
+    message = str(exc.value)
+    assert "high < max(open, close)" in message and "2026-11-03" in message and "H=9.5000" in message
+    assert "2026-11-02" not in message          # only the offending bar is named

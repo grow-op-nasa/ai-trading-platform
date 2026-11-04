@@ -56,7 +56,16 @@ def run_research_agent(argv: Sequence[str] | None = None) -> int:
         policy_kwargs["max_backtests"] = args.max_backtests
     policy = ResearchAgentPolicy(**policy_kwargs)
 
-    agent = ResearchAgent(provider=provider, tool_registry=default_tool_registry(), policy=policy)
+    reader = None
+    from pathlib import Path
+
+    from src.strategy_research.store import DEFAULT_DB_PATH, ResearchReader
+
+    if Path(DEFAULT_DB_PATH).is_file():            # read-only access to stored strategy research, only if any exists
+        reader = ResearchReader(DEFAULT_DB_PATH)
+    agent = ResearchAgent(
+        provider=provider, tool_registry=default_tool_registry(strategy_research_reader=reader), policy=policy
+    )
     run = agent.run(args.goal)
     _print_run(run)
     return 0 if run.status is AgentRunStatus.COMPLETED else 1

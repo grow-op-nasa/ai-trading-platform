@@ -134,23 +134,32 @@ def _validate_structure(df: pd.DataFrame) -> None:
         raise StructuralValidationError(f"NaN values found in columns: {bad_columns}")
 
 
+def _offending_rows(df: pd.DataFrame, mask: pd.Series, limit: int = 5) -> str:
+    """'2026-11-03 (O=.. H=.. L=.. C=..)' for up to `limit` flagged bars, plus a count of the rest."""
+    flagged = df[mask]
+    parts = [
+        f"{ts.date()} (O={r.open:.4f} H={r.high:.4f} L={r.low:.4f} C={r.close:.4f})"
+        for ts, r in list(flagged.iterrows())[:limit]
+    ]
+    more = len(flagged) - limit
+    return "; ".join(parts) + (f"; +{more} more" if more > 0 else "")
+
+
 def _validate_financial_sanity(df: pd.DataFrame) -> None:
     open_, high, low, close, volume = (df[c] for c in REQUIRED_COLUMNS)
+    upper = pd.concat([open_, close], axis=1).max(axis=1)
+    lower = pd.concat([open_, close], axis=1).min(axis=1)
 
-    violations = []
-    if (high < pd.concat([open_, close], axis=1).max(axis=1)).any():
-        violations.append("high < max(open, close)")
-    if (low > pd.concat([open_, close], axis=1).min(axis=1)).any():
-        violations.append("low > min(open, close)")
-    if (high < low).any():
-        violations.append("high < low")
-    if (volume < 0).any():
-        violations.append("negative volume")
+    checks = (
+        ("high < max(open, close)", high < upper),
+        ("low > min(open, close)", low > lower),
+        ("high < low", high < low),
+        ("negative volume", volume < 0),
+    )
+    violations = [f"{label} at {_offending_rows(df, mask)}" for label, mask in checks if mask.any()]
 
     if violations:
-        raise FinancialSanityError(
-            f"impossible OHLCV record(s) found: {', '.join(violations)}"
-        )
+        raise FinancialSanityError(f"impossible OHLCV record(s) found: {' | '.join(violations)}")
 
 
 def _detect_suspicious(df: pd.DataFrame) -> tuple[str, ...]:

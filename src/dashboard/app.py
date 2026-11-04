@@ -23,6 +23,7 @@ from src.dashboard import (
     page_scanner,
     page_setup,
     page_strategies,
+    page_strategy_research,
     shell,
 )
 
@@ -33,6 +34,7 @@ _PAGES = {
     "Opportunity Scanner": page_scanner.render,
     "Research & Experiments": page_research.render,
     "Strategies": page_strategies.render,
+    "Strategy Research": page_strategy_research.render,
     "Paper Trading": page_paper.render,
     "Portfolio & Execution": page_portfolio.render,
     "Activity": page_activity.render,

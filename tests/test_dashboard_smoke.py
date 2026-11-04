@@ -172,7 +172,7 @@ def test_every_page_renders_with_no_data_and_creates_nothing(workdir):
 def test_home_is_the_default_landing_page_and_explains_the_next_step(workdir):
     at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
     _assert_no_exception(at)
-    assert at.sidebar.radio(key="page").value == "Home" and PAGES[0] == "Home" and len(PAGES) == 9
+    assert at.sidebar.radio(key="page").value == "Home" and PAGES[0] == "Home" and len(PAGES) == 10
     assert any("Next step" in x.value and "Review setup" in x.value for x in list(at.warning) + list(at.error) + list(at.info))
     assert any(b.label == "Review setup" for b in at.button)
     assert not (workdir / "data").exists()
@@ -915,3 +915,64 @@ def test_scanner_rejects_an_invalid_watchlist_without_saving(scanner_world):
     _assert_no_exception(at)
     assert any("not accepted" in e.value for e in at.error)
     assert not (scanner_world / "data" / "scanner" / "scanner.db").exists()
+
+
+# ---------------------------------------------------------------------------
+# Sprint 23 (ADR-0061): Strategy Research page. Network-free: the research service is injected with a synthetic data source.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def research_world(workdir, monkeypatch):
+    from src.appsvc.strategy_research import StrategyResearchService
+    from tests.test_strategy_research_service import SyntheticSource, synth
+
+    source = SyntheticSource(synth())
+    monkeypatch.setattr("src.dashboard.shell.research_service", lambda paths: StrategyResearchService(paths, market_data=source))
+    return workdir
+
+
+def test_strategy_research_page_opens_read_only_and_lists_the_catalogue(research_world):
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Strategy Research")
+    _assert_no_exception(at)
+    assert any("HISTORICAL RESEARCH" in w.value for w in at.warning)
+    assert not (research_world / "data" / "research").exists()           # opening the page writes nothing
+    assert not (research_world / "data" / "paper").exists() and not (research_world / "data" / "scanner").exists()
+    text = " ".join(str(df.value) for df in at.dataframe)
+    for strategy in ("ema_cross", "rsi_mean_reversion", "donchian_breakout"):
+        assert strategy in text
+    assert any(b.label == "Run research" for b in at.button)
+
+
+def test_strategy_research_run_inspect_holdout_and_no_trading_records(research_world):
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Strategy Research")
+    at.selectbox(key="sr_strategy").select("donchian_breakout").run(timeout=_RUN_TIMEOUT)
+    at.text_input(key="sr_symbols").set_value("SPY").run(timeout=_RUN_TIMEOUT)
+    _button(at, "Run research").click().run(timeout=_RUN_TIMEOUT * 4)
+    _assert_no_exception(at)
+    assert (research_world / "data" / "research" / "research.db").exists()
+    assert any("evaluation(s) recorded" in x.value for x in at.success)
+    run_id = at.selectbox(key="sr_inspect").options[0]
+    at.selectbox(key="sr_inspect").select(run_id).run(timeout=_RUN_TIMEOUT)
+    _assert_no_exception(at)
+    assert any(b.label == "Evaluate the holdout (one time only)" for b in at.button)
+    _button(at, "Evaluate the holdout (one time only)").click().run(timeout=_RUN_TIMEOUT * 2)
+    _assert_no_exception(at)
+    assert not any(b.label == "Evaluate the holdout (one time only)" for b in at.button)    # a holdout can be evaluated once
+    assert not (research_world / "data" / "paper").exists() and not (research_world / "data" / "scanner").exists()
+    assert not (research_world / "data" / "monitoring").exists()
+
+
+def test_strategy_research_reports_an_unsupported_request_instead_of_a_result(research_world):
+    at = AppTest.from_file(APP_PATH).run(timeout=_RUN_TIMEOUT)
+    _go(at, "Strategy Research")
+    at.selectbox(key="sr_strategy").select("ema_cross").run(timeout=_RUN_TIMEOUT)
+    at.text_input(key="sr_symbols").set_value("SPY").run(timeout=_RUN_TIMEOUT)
+    at.text_area(key="sr_cfg_ema_cross").set_value('{"fast": 30, "slow": 10}').run(timeout=_RUN_TIMEOUT)
+    _button(at, "Run research").click().run(timeout=_RUN_TIMEOUT * 4)
+    _assert_no_exception(at)
+    run_id = at.selectbox(key="sr_inspect").options[0]
+    at.selectbox(key="sr_inspect").select(run_id).run(timeout=_RUN_TIMEOUT)
+    assert any("Not evaluable (INVALID_PARAMETERS)" in w.value for w in at.warning)

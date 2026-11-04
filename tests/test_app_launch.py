@@ -184,6 +184,9 @@ def test_only_the_cli_and_appsvc_import_the_paper_runtime_and_nothing_imports_ap
         if rel == "scanner":        # Sprint 21: the scanner may import ONLY the side-effect-free shared evaluation module
             assert {m for m in mods if m.startswith("src.paper")} <= {"src.paper.evaluation"}, f
             continue
+        if rel == "strategy_research":     # Sprint 23: research may use ONLY the pure closed-bar helper (no runtime, store or broker)
+            assert {m for m in mods if m.startswith("src.paper")} <= {"src.paper.bars"}, f
+            continue
         if rel not in ("paper", "cli", "appsvc") and any(m.startswith("src.paper") for m in mods):
             paper_importers.add(str(f.relative_to(REPO)))
         if rel not in ("appsvc", "dashboard") and any(m.startswith("src.appsvc") for m in mods):

@@ -322,6 +322,7 @@ def default_tool_registry(
     experiment_registry: Any = None,
     model_registry: Any = None,
     research_trial_service: Any = None,
+    strategy_research_reader: Any = None,
 ) -> ToolRegistry:
     """Build the standard Sprint 13 tool registry -- the seven tools
     described in the Sprint 13 spec, wired to real platform services
@@ -338,6 +339,11 @@ def default_tool_registry(
             ResearchTrialService` instance to back
             `run_historical_backtest`. Defaults to a fresh
             `ResearchTrialService()`.
+        strategy_research_reader: an optional read-only
+            `src.strategy_research.store.ResearchReader`. When given, two
+            read-only tools over stored strategy research are added
+            (`list_strategy_research_runs`, `get_strategy_research_run`);
+            when omitted the registry is exactly the seven tools above.
     """
     from src.ai.agents.backtest_tool import RunHistoricalBacktestTool
     from src.ai.agents.research_tools import (
@@ -356,14 +362,23 @@ def default_tool_registry(
     model_registry = model_registry or ModelRegistry()
     research_trial_service = research_trial_service or ResearchTrialService()
 
-    return ToolRegistry(
-        [
-            ListExperimentsTool(experiment_registry),
-            GetExperimentTool(experiment_registry),
-            AnalyzeExperimentTool(experiment_registry),
-            CompareExperimentsTool(experiment_registry),
-            ListStrategiesTool(),
-            GetModelMetadataTool(model_registry),
-            RunHistoricalBacktestTool(research_trial_service),
-        ]
-    )
+    tools = [
+        ListExperimentsTool(experiment_registry),
+        GetExperimentTool(experiment_registry),
+        AnalyzeExperimentTool(experiment_registry),
+        CompareExperimentsTool(experiment_registry),
+        ListStrategiesTool(),
+        GetModelMetadataTool(model_registry),
+        RunHistoricalBacktestTool(research_trial_service),
+    ]
+    if strategy_research_reader is not None:
+        # Sprint 23 (ADR-0061): two read-only tools over stored strategy research. Offered only when a read-only
+        # reader is supplied, so the default registry stays exactly the seven Sprint 13 tools.
+        from src.ai.agents.strategy_research_tools import (
+            GetStrategyResearchRunTool,
+            ListStrategyResearchRunsTool,
+        )
+
+        tools.append(ListStrategyResearchRunsTool(strategy_research_reader))
+        tools.append(GetStrategyResearchRunTool(strategy_research_reader))
+    return ToolRegistry(tools)

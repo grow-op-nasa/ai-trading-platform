@@ -2055,6 +2055,10 @@ revalidate, durable intent, PaperBroker) or `reject_proposal(id)`. Only `dashboa
 `src/promotion/` (human-CLI only) + `src/strategies/promoted/` (manifest
 and verified loader). `src/ai` may not import either.
 
+### Strategy research (Sprint 23, ADR-0061)
+
+`src/strategy_research` (assumptions, protocol, scorecard, regimes, store, service, universe, compare) wraps the existing backtester and snapshot store; `src/strategies/catalogue.py` holds family/hypothesis metadata; `src/appsvc/strategy_research.py` is the UI/AI-facing service; `src/ai/agents/strategy_research_tools.py` provides read-only tools. It imports no broker, paper, scanner, promotion or AI code. One causal backtest per configuration, windows by bar position, holdout locked and evaluated once, results in an immutable SQLite store.
+
 ## Testing philosophy
 
 Unit tests never touch the network. `tests/test_market_data.py` uses a

@@ -214,6 +214,98 @@ def test_holdout_is_refused_if_the_strategy_source_has_changed(tmp_path, monkeyp
     assert svc._store.get_holdout(out.run_id) is None                   # a refusal does not consume the one-time holdout
 
 
+# ---------------------------------------------------------------- holdout governance (synthetic fixtures only)
+def test_every_run_freezes_a_canonical_spec_and_hash_before_the_holdout(tmp_path):
+    from src.strategy_research.governance import spec_hash
+    svc, out = completed(tmp_path)
+    rec = out.record
+    assert len(rec["spec_hash"]) == 64 and spec_hash(rec["spec"]) == rec["spec_hash"]
+    spec = rec["spec"]
+    assert spec["strategy"]["source_hash"] == rec["strategy"]["version"] and spec["engine_version"] == 3
+    assert spec["selected_params"] == rec["selected"]["params"] and spec["data"]["dataset_hash"] == rec["provenance"]["dataset_hash"]
+    assert set(spec["windows"]) == {"development", "validation", "holdout"} and spec["dependencies"]["pandas"]
+    assert svc._store.get_holdout(out.run_id) is None
+
+
+def test_the_spec_hash_changes_when_any_input_changes(tmp_path):
+    a = completed(tmp_path / "a")[1].record
+    b = completed(tmp_path / "b", configs=({"fast": 8, "slow": 21},))[1].record
+    assert a["spec_hash"] != b["spec_hash"]
+    again = completed(tmp_path / "c")[1].record
+    assert again["spec_hash"] == a["spec_hash"]                        # same inputs -> same hash (run id is not part of it)
+
+
+def test_a_second_run_over_the_same_locked_bars_cannot_reopen_the_holdout(tmp_path):
+    from src.strategy_research.governance import HoldoutConsumed
+    svc = service(tmp_path)
+    first, second = svc.run(request()), svc.run(request(configs=({"fast": 8, "slow": 21},)))
+    assert first.run_id != second.run_id
+    svc.evaluate_holdout(first.run_id)
+    with pytest.raises(HoldoutConsumed, match="already used"):
+        svc.evaluate_holdout(second.run_id)
+    assert svc._store.get_holdout(second.run_id) is None
+
+
+def test_a_different_instrument_has_its_own_holdout(tmp_path):
+    svc = service(tmp_path)
+    a, b = svc.run(request(symbol="SPY")), svc.run(request(symbol="QQQ"))
+    svc.evaluate_holdout(a.run_id)
+    svc.evaluate_holdout(b.run_id)                                      # no HoldoutConsumed
+
+
+def test_a_failure_while_computing_leaves_the_holdout_consumed(tmp_path, monkeypatch):
+    from src.strategy_research.governance import HoldoutConsumed
+    svc = service(tmp_path)
+    first, second = svc.run(request()), svc.run(request(configs=({"fast": 8, "slow": 21},)))
+    monkeypatch.setattr(svc, "_card", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        svc.evaluate_holdout(first.run_id)
+    monkeypatch.undo()
+    with pytest.raises(HoldoutConsumed):                                # the bars were touched: conservatively spent
+        svc.evaluate_holdout(second.run_id)
+    with pytest.raises(HoldoutConsumed):
+        svc.evaluate_holdout(first.run_id)
+
+
+def test_a_persistence_failure_before_anything_is_shown_aborts_and_allows_a_safe_retry(tmp_path, monkeypatch):
+    import sqlite3
+    svc, out = completed(tmp_path)
+    real = svc._store.add_holdout
+    monkeypatch.setattr(svc._store, "add_holdout", lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("disk full")))
+    with pytest.raises(sqlite3.OperationalError):
+        svc.evaluate_holdout(out.run_id)
+    assert svc._store.get_holdout(out.run_id) is None
+    monkeypatch.setattr(svc._store, "add_holdout", real)
+    payload = svc.evaluate_holdout(out.run_id)                         # identical frozen spec -> safe retry
+    assert payload["scorecard"]["label"] == "holdout"
+    states = [r["state"] for r in svc._ledger._connect().execute("SELECT state FROM research_holdout_events ORDER BY seq")]
+    assert states == ["RESERVED", "ABORTED", "RESERVED", "COMPLETED"]
+    with pytest.raises(HoldoutAlreadyEvaluated):
+        svc.evaluate_holdout(out.run_id)
+
+
+def test_holdout_is_refused_without_consuming_it_if_the_environment_changed(tmp_path, monkeypatch):
+    from src.strategy_research.governance import SpecMismatch
+    svc, out = completed(tmp_path)
+    monkeypatch.setattr("src.strategy_research.governance._dependency_versions",
+                        lambda: {"python": "0.0", "pandas": "0", "numpy": "0"})
+    with pytest.raises(SpecMismatch, match="dependency versions"):
+        svc.evaluate_holdout(out.run_id)
+    monkeypatch.undo()
+    assert svc.evaluate_holdout(out.run_id)["scorecard"]["label"] == "holdout"
+
+
+def test_ledger_events_are_immutable(tmp_path):
+    import sqlite3
+    svc, out = completed(tmp_path)
+    svc.evaluate_holdout(out.run_id)
+    con = svc._ledger._connect()
+    with pytest.raises(sqlite3.DatabaseError):
+        con.execute("UPDATE research_holdout_events SET state='ABORTED'")
+    with pytest.raises(sqlite3.DatabaseError):
+        con.execute("DELETE FROM research_holdout_events")
+
+
 def test_selection_picks_by_validation_return_only_and_records_every_attempt(tmp_path):
     svc, out = completed(tmp_path, configs=({}, {"fast": 5, "slow": 13}, {"fast": 8, "slow": 21}))
     cards = [Scorecard.from_dict(a["scorecards"]["validation"]) for a in out.record["attempts"]]
@@ -447,7 +539,7 @@ def ok(v):
 
 
 def fake_run(card_validation, *, status="COMPLETED"):
-    return {"kind": "SINGLE", "payload": {"status": status, "engine": {"version": 2}, "selection": {"selected_index": 0},
+    return {"kind": "SINGLE", "payload": {"status": status, "engine": {"version": 3}, "selection": {"selected_index": 0},
                                           "attempts": [{"scorecards": {"validation": card_validation}}]}}
 
 
@@ -624,7 +716,7 @@ def test_a_run_from_an_earlier_engine_version_is_never_replayed_or_holdout_evalu
     monkeypatch.setattr("src.strategy_research.service.ENGINE_VERSION", 1)
     svc, out = completed(tmp_path)
     assert out.record["engine"] == {"version": 1}
-    monkeypatch.setattr("src.strategy_research.service.ENGINE_VERSION", 2)
+    monkeypatch.setattr("src.strategy_research.service.ENGINE_VERSION", 3)
 
     replay = svc.reproduce(out.run_id)
     assert replay["data"] == "VERIFIED" and replay["backtest"] == "ENGINE_CHANGED"
@@ -640,5 +732,5 @@ def test_a_run_from_an_earlier_engine_version_is_never_replayed_or_holdout_evalu
 
 def test_new_runs_record_the_current_engine_version(tmp_path):
     svc, out = completed(tmp_path)
-    assert out.record["engine"] == {"version": 2}
+    assert out.record["engine"] == {"version": 3}
     assert svc.reproduce(out.run_id)["backtest"] == "REPRODUCED"

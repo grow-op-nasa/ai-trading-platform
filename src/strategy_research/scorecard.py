@@ -65,7 +65,19 @@ class Scorecard:
     turnover: Metric                    # annualised traded notional / average equity
     exposure_time: Metric
     benchmark_return: Metric
-    excess_return: Metric               # net - benchmark
+    excess_return: Metric               # net - FULL buy-and-hold (not like-for-like: the strategy is partly invested)
+    # Sprint 23 closeout (research engine v3). Three comparators are kept strictly apart:
+    #   full buy-and-hold  = benchmark_* (same instrument, window and starting capital, fully invested throughout);
+    #   exposure-matched   = same bars the strategy was invested, whole-bar instrument returns, uninvested bars in cash at 0%
+    #                        (a retrospective comparator, never a tradable strategy);
+    #   active             = the strategy's own net figures above.
+    benchmark_volatility: Metric
+    benchmark_sharpe: Metric
+    benchmark_max_drawdown: Metric
+    exposure_matched_return: Metric
+    excess_vs_exposure_matched: Metric  # net - exposure-matched
+    capital_utilisation_mean: Metric    # mean(position market value / equity) over the window's bars
+    capital_utilisation_max: Metric
     sample: str                         # "NONE" | "VERY_SMALL" | "SMALL" | "ADEQUATE"
     notes: tuple[str, ...] = field(default_factory=tuple)
     stress_multiple: float = 3.0
@@ -74,7 +86,9 @@ class Scorecard:
                 "gross_return", "net_return", "cost_drag", "net_return_at_stress_costs", "total_costs",
                 "annualised_return", "annualised_volatility", "sharpe", "sortino", "max_drawdown",
                 "average_holding_bars", "average_holding_days", "turnover", "exposure_time",
-                "benchmark_return", "excess_return")
+                "benchmark_return", "excess_return", "benchmark_volatility", "benchmark_sharpe",
+                "benchmark_max_drawdown", "exposure_matched_return", "excess_vs_exposure_matched",
+                "capital_utilisation_mean", "capital_utilisation_max")
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {k: getattr(self, k) for k in ("label", "first_bar", "last_bar", "bars", "closed_trades",
@@ -91,7 +105,8 @@ class Scorecard:
         kwargs["stress_multiple"] = raw.get("stress_multiple", 3.0)
         kwargs["notes"] = tuple(raw.get("notes", ()))
         for k in cls._METRICS:
-            kwargs[k] = metric_from_dict(raw[k])
+            # Records written before the closeout carry no benchmark-risk / exposure-matched fields.
+            kwargs[k] = metric_from_dict(raw[k]) if k in raw else Metric.undefined("not recorded by the engine version that made this run")
         return cls(**kwargs)
 
 
@@ -131,6 +146,46 @@ def _sortino(returns: pd.Series, periods_per_year: int) -> Metric:
     if dd == 0:
         return Metric.undefined("no negative returns -- downside deviation is zero")
     return Metric.of(float(returns.mean() / dd * np.sqrt(periods_per_year)))
+
+
+def invested_bars(index: pd.DatetimeIndex, trades: list[Trade]) -> tuple[np.ndarray, np.ndarray]:
+    """Per-bar invested flag and invested notional-per-share-held map.
+
+    Convention (documented, ADR-0061 amendment): a bar ``b`` counts as invested when ``entry_time < b <= exit_time``
+    (signal timestamps). Under next-bar-open fills the position is genuinely held from the open of ``entry+1`` to the
+    open of ``exit+1``, so this attributes whole bars close-to-close: it slightly mis-states the fill bar (open->close
+    rather than close->close) and the exit gap. It is a comparator convention only, never used for strategy P&L.
+    Returns ``(flags, quantity)`` where ``quantity[b]`` is the total signed shares held across trades on bar ``b``.
+    """
+    flags = np.zeros(len(index), dtype=bool)
+    qty = np.zeros(len(index), dtype=float)
+    for t in trades:
+        mask = (index > t.entry_time) & (index <= t.exit_time)
+        flags |= mask
+        qty[mask] += float(t.quantity or 0) * (1 if t.direction >= 0 else -1)
+    return flags, qty
+
+
+def _exposure_matched(close: pd.Series, flags: np.ndarray, i0: int, i1: int) -> Metric:
+    if i1 - i0 < 1 or close is None or close.empty:
+        return Metric.undefined("no observations in the window")
+    rets = close.pct_change().to_numpy()
+    growth = 1.0
+    for b in range(i0, i1):
+        if flags[b] and not np.isnan(rets[b]):
+            growth *= 1.0 + rets[b]
+    return Metric.of(growth - 1.0)
+
+
+def _utilisation(close: pd.Series, qty: np.ndarray, net_equity: pd.Series, i0: int, i1: int) -> tuple[Metric, Metric]:
+    vals = []
+    for b in range(i0, i1):
+        eq = float(net_equity.iloc[b])
+        if eq > 0:
+            vals.append(abs(qty[b]) * float(close.iloc[b]) / eq)
+    if not vals:
+        return Metric.undefined("no observations in the window"), Metric.undefined("no observations in the window")
+    return Metric.of(float(np.mean(vals))), Metric.of(float(np.max(vals)))
 
 
 def build_scorecard(
@@ -225,6 +280,19 @@ def build_scorecard(
     drag = (Metric.of(gross_ret.value - net_ret.value) if gross_ret.is_defined and net_ret.is_defined
             else Metric.undefined("needs gross and net returns"))
 
+    bench_series = close.iloc[base_i:i1]
+    if len(bench_series.pct_change().dropna()) >= MIN_RATIO_BARS:
+        b_vol = am.volatility(bench_series, ppy).metric
+        b_sharpe = am.sharpe_ratio(bench_series, ppy).metric
+    else:
+        b_vol = b_sharpe = Metric.undefined(f"fewer than {MIN_RATIO_BARS} period returns")
+    b_dd = am.max_drawdown(bench_series) if len(bench_series) >= 2 else Metric.undefined("window too short")
+    flags, qty = invested_bars(index, [t for t in net_trades if t.exit_time >= index[base_i]])
+    matched = _exposure_matched(close, flags, i0, i1)
+    excess_matched = (Metric.of(net_ret.value - matched.value) if net_ret.is_defined and matched.is_defined
+                      else Metric.undefined("needs strategy and exposure-matched returns"))
+    util_mean, util_max = _utilisation(close, qty, net_equity, i0, i1)
+
     card = Scorecard(
         label=label, first_bar=t0.isoformat(), last_bar=t1.isoformat(), bars=bars, closed_trades=n,
         open_trades_at_end=len(open_trades), win_rate=win_rate, average_win=avg_win, average_loss=avg_loss,
@@ -233,7 +301,10 @@ def build_scorecard(
         annualised_return=ann, annualised_volatility=vol, sharpe=sharpe,
         sortino=_sortino(seg_returns, ppy), max_drawdown=am.max_drawdown(eq), average_holding_bars=hold_bars,
         average_holding_days=hold_days, turnover=turnover, exposure_time=exposure, benchmark_return=bench,
-        excess_return=excess, sample=sample_label(n), stress_multiple=stress_multiple,
+        excess_return=excess, benchmark_volatility=b_vol, benchmark_sharpe=b_sharpe, benchmark_max_drawdown=b_dd,
+        exposure_matched_return=matched, excess_vs_exposure_matched=excess_matched,
+        capital_utilisation_mean=util_mean, capital_utilisation_max=util_max,
+        sample=sample_label(n), stress_multiple=stress_multiple,
     )
     return _with_notes(card, pnls)
 
@@ -258,6 +329,10 @@ def _with_notes(card: Scorecard, pnls: list[float]) -> Scorecard:
     if card.excess_return.is_defined and card.excess_return.value < 0 and card.benchmark_return.is_defined:
         notes.append("Underperformed buy-and-hold of the same instrument over the same window (the strategy is only "
                      "invested part of the time, so this is not by itself a rejection).")
+    if (card.excess_vs_exposure_matched.is_defined and card.excess_vs_exposure_matched.value < 0
+            and card.exposure_matched_return.is_defined):
+        notes.append("Also trailed the exposure-matched comparator (the same instrument held only on the bars the strategy "
+                     "was invested): the entry/exit timing itself did not add value in this window.")
     return Scorecard(**{**{k: getattr(card, k) for k in card.__dataclass_fields__}, "notes": tuple(notes)})
 
 

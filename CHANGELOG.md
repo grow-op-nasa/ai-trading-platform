@@ -11,6 +11,15 @@ files a new feature actually touches. A couple of files is normal;
 touching a large share of the codebase for one addition is the real
 warning sign that the architecture's been violated.
 
+## Sprint 23 closeout -- 2026-11-04, Research integrity (ADR-0062)
+
+- **Fixed:** next-bar-open equity timing (equity at the signal bar no longer contains a fill that happens at the next open). Research `ENGINE_VERSION` 3; earlier runs are kept untouched and flagged `ENGINE_CHANGED`.
+- **Added:** full vs exposure-matched buy-and-hold comparators, benchmark volatility/Sharpe/drawdown, capital-deployed metrics (scorecard + Strategy Research page).
+- **Added:** canonical research spec + SHA-256 hash per run; insert-only holdout-consumption ledger keyed by instrument and bar range (a second run can no longer re-open a spent holdout).
+- **Added:** `scripts/closeout_validation.py` (24-combination real-data validation in an isolated directory; no holdout path); tests `test_equity_timing`, `test_closeout_validation_script`, extended scorecard/service tests.
+- **Fixed (data layer):** Yahoo price-less placeholder bars are dropped (logged); OHLC sanity check tolerates 1e-9 relative float noise; NaN/OHLC errors name the offending bars.
+- Extension Cost: 8 existing file(s) changed (adds yfinance_provider.py, validation.py): portfolio_engine.py, scorecard.py, service.py, store.py, page_strategy_research.py, test_strategy_research_service.py.
+
 ## Sprint 23 -- 2026-11-04, Strategy Research (ADR-0061)
 
 - Added: strategy catalogue with families/hypotheses/history requirements; `donchian_breakout` strategy and Donchian indicators; `src/strategy_research` (assumptions, chronological protocol with locked holdout, walk-forward, scorecards with gross/net/stress, regime breakdown, immutable store, reproduce, curated universe, comparison); `StrategyResearchService`; "Strategy Research" dashboard page; read-only AI research tools (opt-in); `scripts/run_strategy_research.py` (real-data run, run on the user's machine).

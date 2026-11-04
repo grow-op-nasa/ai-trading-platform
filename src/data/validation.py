@@ -48,6 +48,7 @@ _INTRADAY_FREQ = {
 }
 
 _MAX_SUSPICIOUS_EXAMPLES = 3
+_PRICE_TOLERANCE = 1e-9  # relative; absorbs adjusted-price float noise only
 
 
 def validate_candles(
@@ -131,7 +132,10 @@ def _validate_structure(df: pd.DataFrame) -> None:
     ohlcv = df[REQUIRED_COLUMNS]
     if ohlcv.isna().any().any():
         bad_columns = ohlcv.columns[ohlcv.isna().any()].tolist()
-        raise StructuralValidationError(f"NaN values found in columns: {bad_columns}")
+        rows = ohlcv.index[ohlcv.isna().any(axis=1)]
+        shown = ", ".join(str(t.date()) if hasattr(t, "date") else str(t) for t in rows[:5])
+        more = f" (+{len(rows) - 5} more)" if len(rows) > 5 else ""
+        raise StructuralValidationError(f"NaN values found in columns: {bad_columns}; in {len(rows)} bar(s): {shown}{more}")
 
 
 def _offending_rows(df: pd.DataFrame, mask: pd.Series, limit: int = 5) -> str:
@@ -150,10 +154,15 @@ def _validate_financial_sanity(df: pd.DataFrame) -> None:
     upper = pd.concat([open_, close], axis=1).max(axis=1)
     lower = pd.concat([open_, close], axis=1).min(axis=1)
 
+    # Adjusted prices are computed by scaling, which leaves ~1e-13 relative
+    # floating-point noise (e.g. high=237.32680000000002 vs close=237.3268...
+    # displayed identically). A bar is only "impossible" if it is wrong by more
+    # than that noise; _PRICE_TOLERANCE is far below any real price increment.
+    tol = _PRICE_TOLERANCE
     checks = (
-        ("high < max(open, close)", high < upper),
-        ("low > min(open, close)", low > lower),
-        ("high < low", high < low),
+        ("high < max(open, close)", high < upper - upper.abs() * tol),
+        ("low > min(open, close)", low > lower + lower.abs() * tol),
+        ("high < low", high < low - low.abs() * tol),
         ("negative volume", volume < 0),
     )
     violations = [f"{label} at {_offending_rows(df, mask)}" for label, mask in checks if mask.any()]

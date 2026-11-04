@@ -179,17 +179,37 @@ class PortfolioBacktestEngine:
         # (Sprint 11 spec, section 60) -- work here is O(bars) for
         # valuation plus O(signals) for event handling, not O(bars) per
         # signal.
+        #
+        # Equity-timing convention (Sprint 23 closeout, ADR-0061
+        # amendment, research engine version 3). The simulation state
+        # (cash/positions) is mutated at the SIGNAL bar, but under
+        # NEXT_BAR_OPEN the fill actually happens at the following
+        # bar's open. Valuing that already-mutated state at the signal
+        # bar's close would book `qty * (close_t - open_t+1)` as P&L
+        # on a bar before the trade could exist (an entry would start
+        # at the fill price, an exit would realise the next open early).
+        # `pending` therefore records every fill whose timestamp is
+        # later than the observation, and `_mark_to_market` is reported
+        # with those fills reversed: at bar t the equity reflects only
+        # fills at or before t. Fills, trades, cash and sizing are
+        # unchanged -- this is an observation-time correction only,
+        # and is a no-op for same-bar (SIGNAL_BAR_CLOSE) fills.
+        pending: list[dict] = []
         for timestamp in merged_index:
             for signal in signals_by_timestamp.get(timestamp, ()):
                 outcome, trade = self._process_signal(
-                    signal, candles, portfolio, open_trades
+                    signal, candles, portfolio, open_trades, pending
                 )
                 if outcome is not None:
                     outcomes.append(outcome)
                 if trade is not None:
                     trades.append(trade)
+            pending = [p for p in pending if p["fill_timestamp"] > timestamp]
             equity_index.append(timestamp)
-            equity_values.append(self._mark_to_market(portfolio, ffilled_closes, timestamp))
+            equity_values.append(
+                self._mark_to_market(portfolio, ffilled_closes, timestamp)
+                + self._pending_adjustment(pending, ffilled_closes, timestamp)
+            )
 
         # Positions still open when the data ends are given a synthetic
         # closing Trade for reporting purposes only -- the same
@@ -277,7 +297,10 @@ class PortfolioBacktestEngine:
         candles: dict[str, pd.DataFrame],
         portfolio: Portfolio,
         open_trades: dict[str, dict],
+        pending: list[dict] | None = None,
     ) -> tuple[SignalOutcome | None, Trade | None]:
+        if pending is None:
+            pending = []
         symbol = signal.symbol
         symbol_candles = candles.get(symbol)
         if symbol_candles is None or signal.timestamp not in symbol_candles.index:
@@ -317,7 +340,17 @@ class PortfolioBacktestEngine:
                 return outcome, None
 
             fill = execution_outcome.fill
+            closed_quantity = existing_position.quantity
             portfolio.close_position(symbol, exit_price=fill.fill_price, fee=fill.fee)
+            pending.append(
+                {
+                    "fill_timestamp": fill.fill_timestamp,
+                    "symbol": symbol,
+                    "kind": "exit",
+                    "quantity": closed_quantity,
+                    "cash_delta": fill.cash_delta,
+                }
+            )
             outcome = SignalOutcome(signal=signal, accepted=True, risk_decision=decision)
             open_trade = open_trades.pop(symbol, None)
             trade = None
@@ -391,6 +424,15 @@ class PortfolioBacktestEngine:
             stop_price=stop_result.stop_price,
             fee=fill.fee,
         )
+        pending.append(
+            {
+                "fill_timestamp": fill.fill_timestamp,
+                "symbol": symbol,
+                "kind": "entry",
+                "quantity": signed_quantity,
+                "cash_delta": fill.cash_delta,
+            }
+        )
         outcome = SignalOutcome(signal=signal, accepted=True, risk_decision=decision)
         open_trades[symbol] = {
             "entry_time": signal.timestamp,
@@ -451,6 +493,28 @@ class PortfolioBacktestEngine:
                 price = position.valuation_price
             equity += position.quantity * price
         return equity
+
+    @staticmethod
+    def _pending_adjustment(
+        pending: list[dict],
+        ffilled_closes: dict[str, pd.Series],
+        timestamp: pd.Timestamp,
+    ) -> float:
+        """Reverse fills that have been applied to the simulation state
+        but whose fill timestamp is after `timestamp` (see the
+        equity-timing note in `run()`). An unfilled entry contributes
+        neither its position nor its cash outlay; an unfilled exit
+        still holds its position (valued at this bar's close) and has
+        not yet received its proceeds."""
+        adjustment = 0.0
+        for item in pending:
+            close = float(ffilled_closes[item["symbol"]].loc[timestamp])
+            position_value = item["quantity"] * close
+            if item["kind"] == "entry":
+                adjustment += -position_value - item["cash_delta"]
+            else:
+                adjustment += position_value - item["cash_delta"]
+        return adjustment
 
     def _synthesize_closing_trades(
         self, open_trades: dict[str, dict], candles: dict[str, pd.DataFrame]

@@ -87,6 +87,44 @@ def test_benchmark_is_the_same_window_buy_and_hold():
     assert val(w.benchmark_return) == pytest.approx(10 / 11 - 1)             # from the bar before the window (11) to its last (10)
 
 
+def test_exposure_matched_comparator_is_built_from_the_invested_bars_only():
+    c = card([T1, T2, T3])
+    # Invested bars (entry < bar <= exit): 2 (T1), 5 (T2), 9 (T3). Close-to-close returns: +10%, 10.5/11-1, 0%; cash otherwise.
+    assert val(c.exposure_matched_return) == pytest.approx(1.1 * (10.5 / 11) - 1)           # = 5.00%
+    assert val(c.exposure_matched_return) == pytest.approx(0.05)
+    assert val(c.excess_vs_exposure_matched) == pytest.approx(100044 / 100000 - 1 - 0.05)
+    # The full buy-and-hold comparator is a different number and stays separate.
+    assert val(c.benchmark_return) == pytest.approx(0.0)
+
+
+def test_capital_utilisation_is_position_value_over_equity():
+    c = card([T1, T2, T3])
+    expected = [100 * 11 / 100098, 100 * 10.5 / 100044, 10 * 10 / 100044]
+    assert val(c.capital_utilisation_max) == pytest.approx(max(expected))
+    assert val(c.capital_utilisation_mean) == pytest.approx(sum(expected) / 10)
+
+
+def test_benchmark_drawdown_and_undefined_benchmark_ratios():
+    c = card([T1, T2, T3])
+    assert abs(val(c.benchmark_max_drawdown)) == pytest.approx(1 / 11)                       # peak 11 -> trough 10
+    assert c.benchmark_sharpe.status is not MetricStatus.OK and "fewer than" in c.benchmark_sharpe.reason
+    assert c.benchmark_volatility.status is not MetricStatus.OK
+
+
+def test_a_no_trade_window_has_zero_exposure_matched_return_and_zero_utilisation():
+    c = card([])
+    assert val(c.exposure_matched_return) == 0.0 and val(c.capital_utilisation_max) == 0.0
+
+
+def test_old_records_without_the_new_fields_still_load_with_explicit_undefined():
+    raw = card([T1, T2, T3]).to_dict()
+    for k in ("benchmark_volatility", "benchmark_sharpe", "benchmark_max_drawdown", "exposure_matched_return",
+              "excess_vs_exposure_matched", "capital_utilisation_mean", "capital_utilisation_max"):
+        raw.pop(k)
+    old = Scorecard.from_dict(raw)
+    assert old.exposure_matched_return.status is not MetricStatus.OK and "not recorded" in old.exposure_matched_return.reason
+
+
 def test_window_returns_chain_exactly_to_the_whole_run_return():
     a, b = card([T1, T2, T3], 0, 5), card([T1, T2, T3], 5, 10)
     assert (1 + val(a.net_return)) * (1 + val(b.net_return)) - 1 == pytest.approx(val(card([T1, T2, T3]).net_return), abs=1e-12)

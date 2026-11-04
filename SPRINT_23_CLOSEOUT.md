@@ -1,6 +1,6 @@
 # Sprint 23 Closeout Report — Research Integrity, Benchmark Validation & Release Readiness
 
-Status: **IN PROGRESS — engineering work complete in the working tree; items marked PENDING need to be run on the owner's machine.** Nothing here is a claim that any strategy has an edge. The locked holdout has not been evaluated and was not touched.
+Status: **MERGED — PR #2, merge commit `461b899` (feature commit `3644680`), required check `quality-gate` passed, no bypass. Manual UI verification was only partial (section 6).** Nothing here is a claim that any strategy has an edge. The locked holdout has not been evaluated and was not touched.
 
 ## 1. Repository and release audit
 
@@ -38,11 +38,11 @@ The previous guard (one row per run id) was **not sufficient**: a new run over t
 
 ## 6. Manual UI verification
 
-**PENDING / NOT PERFORMED.** Needs `./scripts/start_app.sh` run by the owner. No manual testing is claimed.
+**PARTIAL.** The app was started with `./scripts/start_app.sh` and the Strategy Research page was exercised in a browser (one Donchian/SPY run was created, which added one append-only record, run `0e4369c638794475`, to the owner's `data/research` database). The remaining pages (Opportunity Scanner, Paper Trading, Portfolio & Execution, Activity, Monitoring & Alerts, Setup & System Status) and the Compare-runs tab were **not** manually verified; they are covered only by the automated Streamlit tests. The disabled holdout button for earlier-engine runs is covered by an automated test (`test_holdout_button_is_disabled_for_a_run_from_an_earlier_engine_version`), not by a manual check.
 
 ## 7. Regression
 
-Sandbox (Python 3.10, partial stubs; Streamlit and joblib tests skipped there): equity-timing 8/8, scorecard 31/31, research service 56/56, closeout script 3/3, portfolio backtest engine 41/41, paper runtime 99/99, architecture 62 passed 5 skipped, research architecture 9/9, app launch 28/28; `compileall` clean. **Authoritative run on the owner's machine (Python 3.14.6):** `ruff check src scripts tests` all checks passed; `pytest -q` **2151 passed, 0 failed** (0 skipped shown); `scripts/paper_runtime_validation.py --skip-external` PASS 26/26; `scripts/alert_delivery_validation.py` PASS 18/18. The 2151 run preceded one later edit (the audit tolerance in `scripts/closeout_validation.py`); a final `ruff` + `pytest -q` run on the commit is still required. CI (Python 3.12) on the PR: PENDING.
+Sandbox (Python 3.10, partial stubs; Streamlit and joblib tests skipped there): equity-timing 8/8, scorecard 31/31, research service 56/56, closeout script 3/3, portfolio backtest engine 41/41, paper runtime 99/99, architecture 62 passed 5 skipped, research architecture 9/9, app launch 28/28; `compileall` clean. **Authoritative run on the owner's machine (Python 3.14.6):** `ruff check src scripts tests` all checks passed; `pytest -q` **2151 passed, 0 failed** (0 skipped shown); `scripts/paper_runtime_validation.py --skip-external` PASS 26/26; `scripts/alert_delivery_validation.py` PASS 18/18. Final run on the owner's machine before the commit: `ruff check src scripts tests` all checks passed; `pytest -q` **2152 passed** (includes the new disabled-holdout-button test). CI (Python 3.12) on PR #2: `quality-gate` passed. Merged as `461b899`.
 
 ## 8. Files
 
@@ -62,6 +62,6 @@ Engine v3, default parameters, development + validation windows and rolling walk
 
 ## 10. Engineering status / Research status / Remaining risks
 
-- **Engineering status:** a real timing defect and a real holdout-reuse hole were found and fixed in the working tree, with tests. Not yet verified by the authoritative suite, CI, or manual UI, and not yet committed.
-- **Research status:** no strategy has demonstrated anything. No holdout has been evaluated. Real-data results under engine v3 do not exist yet.
+- **Engineering status:** a real timing defect and a real holdout-reuse hole were found and fixed, with tests; two data-layer defects surfaced by real data were fixed. Merged via PR #2 (`461b899`) with 2152 tests and CI passing. Manual UI verification covered only the Strategy Research page.
+- **Research status:** no strategy has demonstrated an edge (section 9). Real-data results under engine v3 exist for 24 combinations on development/validation data only. No holdout has been evaluated.
 - **Remaining risks:** `main` protection lets the owner bypass; the spec's strict dependency pinning may refuse holdouts after an upgrade (by design); exposure-matched benchmark is an approximation at fill bars; first real-provider data glitches can still produce DATA_INVALID.
